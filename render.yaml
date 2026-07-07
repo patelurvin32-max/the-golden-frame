@@ -1,0 +1,21 @@
+services:
+  # Backend Service
+  - type: web
+    name: the-golden-frame-backend
+    env: node
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      # Add these in Render dashboard after deployment:
+      # - MONGO_URI (MongoDB Atlas connection string)
+      # - JWT_ACCESS_SECRET
+      # - JWT_REFRESH_SECRET
+      # - COOKIE_SECRET
+      # - CLIENT_URL (your Vercel frontend URL)
+      # - CLOUDINARY_CLOUD_NAME (optional)
+      # - CLOUDINARY_API_KEY (optional)
+      # - CLOUDINARY_API_SECRET (optional)
