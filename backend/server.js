@@ -77,8 +77,16 @@ const seedDefaults = async () => {
     const code = branchName.toUpperCase().replace(/\s+/g, '');
     const exists = await Branch.findOne({ code });
     if (!exists) {
-      await Branch.create({ name: branchName, code });
-      console.log(`🏢 Branch created: ${branchName}`);
+      try {
+        await Branch.create({ name: branchName, code });
+        console.log(`🏢 Branch created: ${branchName}`);
+      } catch (err) {
+        if (err.code === 11000) {
+          console.log(`⚠️  Branch already exists: ${branchName}`);
+        } else {
+          throw err;
+        }
+      }
     }
   }
 
