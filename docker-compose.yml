@@ -1,0 +1,83 @@
+version: '3.9'
+
+services:
+  # ── MongoDB ──────────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7.0
+    container_name: cuemaster_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-cuemaster2024}
+      MONGO_INITDB_DATABASE: cuemaster
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - cuemaster_net
+    healthcheck:
+      test: ['CMD', 'mongosh', '--eval', "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend API ───────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cuemaster_backend
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGO_URI: mongodb://${MONGO_INITDB_ROOT_USERNAME:-admin}:${MONGO_INITDB_ROOT_PASSWORD:-cuemaster2024}@mongo:27017/cuemaster?authSource=admin
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_EXPIRES: 15m
+      JWT_REFRESH_EXPIRES: 30d
+      CLIENT_URL: ${CLIENT_URL:-http://localhost}
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-admin@cuemaster.app}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-Admin@123456}
+    ports:
+      - '5000:5000'
+    networks:
+      - cuemaster_net
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:5000/api/health']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Frontend (Nginx) ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
+    container_name: cuemaster_frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - '80:80'
+    networks:
+      - cuemaster_net
+
+volumes:
+  mongo_data:
+    driver: local
+
+networks:
+  cuemaster_net:
+    driver: bridge

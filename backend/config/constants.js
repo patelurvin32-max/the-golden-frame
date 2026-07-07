@@ -1,0 +1,97 @@
+/**
+ * Centralized constants/enums used across models, middleware and controllers.
+ * Keeping these in one place avoids magic strings scattered through the codebase.
+ */
+
+const ROLES = {
+  SUPER_ADMIN: 'super_admin',
+  BRANCH_MANAGER: 'branch_manager',
+  STAFF: 'staff',
+  CASHIER: 'cashier',
+};
+
+const ROLE_LIST = Object.values(ROLES);
+
+// Coarse permission map used by the requirePermission middleware.
+// Super admin implicitly bypasses all checks (see middleware/auth.js).
+const PERMISSIONS = {
+  [ROLES.BRANCH_MANAGER]: [
+    'dashboard:view',
+    'tables:view',
+    'tables:operate',
+    'billing:manage',
+    'customers:manage',
+    'inventory:manage',
+    'expenses:manage',
+    'attendance:manage',
+    'reports:view',
+    'bookings:manage',
+    'menu:manage',
+  ],
+  [ROLES.STAFF]: [
+    'tables:view',
+    'tables:operate',
+    'billing:manage',
+    'customers:create',
+  ],
+  [ROLES.CASHIER]: [
+    'tables:view',
+    'billing:manage',
+    'customers:create',
+    'customers:manage',
+  ],
+};
+
+const TABLE_TYPES = ['pool', 'snooker', 'ps5'];
+
+const TABLE_STATUS = ['available', 'running', 'reserved', 'maintenance'];
+
+const BOOKING_STATUS = ['pending', 'confirmed', 'completed', 'cancelled'];
+
+const PAYMENT_METHODS = ['cash', 'upi', 'mixed'];
+
+const MEMBERSHIP_TIERS = ['silver', 'gold', 'platinum'];
+
+const EXPENSE_CATEGORIES = [
+  'rent',
+  'electricity',
+  'salary',
+  'internet',
+  'maintenance',
+  'suppliers',
+  'others',
+];
+
+const INVENTORY_CATEGORIES = [
+  'cue_stick',
+  'cue_tips',
+  'balls',
+  'chalk',
+  'gloves',
+  'food',
+  'cold_drinks',
+  'snacks',
+  'other',
+];
+
+const SESSION_STATUS = ['running', 'paused', 'completed', 'cancelled'];
+
+const ATTENDANCE_STATUS = ['present', 'absent', 'half_day', 'leave', 'weekly_off', 'holiday'];
+
+const DEFAULT_BRANCHES = ['Daman', 'DNH'];
+
+module.exports = {
+  ROLES,
+  ROLE_LIST,
+  PERMISSIONS,
+  TABLE_TYPES,
+  TABLE_STATUS,
+  BOOKING_STATUS,
+  PAYMENT_METHODS,
+  MEMBERSHIP_TIERS,
+  EXPENSE_CATEGORIES,
+  INVENTORY_CATEGORIES,
+  SESSION_STATUS,
+  ATTENDANCE_STATUS,
+  DEFAULT_BRANCHES,
+};
