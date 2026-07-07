@@ -120,9 +120,19 @@ exports.getBranchComparison = asyncHandler(async (req, res) => {
     Bill.aggregate([
       { $match: { paymentStatus: 'paid', createdAt: { $gte: monthStart } } },
       { $group: { _id: '$branch', revenue: { $sum: '$total' }, bills: { $sum: 1 } } },
-      { $lookup: { from: 'branches', localField: '_id', foreignField: '_id', as: 'branchInfo' } },
-      { $unwind: '$branchInfo' },
-      { $project: { branchName: '$branchInfo.name', revenue: 1, bills: 1 } },
+      {
+        $lookup: {
+          from: 'branches',
+          let: { branchId: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$_id', '$$branchId'] } } },
+            { $project: { name: 1 } }
+          ],
+          as: 'branchInfo'
+        }
+      },
+      { $unwind: { path: '$branchInfo', preserveNullAndEmptyArrays: true } },
+      { $project: { branchName: { $ifNull: ['$branchInfo.name', 'Unknown'] }, revenue: 1, bills: 1 } },
     ]),
     Expense.aggregate([
       { $match: { date: { $gte: monthStart } } },

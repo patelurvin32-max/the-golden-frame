@@ -14,7 +14,10 @@ export const useSocket = () => {
     if (!isAuthenticated) return;
 
     if (!socket) {
-      socket = io('/', { withCredentials: true, transports: ['websocket', 'polling'] });
+      const socketUrl = import.meta.env.VITE_API_URL 
+        ? `${import.meta.env.VITE_API_URL}`
+        : '/';
+      socket = io(socketUrl, { withCredentials: true, transports: ['websocket', 'polling'] });
     }
     socketRef.current = socket;
 
