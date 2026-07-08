@@ -114,17 +114,37 @@ const seedDefaults = async () => {
     }
   }
 
-  // Super admin account (only created if none exists)
-  const adminExists = await User.findOne({ role: ROLES.SUPER_ADMIN });
-  if (!adminExists) {
-    await User.create({
-      name: 'Super Admin',
-      email: process.env.SUPER_ADMIN_EMAIL || 'admin@thegoldenframe.app',
-      password: process.env.SUPER_ADMIN_PASSWORD || 'Admin@123456',
-      role: ROLES.SUPER_ADMIN,
-    });
-    console.log(`👑 Super admin created: ${process.env.SUPER_ADMIN_EMAIL || 'admin@thegoldenframe.app'}`);
-    console.log('   ⚠️  Change the default password immediately!\n');
+  // Super admin account (created/updated if env vars are set, otherwise only created if none exists)
+  const adminEmail = process.env.SUPER_ADMIN_EMAIL || 'admin@thegoldenframe.app';
+  const adminPassword = process.env.SUPER_ADMIN_PASSWORD || 'Admin@123456';
+  
+  if (process.env.SUPER_ADMIN_EMAIL && process.env.SUPER_ADMIN_PASSWORD) {
+    // If env vars are set, always update/create the admin user
+    await User.findOneAndUpdate(
+      { email: adminEmail },
+      {
+        name: 'Super Admin',
+        email: adminEmail,
+        password: adminPassword,
+        role: ROLES.SUPER_ADMIN,
+        isActive: true,
+      },
+      { upsert: true, new: true }
+    );
+    console.log(`👑 Super admin ensured: ${adminEmail}`);
+  } else {
+    // If env vars are not set, only create if none exists
+    const adminExists = await User.findOne({ role: ROLES.SUPER_ADMIN });
+    if (!adminExists) {
+      await User.create({
+        name: 'Super Admin',
+        email: adminEmail,
+        password: adminPassword,
+        role: ROLES.SUPER_ADMIN,
+      });
+      console.log(`👑 Super admin created: ${adminEmail}`);
+      console.log('   ⚠️  Change the default password immediately!\n');
+    }
   }
 
   // Seed default categories
