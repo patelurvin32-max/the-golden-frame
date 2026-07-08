@@ -29,6 +29,9 @@ const AppError = require('./utils/AppError');
 
 const app = express();
 
+// ── Trust proxy for Render deployment ─────────────────────────────────────────
+app.set('trust proxy', true);
+
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(helmet());
 app.use(mongoSanitize());
