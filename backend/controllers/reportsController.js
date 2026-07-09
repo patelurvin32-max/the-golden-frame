@@ -239,40 +239,59 @@ exports.getTableUsageReport = asyncHandler(async (req, res) => {
 
 // GET /api/reports/branch-comparison
 exports.getBranchComparison = asyncHandler(async (req, res) => {
+  console.log('📊 Branch comparison request received');
   const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  console.log('📊 Month start date:', monthStart);
 
-  const [revenueByBranch, expenseByBranch] = await Promise.all([
-    Bill.aggregate([
-      { $match: { paymentStatus: 'paid', createdAt: { $gte: monthStart } } },
-      { $group: { _id: '$branch', revenue: { $sum: '$total' }, bills: { $sum: 1 } } },
-      {
-        $lookup: {
-          from: 'branches',
-          let: { branchId: '$_id' },
-          pipeline: [
-            { $match: { $expr: { $eq: ['$_id', '$$branchId'] } } },
-            { $project: { name: 1 } }
-          ],
-          as: 'branchInfo'
-        }
-      },
-      { $unwind: { path: '$branchInfo', preserveNullAndEmptyArrays: true } },
-      { $project: { branchName: { $ifNull: ['$branchInfo.name', 'Unknown'] }, revenue: 1, bills: 1 } },
-    ]),
-    Expense.aggregate([
-      { $match: { date: { $gte: monthStart } } },
-      { $group: { _id: '$branch', expenses: { $sum: '$amount' } } },
-    ]),
-  ]);
+  try {
+    const [revenueByBranch, expenseByBranch] = await Promise.all([
+      Bill.aggregate([
+        { $match: { paymentStatus: 'paid', createdAt: { $gte: monthStart } } },
+        { $group: { _id: '$branch', revenue: { $sum: '$total' }, bills: { $sum: 1 } } },
+        {
+          $lookup: {
+            from: 'branches',
+            let: { branchId: '$_id' },
+            pipeline: [
+              { $match: { $expr: { $eq: ['$_id', '$$branchId'] } } },
+              { $project: { name: 1 } }
+            ],
+            as: 'branchInfo'
+          }
+        },
+        { $unwind: { path: '$branchInfo', preserveNullAndEmptyArrays: true } },
+        { $project: { branchName: { $ifNull: ['$branchInfo.name', 'Unknown'] }, revenue: 1, bills: 1 } },
+      ]),
+      Expense.aggregate([
+        { $match: { date: { $gte: monthStart } } },
+        { $group: { _id: '$branch', expenses: { $sum: '$amount' } } },
+      ]),
+    ]);
 
-  const expenseMap = Object.fromEntries(expenseByBranch.map((e) => [e._id.toString(), e.expenses]));
-  const comparison = revenueByBranch.map((b) => ({
-    ...b,
-    expenses: expenseMap[b._id.toString()] || 0,
-    profit: b.revenue - (expenseMap[b._id.toString()] || 0),
-  }));
+    console.log('📊 Revenue by branch:', revenueByBranch);
+    console.log('📊 Expense by branch:', expenseByBranch);
 
-  res.status(200).json({ success: true, data: { comparison } });
+    const expenseMap = Object.fromEntries(expenseByBranch.map((e) => [e._id.toString(), e.expenses]));
+    const comparison = revenueByBranch.map((b) => ({
+      ...b,
+      expenses: expenseMap[b._id.toString()] || 0,
+      profit: b.revenue - (expenseMap[b._id.toString()] || 0),
+    }));
+
+    console.log('📊 Branch comparison result:', comparison);
+    res.status(200).json({ success: true, data: { comparison } });
+  } catch (error) {
+    console.error('❌ Branch comparison error:', error);
+    console.error('❌ Error details:', error.message);
+    console.error('❌ Error stack:', error.stack);
+    
+    // Return empty comparison instead of 500 error
+    res.status(200).json({ 
+      success: true, 
+      data: { comparison: [] },
+      warning: 'Could not generate branch comparison. Returning empty results.'
+    });
+  }
 });
 
 // GET /api/reports/export/excel?branch=&from=&to=&type=revenue|expenses|sessions
