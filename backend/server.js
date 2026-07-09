@@ -14,10 +14,13 @@ const allowedOrigins = process.env.CLIENT_URL
   ? process.env.CLIENT_URL.split(',').map(o => o.trim())
   : ['http://localhost:5173', 'http://localhost:5174'];
 
+console.log('🔌 Socket.io allowed origins:', allowedOrigins);
+
 const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   },
   transports: ['websocket', 'polling'],
 });
@@ -45,6 +48,20 @@ io.on('connection', (socket) => {
 
 // ── Startup ───────────────────────────────────────────────────────────────────
 const start = async () => {
+  // Validate required environment variables
+  const requiredEnvVars = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'];
+  const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+  
+  if (missingVars.length > 0) {
+    console.error('❌ Missing required environment variables:', missingVars.join(', '));
+    console.error('Please set these in your .env file or production environment.');
+    if (process.env.NODE_ENV === 'production') {
+      process.exit(1);
+    } else {
+      console.warn('⚠️  Running in development mode with missing secrets. This is NOT secure!');
+    }
+  }
+
   await connectDB();
 
   // Seed default data on first run
@@ -72,7 +89,7 @@ const seedDefaults = async () => {
     console.log('⚙️  Default settings created.');
   }
 
-  // Create default branches
+  // Create default branches and remove any that are not in DEFAULT_BRANCHES
   for (const branchName of DEFAULT_BRANCHES) {
     const code = branchName.toUpperCase().replace(/\s+/g, '');
     const exists = await Branch.findOne({ code });
@@ -89,6 +106,17 @@ const seedDefaults = async () => {
       }
     } else {
       console.log(`✅ Branch already exists: ${branchName}`);
+    }
+  }
+
+  // Remove branches that are not in DEFAULT_BRANCHES
+  const defaultCodes = DEFAULT_BRANCHES.map(name => name.toUpperCase().replace(/\s+/g, ''));
+  const extraBranches = await Branch.find({ code: { $nin: defaultCodes } });
+  if (extraBranches.length > 0) {
+    console.log(`🗑️  Removing ${extraBranches.length} extra branch(es) not in DEFAULT_BRANCHES...`);
+    for (const branch of extraBranches) {
+      await Branch.findByIdAndDelete(branch._id);
+      console.log(`   Removed branch: ${branch.name} (${branch.code})`);
     }
   }
 

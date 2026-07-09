@@ -64,15 +64,25 @@ const allowedOrigins = process.env.CLIENT_URL
   ? process.env.CLIENT_URL.split(',').map(o => o.trim())
   : ['http://localhost:5173', 'http://localhost:5174'];
 
+console.log('🌐 CORS allowed origins:', allowedOrigins);
+console.log('🌐 NODE_ENV:', process.env.NODE_ENV);
+console.log('🌐 CLIENT_URL:', process.env.CLIENT_URL || 'not set');
+
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
+    if (!origin) {
+      console.log('🌐 CORS: Allowing request with no origin');
+      return callback(null, true);
+    }
     // Check if origin matches any allowed origin (with or without trailing slash)
     const normalizedOrigin = origin.replace(/\/$/, '');
     const normalizedAllowed = allowedOrigins.map(o => o.replace(/\/$/, ''));
-    if (normalizedAllowed.includes(normalizedOrigin)) return callback(null, true);
-    console.log('CORS blocked origin:', origin, 'Allowed:', normalizedAllowed);
+    if (normalizedAllowed.includes(normalizedOrigin)) {
+      console.log('🌐 CORS: Allowing origin:', origin);
+      return callback(null, true);
+    }
+    console.log('🌐 CORS blocked origin:', origin, 'Allowed:', normalizedAllowed);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,

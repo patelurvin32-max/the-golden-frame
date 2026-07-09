@@ -4,12 +4,35 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { logActivity } = require('../services/activityLogService');
 
-const cookieOptions = (maxAgeMs) => ({
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'strict',
-  maxAge: maxAgeMs,
-});
+const cookieOptions = (maxAgeMs) => {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const isCrossOrigin = process.env.CLIENT_URL && !process.env.CLIENT_URL.includes('localhost');
+  
+  // For cross-origin production (Vercel + Render), use 'none' with secure
+  // For localhost or same-origin, use 'lax' for better compatibility
+  const sameSiteValue = (isProduction && isCrossOrigin) ? 'none' : 'lax';
+  
+  const options = {
+    httpOnly: true,
+    secure: isProduction || sameSiteValue === 'none', // Required for sameSite=none
+    sameSite: sameSiteValue,
+    maxAge: maxAgeMs,
+  };
+  
+  // Add domain for production if CLIENT_URL is set
+  if (isProduction && process.env.CLIENT_URL) {
+    try {
+      const clientUrl = new URL(process.env.CLIENT_URL);
+      options.domain = clientUrl.hostname;
+      console.log('🍪 Setting cookie domain:', options.domain);
+    } catch (err) {
+      console.warn('⚠️  Could not parse CLIENT_URL for cookie domain:', err.message);
+    }
+  }
+  
+  console.log('🍪 Cookie options:', { ...options, domain: options.domain || 'not set' });
+  return options;
+};
 
 const issueTokens = async (user, res) => {
   const accessToken = user.generateAccessToken();
@@ -102,8 +125,13 @@ exports.logout = asyncHandler(async (req, res) => {
     req.user.refreshTokens = (req.user.refreshTokens || []).filter((t) => t !== hashed);
     await req.user.save({ validateBeforeSave: false });
   }
-  res.clearCookie('accessToken');
-  res.clearCookie('refreshToken');
+  
+  // Clear cookies with the same options used to set them
+  const clearOptions = cookieOptions(0);
+  res.clearCookie('accessToken', clearOptions);
+  res.clearCookie('refreshToken', clearOptions);
+  
+  console.log('🍪 Cookies cleared on logout');
   res.status(200).json({ success: true, message: 'Logged out successfully.' });
 });
 
