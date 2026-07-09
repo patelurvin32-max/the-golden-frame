@@ -113,6 +113,22 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   if (!req.body.branch && req.user.branches && req.user.branches.length > 0) {
     req.body.branch = req.user.branches[0];
   }
+
+  // Validate mixed payment amounts
+  if (req.body.paymentMethod === 'mixed') {
+    const cashAmount = Number(req.body.cashAmount) || 0;
+    const onlineAmount = Number(req.body.onlineAmount) || 0;
+    const totalPaid = cashAmount + onlineAmount;
+
+    // Get the menu item price to validate against
+    const MenuItem = require('../models/Operations').MenuItem;
+    const menuItem = await MenuItem.findById(req.body.menuItemId);
+    const totalBill = menuItem?.price || 0;
+
+    if (totalPaid !== totalBill) {
+      return next(new AppError(`Cash Amount + Online Amount must equal the total bill amount (${totalBill})`, 400));
+    }
+  }
   
   // Check if customer with this phone number already exists
   const existingCustomer = await Customer.findOne({ phone: req.body.phone, isActive: true });
@@ -136,6 +152,22 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
 
 // PATCH /api/customers/:id
 exports.updateCustomer = asyncHandler(async (req, res, next) => {
+  // Validate mixed payment amounts if payment method is mixed
+  if (req.body.paymentMethod === 'mixed') {
+    const cashAmount = Number(req.body.cashAmount) || 0;
+    const onlineAmount = Number(req.body.onlineAmount) || 0;
+    const totalPaid = cashAmount + onlineAmount;
+
+    // Get the menu item price to validate against
+    const MenuItem = require('../models/Operations').MenuItem;
+    const menuItem = await MenuItem.findById(req.body.menuItemId);
+    const totalBill = menuItem?.price || 0;
+
+    if (totalPaid !== totalBill) {
+      return next(new AppError(`Cash Amount + Online Amount must equal the total bill amount (${totalBill})`, 400));
+    }
+  }
+
   const customer = await Customer.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
     runValidators: true,

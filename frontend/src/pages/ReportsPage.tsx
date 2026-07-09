@@ -1,8 +1,8 @@
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useState, useEffect } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { reportService } from '@/services';
-import { useAppStore } from '@/store';
+import { useAppStore, useAuthStore } from '@/store';
 import { Button, Card, CardContent, CardHeader, CardTitle, PageHeader, Skeleton, useToast } from '@/components/ui';
 import { formatCurrency, formatDuration, downloadBlob, cn } from '@/utils';
 
@@ -10,23 +10,37 @@ type GroupBy = 'day' | 'week' | 'month';
 
 export default function ReportsPage() {
   const toast = useToast();
+  const qc = useQueryClient();
   const { selectedBranch } = useAppStore();
+  const { user } = useAuthStore();
   const [tab, setTab] = useState<'revenue' | 'tables' | 'pnl' | 'branches'>('revenue');
   const [groupBy, setGroupBy] = useState<GroupBy>('day');
   const [from, setFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); });
   const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [shouldFetch, setShouldFetch] = useState(false);
+
+  // Determine if user can select branch (Super Admin and Admin can)
+  const canSelectBranch = user?.role === 'super_admin' || user?.role === 'admin';
 
   const bp: Record<string, string> = {};
-  if (selectedBranch) bp.branch = selectedBranch;
+  if (selectedBranch && canSelectBranch) {
+    bp.branch = String(selectedBranch);
+  }
+  if (!canSelectBranch && user?.branches?.[0]) {
+    const branchObj = user.branches[0];
+    bp.branch = String(branchObj);
+  }
 
   const { data: revenueData, isLoading: revLoading } = useQuery({
-    queryKey: ['report-revenue', selectedBranch, from, to, groupBy],
+    queryKey: ['report-revenue', bp.branch, from, to, groupBy, shouldFetch],
     queryFn: () => reportService.getRevenue({ ...bp, from, to, groupBy }).then((r) => r.data.data),
+    enabled: shouldFetch,
   });
 
   const { data: tableData } = useQuery({
-    queryKey: ['report-tables', selectedBranch, from, to],
+    queryKey: ['report-tables', bp.branch, from, to, shouldFetch],
     queryFn: () => reportService.getTableUsage({ ...bp, from, to }).then((r) => r.data.data),
+    enabled: shouldFetch,
   });
 
   const { data: branchData } = useQuery({
@@ -42,14 +56,28 @@ export default function ReportsPage() {
   const totalRevenue = chartData.reduce((s: number, d: any) => s + d.revenue, 0);
   const totalExpenses = chartData.reduce((s: number, d: any) => s + d.expenses, 0);
   const totalProfit = totalRevenue - totalExpenses;
+  const totalCash = revenueData?.summary?.totalCash || 0;
+  const totalOnline = revenueData?.summary?.totalOnline || 0;
+  const totalCustomers = revenueData?.summary?.totalCustomers || 0;
 
   const handleExport = async (type: string) => {
     try {
-      const res = await reportService.exportExcel({ ...bp, from, to, type });
+      const res = await reportService.exportExcel({ ...bp, from, to, type, groupBy });
       downloadBlob(res.data as Blob, `thegoldenframe-${type}-${from}-to-${to}.xlsx`);
       toast.success(`${type} report exported!`);
     } catch { toast.error('Export failed'); }
   };
+
+  const handleSearch = () => {
+    setShouldFetch(true);
+    qc.invalidateQueries({ queryKey: ['report-revenue'] });
+    qc.invalidateQueries({ queryKey: ['report-tables'] });
+  };
+
+  // Trigger initial fetch on page load
+  useEffect(() => {
+    handleSearch();
+  }, []);
 
   const TABS = [
     { id: 'revenue', label: '💰 Revenue' },
@@ -77,6 +105,7 @@ export default function ReportsPage() {
         <span className="text-muted-foreground">to</span>
         <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
           className="h-9 px-3 rounded-xl border border-input bg-background text-sm" />
+        <Button size="sm" onClick={handleSearch}>🔍 Search</Button>
         {tab === 'revenue' && (
           <div className="flex gap-1">
             {(['day', 'week', 'month'] as GroupBy[]).map((g) => (
@@ -91,11 +120,14 @@ export default function ReportsPage() {
       </div>
 
       {/* Quick summary */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
         {[
           { label: 'Revenue', value: formatCurrency(totalRevenue), color: 'text-blue-400' },
           { label: 'Expenses', value: formatCurrency(totalExpenses), color: 'text-red-400' },
           { label: 'Net Profit', value: formatCurrency(totalProfit), color: totalProfit >= 0 ? 'text-emerald-400' : 'text-red-400' },
+          { label: 'Total Cash', value: formatCurrency(totalCash), color: 'text-green-400' },
+          { label: 'Total Online', value: formatCurrency(totalOnline), color: 'text-purple-400' },
+          { label: 'Total Customers', value: totalCustomers.toString(), color: 'text-orange-400' },
         ].map((s) => (
           <Card key={s.label}>
             <CardContent className="p-4 text-center">

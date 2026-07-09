@@ -87,6 +87,55 @@ const generateInvoicePDF = (bill, settings = {}) => {
       .text('TOTAL', totalsX, y + 3)
       .text(`${symbol}${bill.total.toFixed(2)}`, 470, y + 3);
 
+    // ── Payment Details ───────────────────────────────────────────────────────
+    y += 35;
+    doc.moveTo(50, y).lineTo(545, y).strokeColor('#e2e8f0').stroke();
+    y += 15;
+
+    doc.font('Helvetica-Bold').fontSize(10).fillColor('#64748b').text('PAYMENT DETAILS', 50, y);
+    y += 20;
+
+    // Get payment details from bill or customer
+    let paymentMethod = 'cash';
+    let cashAmount = 0;
+    let onlineAmount = 0;
+
+    if (bill.payment) {
+      paymentMethod = bill.payment.method;
+      if (paymentMethod === 'mixed' && bill.payment.breakdown) {
+        bill.payment.breakdown.forEach((b) => {
+          if (b.method === 'cash') cashAmount = b.amount;
+          if (b.method === 'upi') onlineAmount = b.amount;
+        });
+      } else if (paymentMethod === 'cash') {
+        cashAmount = bill.payment.amount;
+      } else if (paymentMethod === 'upi') {
+        onlineAmount = bill.payment.amount;
+      }
+    } else if (bill.customer) {
+      paymentMethod = bill.customer.paymentMethod;
+      cashAmount = bill.customer.cashAmount || 0;
+      onlineAmount = bill.customer.onlineAmount || 0;
+    }
+
+    doc.font('Helvetica').fontSize(10).fillColor('#334155')
+      .text(`Payment Method: ${paymentMethod.toUpperCase()}`, 50, y);
+    y += 15;
+
+    if (paymentMethod === 'mixed') {
+      doc.font('Helvetica').fontSize(10).fillColor('#334155')
+        .text(`Cash Amount: ${symbol}${cashAmount.toFixed(2)}`, 50, y);
+      y += 15;
+      doc.font('Helvetica').fontSize(10).fillColor('#334155')
+        .text(`Online Amount: ${symbol}${onlineAmount.toFixed(2)}`, 50, y);
+      y += 15;
+      doc.font('Helvetica-Bold').fontSize(10).fillColor('#334155')
+        .text(`Total Paid: ${symbol}${(cashAmount + onlineAmount).toFixed(2)}`, 50, y);
+    } else {
+      doc.font('Helvetica').fontSize(10).fillColor('#334155')
+        .text(`Amount: ${symbol}${bill.total.toFixed(2)}`, 50, y);
+    }
+
     // ── Footer ───────────────────────────────────────────────────────────────
     const footerY = 750;
     doc.moveTo(50, footerY).lineTo(545, footerY).strokeColor('#e2e8f0').stroke();

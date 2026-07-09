@@ -11,6 +11,7 @@ exports.getBranches = asyncHandler(async (req, res) => {
     filter = { _id: { $in: req.user.branches } };
   }
   const branches = await Branch.find(filter).sort('name');
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.status(200).json({ success: true, results: branches.length, data: { branches } });
 });
 

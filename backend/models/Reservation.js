@@ -18,6 +18,8 @@ const reservationSchema = new mongoose.Schema(
     email: { type: String, trim: true, lowercase: true, default: '' },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     table: { type: mongoose.Schema.Types.ObjectId, ref: 'Table', required: true },
+    menuCategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuCategory' },
+    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem' },
     reservationDate: { type: Date, required: true },
     reservationTime: { type: String, required: true },
     durationMinutes: { type: Number, default: 60, min: 15 },

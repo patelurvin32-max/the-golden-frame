@@ -13,11 +13,14 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const currentYear = new Date().getFullYear();
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     try {
-      await login(form.email, form.password);
+      const result = await login(form.email, form.password);
+      // Navigate after successful login
       navigate('/');
     } catch (err: any) {
+      console.error('Login error:', err);
       toast.error(err?.response?.data?.message || 'Login failed');
     }
   };
@@ -42,7 +45,7 @@ export default function LoginPage() {
         {/* Card */}
         <div className="rounded-2xl border border-border bg-card p-6 shadow-2xl">
           <h2 className="text-lg font-semibold mb-5">Sign in to your account</h2>
-          <div className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="email">Email address</Label>
               <input
@@ -80,14 +83,13 @@ export default function LoginPage() {
               </div>
             </div>
             <button 
-              type="button" 
-              onClick={handleSubmit} 
+              type="submit" 
               disabled={isLoading}
               className="w-full h-11 px-6 text-base rounded-xl font-medium transition-all duration-200 bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:opacity-90 shadow-lg shadow-blue-500/25 disabled:opacity-50 disabled:pointer-events-none"
             >
               {isLoading ? 'Signing in...' : 'Sign in'}
             </button>
-          </div>
+          </form>
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-4">

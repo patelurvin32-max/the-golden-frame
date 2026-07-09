@@ -59,4 +59,31 @@
   .glass { @apply bg-white/10 backdrop-blur-md border border-white/20; }
   .gradient-brand { background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%); }
   .text-gradient { background: linear-gradient(135deg, #3b82f6, #6366f1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .animate-slide-up { animation: slideUp 0.3s ease-out; }
+}
+
+/* Fix datetime-local calendar icon alignment */
+input[type="datetime-local"] {
+  padding-right: 3rem !important;
+  border-top-right-radius: 0.25rem !important;
+  border-bottom-right-radius: 0.25rem !important;
+}
+
+/* Fix date input calendar icon alignment */
+input[type="date"] {
+  padding-right: 3rem !important;
+  border-top-right-radius: 0.25rem !important;
+  border-bottom-right-radius: 0.25rem !important;
+}
+
+/* Fix time input clock icon alignment */
+input[type="time"] {
+  padding-right: 3rem !important;
+  border-top-right-radius: 0.25rem !important;
+  border-bottom-right-radius: 0.25rem !important;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
 }

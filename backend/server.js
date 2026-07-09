@@ -87,6 +87,8 @@ const seedDefaults = async () => {
           throw err;
         }
       }
+    } else {
+      console.log(`✅ Branch already exists: ${branchName}`);
     }
   }
 
@@ -114,38 +116,22 @@ const seedDefaults = async () => {
     }
   }
 
-  // Super admin account (created/updated if env vars are set, otherwise only created if none exists)
+  // Super admin account (always recreated for local dev)
   const adminEmail = process.env.SUPER_ADMIN_EMAIL || 'admin@thegoldenframe.app';
   const adminPassword = process.env.SUPER_ADMIN_PASSWORD || 'Admin@123456';
   
-  if (process.env.SUPER_ADMIN_EMAIL && process.env.SUPER_ADMIN_PASSWORD) {
-    // If env vars are set, always update/create the admin user
-    await User.findOneAndUpdate(
-      { email: adminEmail },
-      {
-        name: 'Super Admin',
-        email: adminEmail,
-        password: adminPassword,
-        role: ROLES.SUPER_ADMIN,
-        isActive: true,
-      },
-      { upsert: true, new: true }
-    );
-    console.log(`👑 Super admin ensured: ${adminEmail}`);
-  } else {
-    // If env vars are not set, only create if none exists
-    const adminExists = await User.findOne({ role: ROLES.SUPER_ADMIN });
-    if (!adminExists) {
-      await User.create({
-        name: 'Super Admin',
-        email: adminEmail,
-        password: adminPassword,
-        role: ROLES.SUPER_ADMIN,
-      });
-      console.log(`👑 Super admin created: ${adminEmail}`);
-      console.log('   ⚠️  Change the default password immediately!\n');
-    }
-  }
+  // Delete existing admin to ensure clean password reset
+  await User.deleteOne({ email: adminEmail });
+  
+  // Create new admin user - pre-save hook will hash the password
+  await User.create({
+    name: 'Super Admin',
+    email: adminEmail,
+    password: adminPassword,  // Plain text - pre-save hook will hash it
+    role: ROLES.SUPER_ADMIN,
+    isActive: true,
+  });
+  console.log(`👑 Super admin recreated: ${adminEmail}`);
 
   // Seed default categories
   const InventoryCategory = require('./models/InventoryCategory');

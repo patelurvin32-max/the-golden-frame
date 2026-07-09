@@ -32,7 +32,10 @@ const PERMISSIONS = {
     'tables:view',
     'tables:operate',
     'billing:manage',
+    'customers:view',
     'customers:create',
+    'menu:view',
+    'reports:view',
   ],
   [ROLES.CASHIER]: [
     'tables:view',

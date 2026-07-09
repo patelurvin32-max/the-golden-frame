@@ -166,7 +166,7 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
 // GET /api/bills/:id/pdf  — stream PDF invoice
 exports.downloadPDF = asyncHandler(async (req, res, next) => {
   const bill = await Bill.findById(req.params.id)
-    .populate('customer', 'name phone')
+    .populate('customer', 'name phone paymentMethod cashAmount onlineAmount')
     .populate('branch', 'name');
   if (!bill) return next(new AppError('Bill not found.', 404));
 
@@ -262,7 +262,7 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
 
   const bill = await Bill.create({
     invoiceNumber,
-    branch: customer.branch._id,
+    branch: customer.branch._id || customer.branch,
     customer: customer._id,
     items,
     subtotal,
@@ -277,7 +277,7 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
 
   await logActivity({
     userId: req.user._id,
-    branchId: customer.branch._id,
+    branchId: customer.branch._id || customer.branch,
     action: 'bill.create',
     entity: 'Bill',
     entityId: bill._id,

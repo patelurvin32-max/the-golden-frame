@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
-import { reservationService, branchService, tableService } from '@/services';
+import { reservationService, branchService, tableService, menuService } from '@/services';
 import { useAppStore, useAuthStore } from '@/store';
 import {
   Button, Card, CardContent, Input, Label, Select, Badge,
@@ -31,6 +31,7 @@ const EMPTY_FORM = {
   reservationDate: '', reservationTime: '',
   durationMinutes: 60, numberOfGuests: 2,
   specialRequests: '', notes: '', status: 'pending',
+  menuCategoryId: '', menuItemId: '',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -144,6 +145,25 @@ function ReservationForm({
     queryFn: () => tableService.getAll({ branch: form.branch }).then((r) => r.data.data.tables),
   });
 
+  // Fetch menu categories
+  const { data: categoriesData } = useQuery({
+    queryKey: ['menu-categories'],
+    queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data),
+  });
+  const categories: any[] = (categoriesData as any)?.data?.categories || [];
+
+  // Fetch menu items filtered by category and branch
+  const menuParams: Record<string, string> = { limit: '1000' };
+  if (form.menuCategoryId) menuParams.category = form.menuCategoryId;
+  if (form.branch) menuParams.branch = form.branch;
+
+  const { data: menuItemsData } = useQuery({
+    queryKey: ['menu-items', form.menuCategoryId, form.branch],
+    queryFn: () => menuService.getAll(menuParams).then((r) => r.data),
+    enabled: !!form.menuCategoryId,
+  });
+  const menuItems: any[] = (menuItemsData as any)?.data?.items || [];
+
   // Determine if user can select branch (Super Admin can, Branch Manager and Staff cannot)
   const canSelectBranch = user?.role === 'super_admin';
   
@@ -224,26 +244,38 @@ function ReservationForm({
         </div>
       </div>
 
-      {/* Table selector with availability */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between">
-          <Label>Table *</Label>
-          {checkingAvail && <span className="text-xs text-muted-foreground animate-pulse">Checking availability…</span>}
-          {!checkingAvail && form.reservationDate && form.reservationTime && (
-            <span className="text-xs text-emerald-400 font-medium">{availTables.length} table(s) available</span>
+      {/* Menu Category and Menu Item */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label>Menu Category *</Label>
+          <Select
+            value={form.menuCategoryId}
+            onChange={(e) => set('menuCategoryId', e.target.value)}
+          >
+            <option value="">Select category</option>
+            {categories.map((cat: any) => (
+              <option key={cat._id} value={cat._id}>{cat.name}</option>
+            ))}
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Menu Item *</Label>
+          <Select
+            value={form.menuItemId}
+            onChange={(e) => set('menuItemId', e.target.value)}
+            disabled={!form.menuCategoryId || menuItems.length === 0}
+          >
+            <option value="">Select item</option>
+            {menuItems.map((item: any) => (
+              <option key={item._id} value={item._id}>
+                {item.name} - ₹{item.price}
+              </option>
+            ))}
+          </Select>
+          {form.menuCategoryId && menuItems.length === 0 && (
+            <p className="text-xs text-muted-foreground">No available items for this category</p>
           )}
         </div>
-        <Select value={form.table} onChange={(e) => set('table', e.target.value)} disabled={!form.branch}>
-          <option value="">Select table</option>
-          {tablesToShow.map((t: any) => (
-            <option key={t._id} value={t._id}>
-              {t.name} ({t.type}) — ₹{t.hourlyRate}/hr
-            </option>
-          ))}
-        </Select>
-        {form.reservationDate && form.reservationTime && tablesToShow.length === 0 && !checkingAvail && (
-          <p className="text-xs text-red-400 mt-1">⚠️ No tables available for this slot. Try a different time.</p>
-        )}
       </div>
 
       {/* Status */}
@@ -274,7 +306,7 @@ function ReservationForm({
         <Button variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
         <Button className="flex-1" loading={loading}
           onClick={() => {
-            if (!form.customerName || !form.phoneNumber || !form.table || !form.reservationDate || !form.reservationTime) return;
+            if (!form.customerName || !form.phoneNumber || !form.menuCategoryId || !form.menuItemId || !form.reservationDate || !form.reservationTime) return;
             if (canSelectBranch && !form.branch) return;
             onSubmit(form);
           }}
@@ -378,6 +410,10 @@ export default function ReservationsPage() {
   const qc    = useQueryClient();
   const toast = useToast();
   const { selectedBranch } = useAppStore();
+  const { user } = useAuthStore();
+
+  // Determine if user can select branch (Super Admin and Admin can)
+  const canSelectBranch = user?.role === 'super_admin' || user?.role === 'admin';
 
   // ── Pagination / filter state ─────────────────────────────────────────────
   const [page,      setPage]      = useState(1);
@@ -388,6 +424,7 @@ export default function ReservationsPage() {
   const [dateTo,    setDateTo]    = useState('');
   const [branchFlt, setBranchFlt] = useState('');
   const [tableFlt,  setTableFlt]  = useState('');
+  const [menuCategoryFlt, setMenuCategoryFlt] = useState('');
   const [sortBy,    setSortBy]    = useState('reservationDate');
   const [sortOrder, setSortOrder] = useState<'asc'|'desc'>('asc');
 
@@ -396,7 +433,7 @@ export default function ReservationsPage() {
   const [selected, setSelected] = useState<any>(null);
 
   // Reset page on filter change
-  useEffect(() => { setPage(1); }, [search, status, dateFrom, dateTo, branchFlt, tableFlt, sortBy, sortOrder]);
+  useEffect(() => { setPage(1); }, [search, status, dateFrom, dateTo, branchFlt, menuCategoryFlt, sortBy, sortOrder]);
 
   const branch = branchFlt || selectedBranch || '';
 
@@ -410,6 +447,7 @@ export default function ReservationsPage() {
   if (dateFrom) queryParams.dateFrom = dateFrom;
   if (dateTo)   queryParams.dateTo   = dateTo;
   if (tableFlt) queryParams.table    = tableFlt;
+  if (menuCategoryFlt) queryParams.menuCategoryId = menuCategoryFlt;
 
   // ── Queries ───────────────────────────────────────────────────────────────
   const { data: listData, isLoading } = useQuery({
@@ -429,6 +467,11 @@ export default function ReservationsPage() {
     queryKey: ['tables-filter', branch], enabled: !!branch,
     queryFn: () => tableService.getAll({ branch }).then((r) => r.data.data.tables),
   });
+  const { data: categoriesData } = useQuery({
+    queryKey: ['menu-categories'],
+    queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data),
+  });
+  const categories: any[] = (categoriesData as any)?.data?.categories || [];
 
   const reservations: any[] = (listData as any)?.data || [];
   const totalRecords: number = (listData as any)?.totalRecords || 0;
@@ -525,16 +568,18 @@ export default function ReservationsPage() {
               {STATUSES.map((s) => <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>)}
             </Select>
 
-            {/* Branch */}
-            <Select value={branchFlt} onChange={(e) => setBranchFlt(e.target.value)}>
-              <option value="">All Branches</option>
-              {(branchList || []).map((b: any) => <option key={b._id} value={b._id}>{b.name}</option>)}
-            </Select>
+            {/* Branch - only for Super Admin and Admin */}
+            {canSelectBranch && (
+              <Select value={branchFlt} onChange={(e) => setBranchFlt(e.target.value)}>
+                <option value="">All Branches</option>
+                {(branchList || []).map((b: any) => <option key={b._id} value={b._id}>{b.name}</option>)}
+              </Select>
+            )}
 
-            {/* Table */}
-            <Select value={tableFlt} onChange={(e) => setTableFlt(e.target.value)} disabled={!branch}>
-              <option value="">All Tables</option>
-              {(tableList || []).map((t: any) => <option key={t._id} value={t._id}>{t.name}</option>)}
+            {/* Menu Category */}
+            <Select value={menuCategoryFlt} onChange={(e) => setMenuCategoryFlt(e.target.value)}>
+              <option value="">All Categories</option>
+              {categories.map((cat: any) => <option key={cat._id} value={cat._id}>{cat.name}</option>)}
             </Select>
 
             {/* Date from */}
@@ -558,8 +603,8 @@ export default function ReservationsPage() {
                 </button>
               ))}
             </div>
-            {(search || status || dateFrom || dateTo || branchFlt || tableFlt) && (
-              <button onClick={() => { setSearch(''); setStatus(''); setDateFrom(''); setDateTo(''); setBranchFlt(''); setTableFlt(''); }}
+            {(search || status || dateFrom || dateTo || branchFlt || menuCategoryFlt) && (
+              <button onClick={() => { setSearch(''); setStatus(''); setDateFrom(''); setDateTo(''); setBranchFlt(''); setMenuCategoryFlt(''); }}
                 className="text-xs text-red-400 hover:text-red-300 underline">
                 Clear filters
               </button>

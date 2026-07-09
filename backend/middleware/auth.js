@@ -29,7 +29,7 @@ const protect = asyncHandler(async (req, res, next) => {
     return next(new AppError('Invalid or expired session. Please log in again.', 401));
   }
 
-  const user = await User.findById(decoded.id);
+  const user = await User.findById(decoded.id).populate('branches');
   if (!user || !user.isActive) {
     return next(new AppError('User no longer exists or is deactivated.', 401));
   }

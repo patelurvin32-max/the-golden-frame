@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { customerService, menuService, billingService } from '@/services';
+import { customerService, menuService, billingService, branchService } from '@/services';
 import { useAppStore, useAuthStore } from '@/store';
-import type { Customer, MenuCategoryDoc, MenuItem } from '@/types';
+import type { Customer, MenuCategoryDoc, MenuItem, Branch } from '@/types';
 import {
   Button, Card, Input, Label, Select, PageHeader, Skeleton, EmptyState,
   Table2, TableHeader, TableBody, TableRow, TableHead, TableCell,
@@ -29,6 +29,8 @@ const emptyForm = {
   endTime: '',
   paymentStatus: 'unpaid' as 'paid' | 'unpaid' | 'refunded',
   paymentMethod: 'cash' as 'cash' | 'upi' | 'mixed',
+  cashAmount: '',
+  onlineAmount: '',
   numberOfPlayers: '',
 };
 
@@ -68,14 +70,28 @@ export default function CustomersPage() {
 
   const categories: MenuCategoryDoc[] = (categoriesData as any)?.data?.categories || [];
 
-  // Fetch all menu items (skip branch filter to show all items)
+  // Fetch branches for admin/super admin
+  const { data: branchesData } = useQuery({
+    queryKey: ['branches'],
+    queryFn: () => branchService.getAll().then((r) => r.data),
+    enabled: user?.role === 'admin' || user?.role === 'super_admin',
+  });
+
+  const branches: Branch[] = Array.isArray(branchesData) ? branchesData : (branchesData as any)?.data?.branches || [];
+
+  // Fetch menu items filtered by category and branch
+  const menuParams: Record<string, string> = { limit: '1000' };
+  if (form.menuCategoryId) menuParams.category = form.menuCategoryId;
+  if (form.branch) menuParams.branch = form.branch;
+  else if (selectedBranch) menuParams.branch = selectedBranch;
+
   const { data: menuItemsData } = useQuery({
-    queryKey: ['menu-items'],
-    queryFn: () => menuService.getAll({ skipBranchFilter: 'true', limit: '1000' }).then((r) => r.data),
+    queryKey: ['menu-items', form.menuCategoryId, form.branch || selectedBranch],
+    queryFn: () => menuService.getAll(menuParams).then((r) => r.data),
+    enabled: !!form.menuCategoryId,
   });
 
   const menuItems: MenuItem[] = (menuItemsData as any)?.data?.items || [];
-  // Temporarily show all menu items to debug
   const availableMenuItems = menuItems;
 
   const customers: Customer[] = (data as any)?.data?.customers || [];
@@ -169,6 +185,9 @@ export default function CustomersPage() {
     }
     
     // Validation
+    if ((user?.role === 'admin' || user?.role === 'super_admin') && !form.branch) {
+      toast.error('Branch is required'); return;
+    }
     if (!form.name) { toast.error('Full Name is required'); return; }
     if (!form.phone) { toast.error('Phone Number is required'); return; }
     if (!form.menuCategoryId) { toast.error('Menu Category is required'); return; }
@@ -177,12 +196,31 @@ export default function CustomersPage() {
     if (!form.paymentStatus) { toast.error('Payment Status is required'); return; }
     if (!form.paymentMethod) { toast.error('Payment Method is required'); return; }
 
+    // Mixed payment validation
+    if (form.paymentMethod === 'mixed') {
+      const cashAmount = Number(form.cashAmount) || 0;
+      const onlineAmount = Number(form.onlineAmount) || 0;
+      const totalPaid = cashAmount + onlineAmount;
+      const menuItem = availableMenuItems.find((i) => i._id === form.menuItemId);
+      const totalBill = menuItem?.price || 0;
+
+      if (totalPaid !== totalBill) {
+        toast.error(`Cash Amount + Online Amount must equal the total bill amount (${formatCurrency(totalBill)})`);
+        return;
+      }
+    }
+
     const payload = {
       ...form,
       branch,
       startTime: new Date(form.startTime).toISOString(),
       ...(form.endTime && { endTime: new Date(form.endTime).toISOString() }),
       ...(form.numberOfPlayers && { numberOfPlayers: parseInt(form.numberOfPlayers) }),
+      ...(form.paymentMethod === 'mixed' && {
+        cashAmount: Number(form.cashAmount) || 0,
+        onlineAmount: Number(form.onlineAmount) || 0,
+        totalPaid: (Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0),
+      }),
     };
 
     if (selected) {
@@ -206,12 +244,14 @@ export default function CustomersPage() {
       email: c.email || '',
       branch: c.branch as any,
       notes: c.notes || '',
-      menuCategoryId: c.menuCategoryId,
-      menuItemId: c.menuItemId,
+      menuCategoryId: (c.menuCategoryId as any)?._id || c.menuCategoryId || '',
+      menuItemId: (c.menuItemId as any)?._id || c.menuItemId || '',
       startTime: c.startTime ? new Date(c.startTime).toISOString().slice(0, 16) : '',
       endTime: c.endTime ? new Date(c.endTime).toISOString().slice(0, 16) : '',
       paymentStatus: c.paymentStatus,
       paymentMethod: c.paymentMethod as 'cash' | 'upi' | 'mixed',
+      cashAmount: (c as any).cashAmount ? String((c as any).cashAmount) : '',
+      onlineAmount: (c as any).onlineAmount ? String((c as any).onlineAmount) : '',
       numberOfPlayers: c.numberOfPlayers ? String(c.numberOfPlayers) : '',
     });
     setModal('edit');
@@ -255,6 +295,7 @@ export default function CustomersPage() {
                   <TableHead>Customer Name</TableHead>
                   <TableHead>Menu Category</TableHead>
                   <TableHead>Menu Item</TableHead>
+                  <TableHead>Bill Amount</TableHead>
                   <TableHead>Payment Method</TableHead>
                   <TableHead>Created At</TableHead>
                   <TableHead>Actions</TableHead>
@@ -270,6 +311,7 @@ export default function CustomersPage() {
                       <TableCell className="text-sm font-medium">{c.name}</TableCell>
                       <TableCell className="text-sm">{(c as any).menuCategoryId?.name || '—'}</TableCell>
                       <TableCell className="text-sm">{(c as any).menuItemId?.name || '—'}</TableCell>
+                      <TableCell className="text-sm font-medium">{formatCurrency((c as any).menuItemId?.price || 0)}</TableCell>
                       <TableCell className="text-sm capitalize">{c.paymentMethod}</TableCell>
                       <TableCell className="text-sm">{formatDate(c.createdAt || '', 'MMM dd, yyyy HH:mm')}</TableCell>
                       <TableCell>
@@ -334,6 +376,20 @@ export default function CustomersPage() {
           {/* Customer Info */}
           <div className="space-y-3">
             <h3 className="text-sm font-semibold text-muted-foreground">Customer Information</h3>
+            {(user?.role === 'admin' || user?.role === 'super_admin') && (
+              <div className="space-y-1.5">
+                <Label>Branch *</Label>
+                <Select
+                  value={form.branch}
+                  onChange={(e) => setForm((f) => ({ ...f, branch: e.target.value }))}
+                >
+                  <option value="">Select branch</option>
+                  {branches.map((branch) => (
+                    <option key={branch._id} value={branch._id}>{branch.name}</option>
+                  ))}
+                </Select>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Full Name *</Label>
@@ -470,6 +526,62 @@ export default function CustomersPage() {
                 </Select>
               </div>
             </div>
+
+            {/* Mixed Payment Fields */}
+            {form.paymentMethod === 'mixed' && (
+              <div className="space-y-3 mt-3 p-3 bg-muted/30 rounded-lg border border-border">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Cash Amount *</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={form.cashAmount}
+                      onChange={(e) => setForm((f) => ({ ...f, cashAmount: e.target.value }))}
+                      placeholder="Enter cash amount"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Online Amount *</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={form.onlineAmount}
+                      onChange={(e) => setForm((f) => ({ ...f, onlineAmount: e.target.value }))}
+                      placeholder="Enter online amount"
+                    />
+                  </div>
+                </div>
+                {/* Payment Summary */}
+                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-border">
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Total Paid</p>
+                    <p className="text-sm font-semibold">
+                      {formatCurrency((Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0))}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Remaining Balance</p>
+                    <p className="text-sm font-semibold">
+                      {formatCurrency(
+                        (Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) > 0
+                          ? Math.max(0, (availableMenuItems.find((i) => i._id === form.menuItemId)?.price || 0) - ((Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0)))
+                          : (availableMenuItems.find((i) => i._id === form.menuItemId)?.price || 0)
+                      )}
+                    </p>
+                  </div>
+                </div>
+                {/* Validation Error */}
+                {(Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) > 0 &&
+                 (Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) !== (availableMenuItems.find((i) => i._id === form.menuItemId)?.price || 0) && (
+                  <p className="text-xs text-red-400">
+                    Cash Amount + Online Amount must equal the total bill amount ({formatCurrency(availableMenuItems.find((i) => i._id === form.menuItemId)?.price || 0)})
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex gap-2 pt-2">

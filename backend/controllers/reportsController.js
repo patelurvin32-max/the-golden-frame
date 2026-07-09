@@ -27,6 +27,10 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
     todayRevenue,
     monthRevenue,
     yearRevenue,
+    todayCashCollection,
+    monthCashCollection,
+    todayOnlineCollection,
+    monthOnlineCollection,
     todayExpenses,
     monthExpenses,
     runningTables,
@@ -36,6 +40,72 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
     Bill.aggregate([{ $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: todayStart } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
     Bill.aggregate([{ $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: monthStart } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
     Bill.aggregate([{ $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: yearStart } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
+    // Cash collection (including mixed payments)
+    Payment.aggregate([
+      { $match: { ...matchBranch, createdAt: { $gte: todayStart } } },
+      {
+        $addFields: {
+          cashAmount: {
+            $cond: [
+              { $eq: ['$method', 'mixed'] },
+              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'cash'] } } }, 0] },
+              { $cond: [{ $eq: ['$method', 'cash'] }, { amount: '$amount' }, { amount: 0 }]
+              }
+            ]
+          }
+        }
+      },
+      { $group: { _id: null, total: { $sum: '$cashAmount.amount' } } }
+    ]),
+    Payment.aggregate([
+      { $match: { ...matchBranch, createdAt: { $gte: monthStart } } },
+      {
+        $addFields: {
+          cashAmount: {
+            $cond: [
+              { $eq: ['$method', 'mixed'] },
+              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'cash'] } } }, 0] },
+              { $cond: [{ $eq: ['$method', 'cash'] }, { amount: '$amount' }, { amount: 0 }]
+              }
+            ]
+          }
+        }
+      },
+      { $group: { _id: null, total: { $sum: '$cashAmount.amount' } } }
+    ]),
+    // Online collection (including mixed payments)
+    Payment.aggregate([
+      { $match: { ...matchBranch, createdAt: { $gte: todayStart } } },
+      {
+        $addFields: {
+          onlineAmount: {
+            $cond: [
+              { $eq: ['$method', 'mixed'] },
+              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'upi'] } } }, 0] },
+              { $cond: [{ $eq: ['$method', 'upi'] }, { amount: '$amount' }, { amount: 0 }]
+              }
+            ]
+          }
+        }
+      },
+      { $group: { _id: null, total: { $sum: '$onlineAmount.amount' } } }
+    ]),
+    Payment.aggregate([
+      { $match: { ...matchBranch, createdAt: { $gte: monthStart } } },
+      {
+        $addFields: {
+          onlineAmount: {
+            $cond: [
+              { $eq: ['$method', 'mixed'] },
+              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'upi'] } } }, 0] },
+              { $cond: [{ $eq: ['$method', 'upi'] }, { amount: '$amount' }, { amount: 0 }]
+              }
+            ]
+          }
+        }
+      },
+      { $group: { _id: null, total: { $sum: '$onlineAmount.amount' } } }
+    ]),
     Expense.aggregate([{ $match: { ...matchBranch, date: { $gte: todayStart } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     Expense.aggregate([{ $match: { ...matchBranch, date: { $gte: monthStart } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     Table.countDocuments({ ...(bf ? { branch: bf } : {}), status: 'running', isActive: true }),
@@ -48,6 +118,10 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
   const yearRev = yearRevenue[0]?.total || 0;
   const todayExp = todayExpenses[0]?.total || 0;
   const monthExp = monthExpenses[0]?.total || 0;
+  const todayCash = todayCashCollection[0]?.total || 0;
+  const monthCash = monthCashCollection[0]?.total || 0;
+  const todayOnline = todayOnlineCollection[0]?.total || 0;
+  const monthOnline = monthOnlineCollection[0]?.total || 0;
 
   res.status(200).json({
     success: true,
@@ -57,6 +131,10 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
       profit: { today: todayRev - todayExp, month: monthRev - monthExp },
       tables: { running: runningTables, available: availableTables },
       customersToday: todayCustomers,
+      collection: {
+        cash: { today: todayCash, month: monthCash },
+        online: { today: todayOnline, month: monthOnline },
+      },
     },
   });
 });
@@ -71,7 +149,7 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
 
   const dateFormat = groupBy === 'month' ? '%Y-%m' : groupBy === 'week' ? '%Y-%U' : '%Y-%m-%d';
 
-  const [revenue, expenses] = await Promise.all([
+  const [revenue, expenses, cashTotal, onlineTotal, customerCount] = await Promise.all([
     Bill.aggregate([
       { $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: from, $lte: to } } },
       { $group: { _id: { $dateToString: { format: dateFormat, date: '$createdAt' } }, total: { $sum: '$total' }, count: { $sum: 1 } } },
@@ -82,9 +160,56 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
       { $group: { _id: { $dateToString: { format: dateFormat, date: '$date' } }, total: { $sum: '$amount' } } },
       { $sort: { _id: 1 } },
     ]),
+    // Total cash payment
+    Payment.aggregate([
+      { $match: { ...matchBranch, createdAt: { $gte: from, $lte: to } } },
+      {
+        $addFields: {
+          cashAmount: {
+            $cond: [
+              { $eq: ['$method', 'mixed'] },
+              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'cash'] } } }, 0] },
+              { $cond: [{ $eq: ['$method', 'cash'] }, { amount: '$amount' }, { amount: 0 }]
+              }
+            ]
+          }
+        }
+      },
+      { $group: { _id: null, total: { $sum: '$cashAmount.amount' } } }
+    ]),
+    // Total online payment
+    Payment.aggregate([
+      { $match: { ...matchBranch, createdAt: { $gte: from, $lte: to } } },
+      {
+        $addFields: {
+          onlineAmount: {
+            $cond: [
+              { $eq: ['$method', 'mixed'] },
+              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'upi'] } } }, 0] },
+              { $cond: [{ $eq: ['$method', 'upi'] }, { amount: '$amount' }, { amount: 0 }]
+              }
+            ]
+          }
+        }
+      },
+      { $group: { _id: null, total: { $sum: '$onlineAmount.amount' } } }
+    ]),
+    // Total customers
+    Customer.countDocuments({ ...matchBranch, createdAt: { $gte: from, $lte: to } }),
   ]);
 
-  res.status(200).json({ success: true, data: { revenue, expenses } });
+  res.status(200).json({
+    success: true,
+    data: {
+      revenue,
+      expenses,
+      summary: {
+        totalCash: cashTotal[0]?.total || 0,
+        totalOnline: onlineTotal[0]?.total || 0,
+        totalCustomers: customerCount,
+      }
+    }
+  });
 });
 
 // GET /api/reports/table-usage?branch=&from=&to=

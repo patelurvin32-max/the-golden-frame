@@ -26,10 +26,18 @@ export const useAuthStore = create<AuthState>()(
       login: async (email, password) => {
         set({ isLoading: true });
         try {
+          console.log('Attempting login with email:', email);
           const res = await authService.login(email, password);
+          console.log('Login API response:', res);
           const { user, accessToken } = res.data.data;
           localStorage.setItem('accessToken', accessToken);
           set({ user, accessToken, isAuthenticated: true });
+          console.log('Login successful, user:', user, 'role:', user.role, 'isAuthenticated:', true);
+        } catch (error: any) {
+          console.error('Login failed in store:', error);
+          console.error('Error response:', error?.response?.data);
+          console.error('Error status:', error?.response?.status);
+          throw error;
         } finally {
           set({ isLoading: false });
         }

@@ -65,6 +65,8 @@ exports.createUser = asyncHandler(async (req, res, next) => {
     isActive,
   });
 
+  await user.populate('branches');
+
   await logActivity({
     userId: req.user._id,
     action: 'user.create',
@@ -101,7 +103,7 @@ exports.updateUser = asyncHandler(async (req, res, next) => {
     }
   });
 
-  const user = await User.findById(req.params.id);
+  const user = await User.findById(req.params.id).populate('branches');
   if (!user) return next(new AppError('User not found.', 404));
 
   Object.assign(user, updateData);

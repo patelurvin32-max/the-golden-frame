@@ -6,13 +6,11 @@ const customerController = require('../controllers/customerController');
 
 const router = express.Router();
 
-router.use(protect, requirePermission('customers:manage'));
-
+// Customer Routes - GET uses customers:view, others use customers:manage
 router
   .route('/')
-  .get(customerController.getCustomers)
-  .post(
-    [
+  .get(protect, requirePermission('customers:view'), customerController.getCustomers)
+  .post(protect, requirePermission('customers:create'), [
       body('name').notEmpty().withMessage('Full Name is required'),
       body('phone').notEmpty().withMessage('Phone Number is required'),
       // Branch is optional - will be auto-assigned from user for Branch Manager/Staff
@@ -32,8 +30,8 @@ router.get('/lookup/:phone', protect, customerController.lookupCustomer);
 
 router
   .route('/:id')
-  .get(customerController.getCustomer)
-  .patch(customerController.updateCustomer)
-  .delete(customerController.deleteCustomer);
+  .get(protect, requirePermission('customers:view'), customerController.getCustomer)
+  .patch(protect, requirePermission('customers:manage'), customerController.updateCustomer)
+  .delete(protect, requirePermission('customers:manage'), customerController.deleteCustomer);
 
 module.exports = router;

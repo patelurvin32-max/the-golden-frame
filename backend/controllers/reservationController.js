@@ -14,6 +14,7 @@ const buildFilter = (query, user) => {
   if (query.branch) filter.branch = query.branch;
   if (query.status) filter.status = query.status;
   if (query.table) filter.table = query.table;
+  if (query.menuCategoryId) filter.menuCategoryId = query.menuCategoryId;
 
   if (query.dateFrom || query.dateTo) {
     filter.reservationDate = {};
@@ -67,6 +68,8 @@ exports.getReservations = asyncHandler(async (req, res) => {
     Reservation.find(filter)
       .populate('branch', 'name code')
       .populate('table', 'name type hourlyRate')
+      .populate('menuCategoryId', 'name')
+      .populate('menuItemId', 'name price')
       .populate('createdBy', 'name')
       .sort(sort)
       .skip(skip)
@@ -128,6 +131,8 @@ exports.getReservation = asyncHandler(async (req, res, next) => {
   const reservation = await Reservation.findById(req.params.id)
     .populate('branch', 'name code')
     .populate('table', 'name type hourlyRate')
+    .populate('menuCategoryId', 'name')
+    .populate('menuItemId', 'name price')
     .populate('createdBy', 'name email');
 
   if (!reservation) return next(new AppError('Reservation not found.', 404));
@@ -176,6 +181,7 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     customerName, phoneNumber, email, branch, table,
     reservationDate, reservationTime, durationMinutes = 60,
     numberOfGuests, specialRequests, notes, status = 'pending',
+    menuCategoryId, menuItemId,
   } = req.body;
 
   // For Branch Manager and Staff, auto-assign branch from their assigned branches
@@ -193,6 +199,8 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     email,
     branch: finalBranch,
     table,
+    menuCategoryId,
+    menuItemId,
     reservationDate: new Date(reservationDate),
     reservationTime,
     durationMinutes,
@@ -206,7 +214,9 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
 
   const populated = await Reservation.findById(reservation._id)
     .populate('branch', 'name')
-    .populate('table', 'name type');
+    .populate('table', 'name type')
+    .populate('menuCategoryId', 'name')
+    .populate('menuItemId', 'name price');
 
   await logActivity({
     userId: req.user._id,
@@ -254,6 +264,7 @@ exports.updateReservation = asyncHandler(async (req, res, next) => {
   const allowed = [
     'customerName', 'phoneNumber', 'email', 'table', 'reservationDate', 'reservationTime',
     'durationMinutes', 'numberOfGuests', 'specialRequests', 'notes', 'status',
+    'menuCategoryId', 'menuItemId',
   ];
   allowed.forEach((key) => {
     if (req.body[key] !== undefined) reservation[key] = req.body[key];
@@ -262,7 +273,9 @@ exports.updateReservation = asyncHandler(async (req, res, next) => {
 
   const populated = await Reservation.findById(reservation._id)
     .populate('branch', 'name')
-    .populate('table', 'name type');
+    .populate('table', 'name type')
+    .populate('menuCategoryId', 'name')
+    .populate('menuItemId', 'name price');
 
   await logActivity({
     userId: req.user._id,

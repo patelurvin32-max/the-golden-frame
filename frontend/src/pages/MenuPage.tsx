@@ -69,12 +69,14 @@ export default function MenuPage() {
     page: String(page),
     limit: String(pageSize),
   };
-  if (selectedBranch) params.branch = String(selectedBranch);
+  // For Branch Managers, use their assigned branch if selectedBranch is not set
+  const branchToUse = selectedBranch || (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : user.branches[0]._id) : null);
+  if (branchToUse) params.branch = String(branchToUse);
   if (filterCategory !== 'all') params.category = String(filterCategory);
   if (search) params.search = search;
 
   const { data: menuData, isLoading: itemsLoading } = useQuery({
-    queryKey: ['menu', selectedBranch, filterCategory, search, page, pageSize],
+    queryKey: ['menu', branchToUse, filterCategory, search, page, pageSize],
     queryFn: () => menuService.getAll(params).then((r) => r.data.data),
     enabled: activeTab === 'items'
   });
@@ -122,7 +124,7 @@ export default function MenuPage() {
   // Reset page when filters change
   useEffect(() => {
     setPage(1);
-  }, [selectedBranch, filterCategory, search]);
+  }, [branchToUse, filterCategory, search]);
 
   // ── Mutations ────────────────────────────────────────────────────────────────
   const createMutation = useMutation({

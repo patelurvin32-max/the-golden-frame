@@ -36,14 +36,28 @@ app.set('trust proxy', true);
 app.use(helmet());
 app.use(mongoSanitize());
 
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,
-  max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 1000,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, message: 'Too many requests. Please slow down.' },
-});
-app.use('/api/', limiter);
+// Disable rate limiting in development for easier testing
+if (process.env.NODE_ENV !== 'production') {
+  const limiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 10000, // 10,000 requests per minute in development
+    standardHeaders: true,
+    legacyHeaders: false,
+    trustProxy: true, // Required when app.set('trust proxy', true) is set
+    message: { success: false, message: 'Too many requests. Please slow down.' },
+  });
+  app.use('/api/', limiter);
+} else {
+  const limiter = rateLimit({
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 1000,
+    standardHeaders: true,
+    legacyHeaders: false,
+    trustProxy: true, // Required when app.set('trust proxy', true) is set
+    message: { success: false, message: 'Too many requests. Please slow down.' },
+  });
+  app.use('/api/', limiter);
+}
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
 const allowedOrigins = process.env.CLIENT_URL 

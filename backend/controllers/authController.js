@@ -30,12 +30,25 @@ const issueTokens = async (user, res) => {
 // POST /api/auth/login
 exports.login = asyncHandler(async (req, res, next) => {
   const { email, password } = req.body;
+  console.log('Login attempt for email:', email, 'password length:', password?.length);
   if (!email || !password) return next(new AppError('Email and password are required.', 400));
 
-  const user = await User.findOne({ email: email.toLowerCase() }).select('+password +refreshTokens');
-  if (!user || !(await user.comparePassword(password))) {
+  const user = await User.findOne({ email: email.toLowerCase() }).select('+password +refreshTokens').populate('branches');
+  console.log('User found:', !!user, 'Email:', user?.email, 'Role:', user?.role);
+  
+  if (!user) {
+    console.log('User not found');
     return next(new AppError('Incorrect email or password.', 401));
   }
+  
+  const passwordMatch = await user.comparePassword(password);
+  console.log('Password match:', passwordMatch);
+  
+  if (!passwordMatch) {
+    console.log('Password comparison failed');
+    return next(new AppError('Incorrect email or password.', 401));
+  }
+  
   if (!user.isActive) return next(new AppError('Your account has been deactivated.', 403));
 
   const { accessToken, refreshToken } = await issueTokens(user, res);
@@ -96,7 +109,8 @@ exports.logout = asyncHandler(async (req, res) => {
 
 // GET /api/auth/me
 exports.getMe = asyncHandler(async (req, res) => {
-  res.status(200).json({ success: true, data: { user: req.user.toSafeObject() } });
+  const user = await User.findById(req.user._id).populate('branches');
+  res.status(200).json({ success: true, data: { user: user.toSafeObject() } });
 });
 
 // PATCH /api/auth/change-password

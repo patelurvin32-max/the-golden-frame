@@ -2,6 +2,7 @@ const { MenuItem, MenuCategory } = require('../models/Operations');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ROLES } = require('../config/constants');
+const mongoose = require('mongoose');
 
 // GET /api/menu
 exports.getMenuItems = asyncHandler(async (req, res) => {
@@ -11,14 +12,22 @@ exports.getMenuItems = asyncHandler(async (req, res) => {
 
   const filter = { status: 'Active' };
   
-  // Only apply branch filter if explicitly requested (for menu management page)
-  // For customer form, we want to show all menu items
-  if (req.query.applyBranchFilter === 'true' && req.user.role !== ROLES.SUPER_ADMIN) {
+  // Apply branch filter based on user role
+  // Super Admin can see all branches (or filter by explicit branch parameter)
+  // Branch Managers and Staff can only see their assigned branches
+  console.log('Menu items query - User role:', req.user.role, 'User branches:', req.user.branches, 'Query branch:', req.query.branch);
+  if (req.user.role !== ROLES.SUPER_ADMIN) {
     filter.branch = { $in: req.user.branches };
+    console.log('Applied branch filter for non-super admin:', filter.branch);
   }
-  if (req.query.branch) filter.branch = req.query.branch;
+  // Super Admin can optionally filter by specific branch
+  if (req.query.branch && req.user.role === ROLES.SUPER_ADMIN) {
+    filter.branch = req.query.branch;
+    console.log('Applied branch filter for super admin:', filter.branch);
+  }
+  console.log('Final filter:', filter);
   if (req.query.category && req.query.category !== 'all') {
-    filter.category = req.query.category;
+    filter.category = new mongoose.Types.ObjectId(req.query.category);
   }
   if (req.query.search) {
     const searchRegex = new RegExp(req.query.search, 'i');
@@ -98,12 +107,21 @@ exports.getMenuCategories = asyncHandler(async (req, res) => {
   if (req.query.activeOnly === 'true') {
     filter.status = 'Active';
   }
+  console.log('Menu categories query - User role:', req.user.role, 'User branches:', req.user.branches, 'Query branch:', req.query.branch);
   const categories = await MenuCategory.find(filter).sort('name');
+  console.log('Found categories:', categories.length);
 
   // Compute Total Items for each category
   const categoriesWithCount = await Promise.all(
     categories.map(async (cat) => {
-      const totalItems = await MenuItem.countDocuments({ category: cat._id, status: 'Active' });
+      // Apply branch filter to item count based on user role
+      const itemFilter = { category: cat._id, status: 'Active' };
+      if (req.user.role !== ROLES.SUPER_ADMIN) {
+        itemFilter.branch = { $in: req.user.branches };
+      } else if (req.query.branch) {
+        itemFilter.branch = req.query.branch;
+      }
+      const totalItems = await MenuItem.countDocuments(itemFilter);
       return {
         _id: cat._id,
         name: cat.name,
@@ -184,6 +202,8 @@ exports.getMenuItem = asyncHandler(async (req, res, next) => {
 exports.createMenuItem = asyncHandler(async (req, res, next) => {
   const { name, category, price, halfPrice, fullPrice, description, availability, status, branch } = req.body;
 
+  console.log('Create menu item - User role:', req.user.role, 'User branches:', req.user.branches, 'Request branch:', branch);
+
   // Validate required fields
   if (!name || !name.trim()) return next(new AppError('Item name is required.', 400));
   if (!category) return next(new AppError('Category is required.', 400));
@@ -199,10 +219,12 @@ exports.createMenuItem = asyncHandler(async (req, res, next) => {
   let finalBranch = branch;
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
     finalBranch = req.user.branches[0];
+    console.log('Auto-assigned branch for non-super admin:', finalBranch);
   }
 
   if (!finalBranch) return next(new AppError('Branch is required.', 400));
 
+  console.log('Creating menu item with branch:', finalBranch);
   const item = await MenuItem.create({
     name: name.trim(),
     category,
@@ -215,6 +237,7 @@ exports.createMenuItem = asyncHandler(async (req, res, next) => {
     branch: finalBranch
   });
 
+  console.log('Created menu item:', item._id, 'with branch:', item.branch);
   res.status(201).json({ success: true, data: { item } });
 });
 
