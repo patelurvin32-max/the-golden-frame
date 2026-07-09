@@ -10,7 +10,16 @@ exports.getBranches = asyncHandler(async (req, res) => {
   if (req.user.role !== ROLES.SUPER_ADMIN) {
     filter = { _id: { $in: req.user.branches } };
   }
+  
+  console.log('🏢 Fetching branches with filter:', filter);
+  console.log('🏢 User role:', req.user.role);
+  console.log('🏢 User branches:', req.user.branches);
+  
   const branches = await Branch.find(filter).sort('name');
+  
+  console.log('🏢 Branches found:', branches.length);
+  branches.forEach(b => console.log('🏢 Branch:', b.name, b.code, 'Active:', b.isActive));
+  
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.status(200).json({ success: true, results: branches.length, data: { branches } });
 });
