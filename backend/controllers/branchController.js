@@ -23,19 +23,55 @@ exports.getBranch = asyncHandler(async (req, res, next) => {
 });
 
 // POST /api/branches (super admin only)
-exports.createBranch = asyncHandler(async (req, res) => {
-  const branch = await Branch.create({ ...req.body, createdBy: req.user._id });
+exports.createBranch = asyncHandler(async (req, res, next) => {
+  console.log('🏢 Creating branch with data:', req.body);
+  
+  // Validate required fields
+  const { name, code } = req.body;
+  if (!name || !code) {
+    console.log('❌ Missing required fields:', { name: !!name, code: !!code });
+    return next(new AppError('Branch name and code are required.', 400));
+  }
 
-  await logActivity({
-    userId: req.user._id,
-    action: 'branch.create',
-    entity: 'Branch',
-    entityId: branch._id,
-    description: `${req.user.name} created branch ${branch.name}`,
-    ipAddress: req.ip,
+  // Check for duplicate name or code
+  const existingBranch = await Branch.findOne({ 
+    $or: [{ name }, { code: code.toUpperCase() }] 
   });
+  
+  if (existingBranch) {
+    console.log('❌ Branch already exists:', existingBranch.name, existingBranch.code);
+    return next(new AppError('Branch with this name or code already exists.', 400));
+  }
 
-  res.status(201).json({ success: true, data: { branch } });
+  try {
+    const branch = await Branch.create({ 
+      ...req.body, 
+      code: code.toUpperCase(),
+      createdBy: req.user._id 
+    });
+    
+    console.log('✅ Branch created successfully:', branch.name, branch.code);
+
+    await logActivity({
+      userId: req.user._id,
+      action: 'branch.create',
+      entity: 'Branch',
+      entityId: branch._id,
+      description: `${req.user.name} created branch ${branch.name}`,
+      ipAddress: req.ip,
+    });
+
+    res.status(201).json({ success: true, data: { branch } });
+  } catch (error) {
+    console.error('❌ Branch creation error:', error.message);
+    console.error('❌ Validation errors:', error.errors);
+    
+    if (error.code === 11000) {
+      return next(new AppError('Branch with this name or code already exists.', 400));
+    }
+    
+    return next(new AppError('Failed to create branch. Please check your input.', 400));
+  }
 });
 
 // PATCH /api/branches/:id (super admin only)
