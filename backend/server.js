@@ -105,7 +105,7 @@ const seedDefaults = async () => {
         }
       }
     } else {
-      console.log(`✅ Branch already exists: ${branchName}`);
+      console.log(`✅ Branch already exists: ${branchName} (${code})`);
     }
   }
 
