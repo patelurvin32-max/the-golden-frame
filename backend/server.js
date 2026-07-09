@@ -109,14 +109,17 @@ const seedDefaults = async () => {
     }
   }
 
-  // Remove branches that are not in DEFAULT_BRANCHES
-  const defaultCodes = DEFAULT_BRANCHES.map(name => name.toUpperCase().replace(/\s+/g, ''));
-  const extraBranches = await Branch.find({ code: { $nin: defaultCodes } });
-  if (extraBranches.length > 0) {
-    console.log(`🗑️  Removing ${extraBranches.length} extra branch(es) not in DEFAULT_BRANCHES...`);
-    for (const branch of extraBranches) {
-      await Branch.findByIdAndDelete(branch._id);
-      console.log(`   Removed branch: ${branch.name} (${branch.code})`);
+  // Remove branches that are not in DEFAULT_BRANCHES (only in development)
+  // In production, we trust the database as the source of truth
+  if (process.env.NODE_ENV !== 'production') {
+    const defaultCodes = DEFAULT_BRANCHES.map(name => name.toUpperCase().replace(/\s+/g, ''));
+    const extraBranches = await Branch.find({ code: { $nin: defaultCodes } });
+    if (extraBranches.length > 0) {
+      console.log(`🗑️  Removing ${extraBranches.length} extra branch(es) not in DEFAULT_BRANCHES...`);
+      for (const branch of extraBranches) {
+        await Branch.findByIdAndDelete(branch._id);
+        console.log(`   Removed branch: ${branch.name} (${branch.code})`);
+      }
     }
   }
 
