@@ -1,5 +1,6 @@
 const Customer = require('../models/Customer');
 const OrderCounter = require('../models/OrderCounter');
+const { Inventory, MenuItem, StockTransaction } = require('../models/Operations');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ROLES } = require('../config/constants');
@@ -119,22 +120,31 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     const cashAmount = Number(req.body.cashAmount) || 0;
     const onlineAmount = Number(req.body.onlineAmount) || 0;
     const totalPaid = cashAmount + onlineAmount;
-
-    // Get the menu item price to validate against
-    const MenuItem = require('../models/Operations').MenuItem;
-    const menuItem = await MenuItem.findById(req.body.menuItemId);
-    const totalBill = menuItem?.price || 0;
+    const totalBill = Number(req.body.billAmount) || 0;
 
     if (totalPaid !== totalBill) {
       return next(new AppError(`Cash Amount + Online Amount must equal the total bill amount (${totalBill})`, 400));
     }
   }
+
+  // Validate stock if menu item is linked to inventory
+  const menuItem = await MenuItem.findById(req.body.menuItemId).populate('inventoryItem');
+  if (menuItem && menuItem.inventoryItem) {
+    const inventoryItem = await Inventory.findById(menuItem.inventoryItem._id);
+    if (inventoryItem && inventoryItem.currentStock < 1) {
+      return next(new AppError(`Insufficient stock. Only ${inventoryItem.currentStock} items available.`, 400));
+    }
+  }
   
-  // Check if customer with this phone number already exists
-  const existingCustomer = await Customer.findOne({ phone: req.body.phone, isActive: true });
+  // Check if customer with this phone number already exists in the same branch
+  const existingCustomer = await Customer.findOne({ 
+    phone: req.body.phone, 
+    branch: req.body.branch,
+    isActive: true 
+  });
   
   if (existingCustomer) {
-    // Return existing customer instead of creating duplicate
+    // Return existing customer instead of creating duplicate in same branch
     return res.status(200).json({ 
       success: true, 
       message: 'Existing customer found. Customer details have been loaded.',
@@ -147,24 +157,129 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   req.body.orderId = orderId;
   
   const customer = await Customer.create(req.body);
+
+  // Deduct stock if menu item is linked to inventory
+  if (menuItem && menuItem.inventoryItem) {
+    const inventoryItem = await Inventory.findById(menuItem.inventoryItem._id);
+    if (inventoryItem) {
+      const previousStock = inventoryItem.currentStock;
+      inventoryItem.currentStock -= 1;
+      await inventoryItem.save();
+
+      // Create stock transaction record
+      await StockTransaction.create({
+        inventoryItem: inventoryItem._id,
+        customer: customer._id,
+        quantity: 1,
+        type: 'sale',
+        previousStock,
+        newStock: inventoryItem.currentStock,
+        branch: inventoryItem.branch,
+        notes: `Sold to customer ${customer.name}`,
+        createdBy: req.user._id,
+      });
+
+      // Check for low stock alert
+      if (inventoryItem.currentStock <= inventoryItem.minimumStockAlert) {
+        const { Notification } = require('../models/System');
+        await Notification.create({
+          branch: inventoryItem.branch,
+          type: 'low_inventory',
+          title: 'Low Stock Alert',
+          message: `${inventoryItem.name} is running low (${inventoryItem.currentStock} ${inventoryItem.unit} remaining).`,
+          targetRoles: ['super_admin', 'branch_manager'],
+          meta: { inventoryId: inventoryItem._id.toString() },
+        });
+      }
+    }
+  }
+
   res.status(201).json({ success: true, data: { customer } });
 });
 
 // PATCH /api/customers/:id
 exports.updateCustomer = asyncHandler(async (req, res, next) => {
+  // Get the existing customer to check if menuItemId is changing
+  const existingCustomer = await Customer.findById(req.params.id);
+  if (!existingCustomer) return next(new AppError('Customer not found.', 404));
+
   // Validate mixed payment amounts if payment method is mixed
   if (req.body.paymentMethod === 'mixed') {
     const cashAmount = Number(req.body.cashAmount) || 0;
     const onlineAmount = Number(req.body.onlineAmount) || 0;
     const totalPaid = cashAmount + onlineAmount;
-
-    // Get the menu item price to validate against
-    const MenuItem = require('../models/Operations').MenuItem;
-    const menuItem = await MenuItem.findById(req.body.menuItemId);
-    const totalBill = menuItem?.price || 0;
+    const totalBill = Number(req.body.billAmount) || 0;
 
     if (totalPaid !== totalBill) {
       return next(new AppError(`Cash Amount + Online Amount must equal the total bill amount (${totalBill})`, 400));
+    }
+  }
+
+  // Handle stock restoration and deduction if menuItemId is changing
+  if (req.body.menuItemId && req.body.menuItemId !== existingCustomer.menuItemId.toString()) {
+    // Restore stock for previous menu item
+    const previousMenuItem = await MenuItem.findById(existingCustomer.menuItemId).populate('inventoryItem');
+    if (previousMenuItem && previousMenuItem.inventoryItem) {
+      const previousInventoryItem = await Inventory.findById(previousMenuItem.inventoryItem._id);
+      if (previousInventoryItem) {
+        const previousStock = previousInventoryItem.currentStock;
+        previousInventoryItem.currentStock += 1;
+        await previousInventoryItem.save();
+
+        // Create stock transaction record for refund
+        await StockTransaction.create({
+          inventoryItem: previousInventoryItem._id,
+          customer: existingCustomer._id,
+          quantity: 1,
+          type: 'refund',
+          previousStock,
+          newStock: previousInventoryItem.currentStock,
+          branch: previousInventoryItem.branch,
+          notes: `Restored from customer order update`,
+          createdBy: req.user._id,
+        });
+      }
+    }
+
+    // Validate and deduct stock for new menu item
+    const newMenuItem = await MenuItem.findById(req.body.menuItemId).populate('inventoryItem');
+    if (newMenuItem && newMenuItem.inventoryItem) {
+      const newInventoryItem = await Inventory.findById(newMenuItem.inventoryItem._id);
+      if (newInventoryItem && newInventoryItem.currentStock < 1) {
+        return next(new AppError(`Insufficient stock. Only ${newInventoryItem.currentStock} items available.`, 400));
+      }
+
+      if (newInventoryItem) {
+        const previousStock = newInventoryItem.currentStock;
+        newInventoryItem.currentStock -= 1;
+        await newInventoryItem.save();
+
+        // Create stock transaction record for sale
+        await StockTransaction.create({
+          inventoryItem: newInventoryItem._id,
+          customer: existingCustomer._id,
+          quantity: 1,
+          type: 'sale',
+          previousStock,
+          newStock: newInventoryItem.currentStock,
+          branch: newInventoryItem.branch,
+          notes: `Sold to customer ${existingCustomer.name} (order update)`,
+          createdBy: req.user._id,
+        });
+
+        // Check for low stock alert
+        if (newInventoryItem.currentStock <= newInventoryItem.minimumStockAlert) {
+          const { Notification } = require('../models/System');
+          await Notification.create({
+            branch: newInventoryItem.branch,
+            type: 'low_inventory',
+            title: 'Low Stock Alert',
+            message: `${newInventoryItem.name} is running low (${newInventoryItem.currentStock} ${newInventoryItem.unit} remaining).`,
+            targetRoles: ['super_admin', 'branch_manager'],
+            meta: { inventoryId: newInventoryItem._id.toString() },
+          });
+        }
+      }
     }
   }
 
@@ -178,7 +293,33 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
 
 // DELETE /api/customers/:id (soft delete)
 exports.deleteCustomer = asyncHandler(async (req, res, next) => {
-  const customer = await Customer.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
+  const customer = await Customer.findById(req.params.id);
   if (!customer) return next(new AppError('Customer not found.', 404));
+
+  // Restore stock if menu item is linked to inventory
+  const menuItem = await MenuItem.findById(customer.menuItemId).populate('inventoryItem');
+  if (menuItem && menuItem.inventoryItem) {
+    const inventoryItem = await Inventory.findById(menuItem.inventoryItem._id);
+    if (inventoryItem) {
+      const previousStock = inventoryItem.currentStock;
+      inventoryItem.currentStock += 1;
+      await inventoryItem.save();
+
+      // Create stock transaction record for refund
+      await StockTransaction.create({
+        inventoryItem: inventoryItem._id,
+        customer: customer._id,
+        quantity: 1,
+        type: 'refund',
+        previousStock,
+        newStock: inventoryItem.currentStock,
+        branch: inventoryItem.branch,
+        notes: `Restored from customer deletion`,
+        createdBy: req.user._id,
+      });
+    }
+  }
+
+  await Customer.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
   res.status(200).json({ success: true, message: 'Customer removed.' });
 });

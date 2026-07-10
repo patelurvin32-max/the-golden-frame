@@ -28,7 +28,8 @@ const customerSchema = new mongoose.Schema(
     cashAmount: { type: Number, default: 0 },
     onlineAmount: { type: Number, default: 0 },
     totalPaid: { type: Number, default: 0 },
-    numberOfPlayers: { type: Number, min: 1 },
+    billAmount: { type: Number, required: true }, // Manually entered bill/total amount
+    additionalPlayers: { type: String, trim: true },
     isActive: { type: Boolean, default: true },
   },
   { timestamps: true }
@@ -46,5 +47,12 @@ customerSchema.index({ branch: 1 });
 customerSchema.index({ paymentStatus: 1 });
 customerSchema.index({ paymentMethod: 1 });
 customerSchema.index({ createdAt: -1 });
+// Compound indexes for pending payments queries
+customerSchema.index({ paymentStatus: 1, createdAt: -1 });
+customerSchema.index({ paymentStatus: 1, branch: 1, createdAt: -1 });
+customerSchema.index({ paymentStatus: 1, billAmount: -1 });
+customerSchema.index({ branch: 1, paymentStatus: 1, createdAt: -1 });
+customerSchema.index({ billAmount: -1 });
+customerSchema.index({ createdAt: -1, paymentStatus: 1 });
 
 module.exports = mongoose.model('Customer', customerSchema);

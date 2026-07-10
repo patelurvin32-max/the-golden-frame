@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
@@ -7,30 +8,24 @@ const { logActivity } = require('../services/activityLogService');
 const cookieOptions = (maxAgeMs) => {
   const isProduction = process.env.NODE_ENV === 'production';
   const isCrossOrigin = process.env.CLIENT_URL && !process.env.CLIENT_URL.includes('localhost');
-  
-  // For cross-origin production (Vercel + Render), use 'none' with secure
-  // For localhost or same-origin, use 'lax' for better compatibility
-  const sameSiteValue = (isProduction && isCrossOrigin) ? 'none' : 'lax';
-  
+  const sameSiteValue = isProduction && isCrossOrigin ? 'none' : 'lax';
+
   const options = {
     httpOnly: true,
-    secure: isProduction || sameSiteValue === 'none', // Required for sameSite=none
+    secure: isProduction || sameSiteValue === 'none',
     sameSite: sameSiteValue,
     maxAge: maxAgeMs,
   };
-  
-  // Add domain for production if CLIENT_URL is set
+
   if (isProduction && process.env.CLIENT_URL) {
     try {
       const clientUrl = new URL(process.env.CLIENT_URL);
       options.domain = clientUrl.hostname;
-      console.log('🍪 Setting cookie domain:', options.domain);
     } catch (err) {
-      console.warn('⚠️  Could not parse CLIENT_URL for cookie domain:', err.message);
+      console.warn('Could not parse CLIENT_URL for cookie domain:', err.message);
     }
   }
-  
-  console.log('🍪 Cookie options:', { ...options, domain: options.domain || 'not set' });
+
   return options;
 };
 
@@ -38,9 +33,8 @@ const issueTokens = async (user, res) => {
   const accessToken = user.generateAccessToken();
   const refreshToken = user.generateRefreshToken();
 
-  // Store a hash of the refresh token (rotation-friendly, revocable)
   const hashed = crypto.createHash('sha256').update(refreshToken).digest('hex');
-  user.refreshTokens = [...(user.refreshTokens || []), hashed].slice(-5); // keep last 5 sessions
+  user.refreshTokens = [...(user.refreshTokens || []), hashed].slice(-5);
   user.lastLogin = new Date();
   await user.save({ validateBeforeSave: false });
 
@@ -53,25 +47,19 @@ const issueTokens = async (user, res) => {
 // POST /api/auth/login
 exports.login = asyncHandler(async (req, res, next) => {
   const { email, password } = req.body;
-  console.log('Login attempt for email:', email, 'password length:', password?.length);
   if (!email || !password) return next(new AppError('Email and password are required.', 400));
 
   const user = await User.findOne({ email: email.toLowerCase() }).select('+password +refreshTokens').populate('branches');
-  console.log('User found:', !!user, 'Email:', user?.email, 'Role:', user?.role);
-  
+
   if (!user) {
-    console.log('User not found');
     return next(new AppError('Incorrect email or password.', 401));
   }
-  
+
   const passwordMatch = await user.comparePassword(password);
-  console.log('Password match:', passwordMatch);
-  
   if (!passwordMatch) {
-    console.log('Password comparison failed');
     return next(new AppError('Incorrect email or password.', 401));
   }
-  
+
   if (!user.isActive) return next(new AppError('Your account has been deactivated.', 403));
 
   const { accessToken, refreshToken } = await issueTokens(user, res);
@@ -93,14 +81,13 @@ exports.login = asyncHandler(async (req, res, next) => {
 
 // POST /api/auth/refresh
 exports.refresh = asyncHandler(async (req, res, next) => {
-  const jwt = require('jsonwebtoken');
   const token = req.cookies?.refreshToken || req.body.refreshToken;
   if (!token) return next(new AppError('Refresh token missing.', 401));
 
   let decoded;
   try {
     decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
-  } catch (err) {
+  } catch {
     return next(new AppError('Invalid or expired refresh token.', 401));
   }
 
@@ -110,7 +97,6 @@ exports.refresh = asyncHandler(async (req, res, next) => {
     return next(new AppError('Refresh token not recognized. Please log in again.', 401));
   }
 
-  // Rotate: remove old, issue new
   user.refreshTokens = user.refreshTokens.filter((t) => t !== hashed);
   const { accessToken, refreshToken } = await issueTokens(user, res);
 
@@ -125,13 +111,11 @@ exports.logout = asyncHandler(async (req, res) => {
     req.user.refreshTokens = (req.user.refreshTokens || []).filter((t) => t !== hashed);
     await req.user.save({ validateBeforeSave: false });
   }
-  
-  // Clear cookies with the same options used to set them
+
   const clearOptions = cookieOptions(0);
   res.clearCookie('accessToken', clearOptions);
   res.clearCookie('refreshToken', clearOptions);
-  
-  console.log('🍪 Cookies cleared on logout');
+
   res.status(200).json({ success: true, message: 'Logged out successfully.' });
 });
 
@@ -151,7 +135,7 @@ exports.changePassword = asyncHandler(async (req, res, next) => {
   }
 
   user.password = newPassword;
-  user.refreshTokens = []; // force re-login on all devices
+  user.refreshTokens = [];
   await user.save();
 
   res.status(200).json({ success: true, message: 'Password updated successfully. Please log in again.' });

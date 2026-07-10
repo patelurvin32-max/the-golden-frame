@@ -10,6 +10,7 @@ interface AuthState {
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  silentLogout: () => void;
   setUser: (user: User) => void;
   setToken: (token: string) => void;
   fetchMe: () => Promise<void>;
@@ -26,17 +27,11 @@ export const useAuthStore = create<AuthState>()(
       login: async (email, password) => {
         set({ isLoading: true });
         try {
-          console.log('Attempting login with email:', email);
           const res = await authService.login(email, password);
-          console.log('Login API response:', res);
           const { user, accessToken } = res.data.data;
           localStorage.setItem('accessToken', accessToken);
           set({ user, accessToken, isAuthenticated: true });
-          console.log('Login successful, user:', user, 'role:', user.role, 'isAuthenticated:', true);
         } catch (error: any) {
-          console.error('Login failed in store:', error);
-          console.error('Error response:', error?.response?.data);
-          console.error('Error status:', error?.response?.status);
           throw error;
         } finally {
           set({ isLoading: false });
@@ -46,18 +41,26 @@ export const useAuthStore = create<AuthState>()(
       logout: async () => {
         try { await authService.logout(); } catch { /* ignore */ }
         localStorage.removeItem('accessToken');
-        set({ user: null, accessToken: null, isAuthenticated: false });
+        set({ user: null, accessToken: null, isAuthenticated: false, isLoading: false });
+      },
+
+      silentLogout: () => {
+        localStorage.removeItem('accessToken');
+        set({ user: null, accessToken: null, isAuthenticated: false, isLoading: false });
       },
 
       setUser: (user) => set({ user }),
       setToken: (token) => set({ accessToken: token }),
 
       fetchMe: async () => {
+        set({ isLoading: true });
         try {
           const res = await authService.getMe();
           set({ user: res.data.data.user, isAuthenticated: true });
         } catch {
           set({ user: null, isAuthenticated: false });
+        } finally {
+          set({ isLoading: false });
         }
       },
     }),
@@ -67,6 +70,13 @@ export const useAuthStore = create<AuthState>()(
     }
   )
 );
+
+if (typeof window !== 'undefined' && !(window as any).__authLogoutListenerInstalled) {
+  (window as any).__authLogoutListenerInstalled = true;
+  window.addEventListener('auth:logout', () => {
+    useAuthStore.getState().silentLogout();
+  });
+}
 
 // Global app store for branch selection & theme
 interface AppState {

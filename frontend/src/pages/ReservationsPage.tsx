@@ -459,7 +459,7 @@ export default function ReservationsPage() {
   const { data: statsData } = useQuery({
     queryKey: ['reservation-stats', branch],
     queryFn: () => reservationService.getStats(branch ? { branch } : {}).then((r) => (r.data as any).data),
-    refetchInterval: 30000,
+    refetchInterval: 300000,
   });
 
   const { data: branchList } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });

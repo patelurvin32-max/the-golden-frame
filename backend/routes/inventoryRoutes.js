@@ -21,6 +21,7 @@ router.post('/', [
   body('branch').optional({ checkFalsy: true }).isMongoId(),
   body('category').isMongoId()
 ], validate, inventoryController.createInventoryItem);
+router.get('/report', inventoryController.getInventoryReport);
 router.get('/:id', inventoryController.getInventoryItem);
 router.patch('/:id', inventoryController.updateInventoryItem);
 router.post('/:id/restock', [body('quantity').isInt({ min: 1 })], validate, inventoryController.restockItem);

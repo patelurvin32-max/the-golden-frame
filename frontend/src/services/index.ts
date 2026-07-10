@@ -1,5 +1,5 @@
 import api from './api';
-import type { ApiResponse, AttendanceHistoryStats, AttendanceRecord, AttendanceStats, Bill, Branch, Customer, DashboardStats, Expense, InventoryItem, MenuItem, Session, Table, User } from '@/types';
+import type { ApiResponse, AttendanceHistoryStats, AttendanceRecord, AttendanceStats, Bill, Branch, Customer, DashboardStats, Expense, InventoryCategoryDoc, InventoryItem, InventoryReportItem, InventoryReportSummary, MenuItem, Session, Table, User } from '@/types';
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 export const authService = {
@@ -78,9 +78,11 @@ export const inventoryService = {
   delete: (id: string) => api.delete(`/inventory/${id}`),
 
   getCategories: (params?: Record<string, string>) => api.get<ApiResponse<{ categories: any[] }>>('/inventory/categories', { params }),
-  createCategory: (data: { name: string; status: 'Active' | 'Inactive' }) => api.post<ApiResponse<{ category: any }>>('/inventory/categories', data),
+  createCategory: (data: { name: string; branch?: string; status: 'Active' | 'Inactive' }) => api.post<ApiResponse<{ category: any }>>('/inventory/categories', data),
   updateCategory: (id: string, data: { name?: string; status?: 'Active' | 'Inactive' }) => api.patch<ApiResponse<{ category: any }>>(`/inventory/categories/${id}`, data),
   deleteCategory: (id: string) => api.delete(`/inventory/categories/${id}`),
+
+  getReport: (params?: Record<string, string>) => api.get<ApiResponse<{ summary: InventoryReportSummary; items: InventoryReportItem[] }>>('/inventory/report', { params }),
 };
 
 // ── Menu ───────────────────────────────────────────────────────────────────────

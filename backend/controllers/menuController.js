@@ -15,17 +15,14 @@ exports.getMenuItems = asyncHandler(async (req, res) => {
   // Apply branch filter based on user role
   // Super Admin can see all branches (or filter by explicit branch parameter)
   // Branch Managers and Staff can only see their assigned branches
-  console.log('Menu items query - User role:', req.user.role, 'User branches:', req.user.branches, 'Query branch:', req.query.branch);
   if (req.user.role !== ROLES.SUPER_ADMIN) {
     filter.branch = { $in: req.user.branches };
-    console.log('Applied branch filter for non-super admin:', filter.branch);
   }
   // Super Admin can optionally filter by specific branch
   if (req.query.branch && req.user.role === ROLES.SUPER_ADMIN) {
-    filter.branch = req.query.branch;
-    console.log('Applied branch filter for super admin:', filter.branch);
+    filter.branch = new mongoose.Types.ObjectId(req.query.branch);
   }
-  console.log('Final filter:', filter);
+  
   if (req.query.category && req.query.category !== 'all') {
     filter.category = new mongoose.Types.ObjectId(req.query.category);
   }
@@ -107,9 +104,7 @@ exports.getMenuCategories = asyncHandler(async (req, res) => {
   if (req.query.activeOnly === 'true') {
     filter.status = 'Active';
   }
-  console.log('Menu categories query - User role:', req.user.role, 'User branches:', req.user.branches, 'Query branch:', req.query.branch);
   const categories = await MenuCategory.find(filter).sort('name');
-  console.log('Found categories:', categories.length);
 
   // Compute Total Items for each category
   const categoriesWithCount = await Promise.all(
@@ -119,7 +114,7 @@ exports.getMenuCategories = asyncHandler(async (req, res) => {
       if (req.user.role !== ROLES.SUPER_ADMIN) {
         itemFilter.branch = { $in: req.user.branches };
       } else if (req.query.branch) {
-        itemFilter.branch = req.query.branch;
+        itemFilter.branch = new mongoose.Types.ObjectId(req.query.branch);
       }
       const totalItems = await MenuItem.countDocuments(itemFilter);
       return {

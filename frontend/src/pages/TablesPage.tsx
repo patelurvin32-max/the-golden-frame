@@ -171,7 +171,7 @@ export default function TablesPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['tables', selectedBranch],
     queryFn: () => tableService.getAll(params).then((r) => r.data.data.tables),
-    refetchInterval: 20000,
+    refetchInterval: 300000,
   });
 
   // Real-time socket updates

@@ -8,7 +8,11 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 30_000,        // 30s before background refetch
       gcTime: 5 * 60_000,       // 5min cache
-      retry: 1,
+      retry: (failureCount, error: unknown) => {
+        const status = (error as { response?: { status?: number } })?.response?.status;
+        if (status === 401) return false;
+        return failureCount < 1;
+      },
       refetchOnWindowFocus: false,
     },
   },
@@ -17,7 +21,7 @@ const queryClient = new QueryClient({
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AppRoutes />
       </BrowserRouter>
     </QueryClientProvider>

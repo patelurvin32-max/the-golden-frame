@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { menuService, branchService } from '@/services';
+import { menuService, branchService, inventoryService } from '@/services';
 import { useAppStore, useAuthStore } from '@/store';
-import type { MenuItem, MenuCategoryDoc } from '@/types';
+import type { MenuItem, MenuCategoryDoc, InventoryItem } from '@/types';
 import {
   Button, Card, Input, Label, Select, PageHeader, Skeleton, EmptyState,
   Table2, TableHeader, TableBody, TableRow, TableHead, TableCell,
@@ -13,6 +13,7 @@ import { formatCurrency, cn } from '@/utils';
 const emptyForm = {
   name: '',
   category: '',
+  inventoryItem: '',
   price: 0,
   halfPrice: '',
   fullPrice: '',
@@ -54,6 +55,11 @@ export default function MenuPage() {
     queryFn: () => branchService.getAll().then((r) => r.data.data.branches)
   });
 
+  const { data: inventoryItems } = useQuery({
+    queryKey: ['inventory-items'],
+    queryFn: () => inventoryService.getAll({ limit: '1000' }).then((r) => r.data.data.items),
+  });
+
   const { data: activeCategories } = useQuery({
     queryKey: ['menu-categories', 'active'],
     queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data.data.categories)
@@ -92,6 +98,7 @@ export default function MenuPage() {
       setForm({
         name: selected.name,
         category: selected.category?._id || '',
+        inventoryItem: selected.inventoryItem || '',
         price: selected.price,
         halfPrice: selected.halfPrice ? String(selected.halfPrice) : '',
         fullPrice: selected.fullPrice ? String(selected.fullPrice) : '',
@@ -509,6 +516,18 @@ export default function MenuPage() {
                 {(activeCategories || []).map((c: any) => <option key={c._id} value={c._id}>{c.name}</option>)}
               </Select>
             </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Link to Inventory Item (Optional)</Label>
+            <Select value={form.inventoryItem} onChange={(e) => setForm((f) => ({ ...f, inventoryItem: e.target.value }))}>
+              <option value="">No inventory link</option>
+              {(inventoryItems || []).map((item: InventoryItem) => (
+                <option key={item._id} value={item._id}>
+                  {item.name} ({item.currentStock || 0} {item.unit})
+                </option>
+              ))}
+            </Select>
+            <p className="text-xs text-muted-foreground">Linking to inventory will automatically track stock when this menu item is ordered.</p>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5"><Label>Price *</Label><Input type="number" step="0.01" min="0" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: Number(e.target.value) }))} /></div>

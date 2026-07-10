@@ -235,17 +235,17 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
   
   if (!customer) return next(new AppError('Customer not found.', 404));
 
-  // Build line items from customer's menu item
+  // Build line items from customer's billAmount
   const items = [];
   let subtotal = 0;
 
   if (customer.menuItemId) {
     const menuItem = customer.menuItemId;
-    const itemTotal = menuItem.price || 0;
+    const itemTotal = customer.billAmount || menuItem.price || 0;
     items.push({
       description: `${customer.menuCategoryId?.name || 'Menu'} - ${menuItem.name}`,
       quantity: 1,
-      unitPrice: menuItem.price || 0,
+      unitPrice: customer.billAmount || menuItem.price || 0,
       total: itemTotal,
       type: 'other',
     });

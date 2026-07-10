@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { path: '/customers', label: 'Customers', icon: '👥', roles: ['super_admin', 'branch_manager', 'staff', 'cashier'] },
   { path: '/menu', label: 'Menu', icon: '🍽️', roles: ['super_admin', 'branch_manager'] },
   { path: '/inventory', label: 'Inventory', icon: '📦', roles: ['super_admin', 'branch_manager'] },
+  { path: '/pending-payments', label: 'Pending Payments', icon: '💳', roles: ['super_admin', 'branch_manager', 'staff', 'cashier'] },
   { path: '/expenses', label: 'Expenses', icon: '💸', roles: ['super_admin', 'branch_manager'] },
   { path: '/attendance', label: 'Attendance', icon: '✅', roles: ['super_admin', 'branch_manager'] },
   { path: '/reports', label: 'Reports', icon: '📈', roles: ['super_admin', 'branch_manager'] },
@@ -38,7 +39,7 @@ export const Sidebar = () => {
         >
           {/* Logo */}
           <div className="flex items-center gap-3 px-6 py-5 border-b border-border">
-            <div className="h-9 w-9 rounded-xl gradient-brand flex items-center justify-center text-lg">🎱</div>
+            <img src="/assets/tgf.jpg" alt="The Golden Frame" className="h-9 w-9 rounded-xl object-contain" />
             <div>
               <p className="font-bold text-foreground leading-none">The Golden Frame</p>
             </div>

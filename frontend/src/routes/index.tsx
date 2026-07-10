@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore, useAppStore } from '@/store';
 import { AppLayout } from '@/components/layout/AppLayout';
@@ -19,10 +19,13 @@ import {
 import AttendancePage from '@/pages/AttendancePage';
 import SettingsPage from '@/pages/SettingsPage';
 import ReservationsPage from '@/pages/ReservationsPage';
+import PendingPaymentsPage from '@/pages/PendingPaymentsPage';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 
 // ── Auth guard ─────────────────────────────────────────────────────────────────
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
-  const { isAuthenticated, user } = useAuthStore();
+  const { isAuthenticated, isLoading, user } = useAuthStore();
+  if (isLoading) return <LoadingPage />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (roles && user && !roles.includes(user.role)) return <Navigate to="/" replace />;
   return <>{children}</>;
@@ -45,11 +48,15 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
 
 // ── Root: silently re-hydrate user on first load ───────────────────────────────
 function AuthHydrator({ children }: { children: React.ReactNode }) {
-  const { fetchMe, isAuthenticated } = useAuthStore();
+  const { fetchMe, isAuthenticated, isLoading } = useAuthStore();
+  const hasAttemptedHydration = useRef(false);
   useEffect(() => {
     const token = localStorage.getItem('accessToken');
-    if (token && !isAuthenticated) fetchMe();
-  }, []);
+    if (token && !isAuthenticated && !isLoading && !hasAttemptedHydration.current) {
+      hasAttemptedHydration.current = true;
+      fetchMe();
+    }
+  }, [fetchMe, isAuthenticated, isLoading]);
   return <>{children}</>;
 }
 
@@ -71,6 +78,7 @@ export function AppRoutes() {
             <Route path="customers" element={<CustomersPage />} />
             <Route path="menu" element={<ProtectedRoute roles={['super_admin', 'branch_manager']}><MenuPage /></ProtectedRoute>} />
             <Route path="inventory" element={<InventoryPage />} />
+            <Route path="pending-payments" element={<PendingPaymentsPage />} />
             <Route path="expenses" element={<ExpensesPage />} />
             <Route path="attendance" element={<AttendancePage />} />
             <Route path="bookings" element={<BookingsPage />} />

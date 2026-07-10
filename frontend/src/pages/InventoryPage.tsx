@@ -14,8 +14,9 @@ const emptyForm = {
   name: '',
   category: '',
   unit: 'pcs',
-  stockQuantity: 0,
-  lowStockThreshold: 5,
+  openingStock: 0,
+  currentStock: 0,
+  minimumStockAlert: 5,
   purchasePrice: 0,
   sellingPrice: 0,
   sku: '',
@@ -104,8 +105,9 @@ export default function InventoryPage() {
         name: selected.name,
         category: selected.category?._id || '',
         unit: selected.unit,
-        stockQuantity: selected.stockQuantity,
-        lowStockThreshold: selected.lowStockThreshold,
+        openingStock: selected.openingStock || 0,
+        currentStock: selected.currentStock || 0,
+        minimumStockAlert: selected.minimumStockAlert || 5,
         purchasePrice: selected.purchasePrice,
         sellingPrice: selected.sellingPrice || 0,
         sku: selected.sku || '',
@@ -190,7 +192,7 @@ export default function InventoryPage() {
   });
 
   const saveCategoryMutation = useMutation({
-    mutationFn: (data: { name: string; status: 'Active' | 'Inactive' }) => {
+    mutationFn: (data: { name: string; branch?: string; status: 'Active' | 'Inactive' }) => {
       if (selectedCategory) {
         return inventoryService.updateCategory(selectedCategory._id, data);
       }
@@ -249,7 +251,9 @@ export default function InventoryPage() {
     const payload = {
       ...form,
       name: form.name.trim(),
-      branch
+      branch,
+      // Set currentStock to openingStock for new items
+      currentStock: selected ? form.currentStock : form.openingStock
     };
 
     if (selected) {
@@ -261,10 +265,17 @@ export default function InventoryPage() {
 
   const handleSaveCategory = () => {
     if (!categoryForm.name.trim()) { toast.error('Category name is required'); return; }
-    saveCategoryMutation.mutate({
+    const payload: any = {
       name: categoryForm.name.trim(),
       status: categoryForm.status
-    });
+    };
+    if (canSelectBranch && selectedBranch) {
+      payload.branch = selectedBranch;
+    } else if (!canSelectBranch && user?.branches?.[0]) {
+      const branchId = typeof user.branches[0] === 'string' ? user.branches[0] : user.branches[0]._id;
+      payload.branch = branchId;
+    }
+    saveCategoryMutation.mutate(payload);
   };
 
   const handleDeleteCategory = (cat: InventoryCategoryDoc) => {
@@ -377,7 +388,7 @@ export default function InventoryPage() {
                       <TableHead>Category</TableHead>
                       <TableHead>Item Name</TableHead>
                       <TableHead>SKU</TableHead>
-                      <TableHead>Quantity</TableHead>
+                      <TableHead>Current Stock</TableHead>
                       <TableHead>Unit</TableHead>
                       <TableHead>Purchase Price</TableHead>
                       <TableHead>Selling Price</TableHead>
@@ -389,7 +400,7 @@ export default function InventoryPage() {
                     {items.map((item, index) => {
                       const prevItem = index > 0 ? items[index - 1] : null;
                       const isFirstOfCategory = !prevItem || prevItem.category?._id !== item.category?._id;
-                      const isLow = item.stockQuantity <= item.lowStockThreshold;
+                      const isLow = (item.currentStock || 0) <= (item.minimumStockAlert || 5);
 
                       return (
                         <React.Fragment key={item._id}>
@@ -406,7 +417,7 @@ export default function InventoryPage() {
                             <TableCell className="font-mono text-xs">{item.sku || '—'}</TableCell>
                             <TableCell>
                               <span className={cn('font-bold', isLow ? 'text-red-400' : 'text-foreground')}>
-                                {item.stockQuantity}
+                                {item.currentStock || 0}
                               </span>
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground">{item.unit}</TableCell>
@@ -549,8 +560,8 @@ export default function InventoryPage() {
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5"><Label>Unit</Label><Input value={form.unit} onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))} /></div>
-            <div className="space-y-1.5"><Label>Initial Stock</Label><Input type="number" value={form.stockQuantity} onChange={(e) => setForm((f) => ({ ...f, stockQuantity: Number(e.target.value) }))} disabled={!!selected} /></div>
-            <div className="space-y-1.5"><Label>Low Stock At</Label><Input type="number" value={form.lowStockThreshold} onChange={(e) => setForm((f) => ({ ...f, lowStockThreshold: Number(e.target.value) }))} /></div>
+            <div className="space-y-1.5"><Label>Opening Stock</Label><Input type="number" value={form.openingStock} onChange={(e) => setForm((f) => ({ ...f, openingStock: Number(e.target.value) }))} disabled={!!selected} /></div>
+            <div className="space-y-1.5"><Label>Minimum Stock Alert</Label><Input type="number" value={form.minimumStockAlert} onChange={(e) => setForm((f) => ({ ...f, minimumStockAlert: Number(e.target.value) }))} /></div>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5"><Label>Purchase Price (₹)</Label><Input type="number" step="0.01" value={form.purchasePrice} onChange={(e) => setForm((f) => ({ ...f, purchasePrice: Number(e.target.value) }))} /></div>
@@ -581,7 +592,7 @@ export default function InventoryPage() {
           <div className="space-y-1.5"><Label>Quantity to Add *</Label><Input type="number" min={1} value={restockForm.quantity} onChange={(e) => setRestockForm((f) => ({ ...f, quantity: Number(e.target.value) }))} /></div>
           <div className="space-y-1.5"><Label>Cost per Unit (₹)</Label><Input type="number" step="0.01" value={restockForm.cost} onChange={(e) => setRestockForm((f) => ({ ...f, cost: Number(e.target.value) }))} /></div>
           <div className="space-y-1.5"><Label>Supplier</Label><Input value={restockForm.supplier} onChange={(e) => setRestockForm((f) => ({ ...f, supplier: e.target.value }))} /></div>
-          <p className="text-xs text-muted-foreground">Current stock: <strong>{selected?.stockQuantity} {selected?.unit}</strong> → after restock: <strong>{(selected?.stockQuantity || 0) + restockForm.quantity}</strong></p>
+          <p className="text-xs text-muted-foreground">Current stock: <strong>{selected?.currentStock || 0} {selected?.unit}</strong> → after restock: <strong>{(selected?.currentStock || 0) + restockForm.quantity}</strong></p>
           <div className="flex gap-2 pt-1">
             <Button variant="outline" className="flex-1" onClick={() => setModal(null)}>Cancel</Button>
             <Button className="flex-1" loading={restockMutation.isPending}

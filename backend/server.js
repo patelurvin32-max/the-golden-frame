@@ -12,7 +12,7 @@ const server = http.createServer(app);
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 const allowedOrigins = process.env.CLIENT_URL 
   ? process.env.CLIENT_URL.split(',').map(o => o.trim())
-  : ['http://localhost:5173', 'http://localhost:5174'];
+  : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:4173'];
 
 console.log('🔌 Socket.io allowed origins:', allowedOrigins);
 

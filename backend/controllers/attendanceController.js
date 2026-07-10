@@ -425,26 +425,37 @@ exports.getAttendanceHistory = asyncHandler(async (req, res, next) => {
 
 exports.markAttendance = asyncHandler(async (req, res, next) => {
   const { employee, branch, date, status } = req.body;
+  console.log('📝 Mark attendance request:', { employee, branch, date, status });
+  console.log('👤 User:', req.user._id, req.user.role);
+  console.log('🏢 User branches:', req.user.branches);
+  
   if (!employee || !date) return next(new AppError('Employee and date are required.', 400));
   ensureKnownStatus(status);
 
   // For Branch Manager and Staff, auto-assign branch from their assigned branches
   let finalBranch = branch;
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
-    finalBranch = req.user.branches[0];
+    const userBranch = req.user.branches[0];
+    console.log('🔍 User branch type:', typeof userBranch);
+    console.log('🔍 User branch value:', JSON.stringify(userBranch));
+    finalBranch = typeof userBranch === 'string' ? userBranch : (userBranch._id ? userBranch._id.toString() : userBranch.toString());
+    console.log('✅ Final branch:', finalBranch);
   }
 
   if (!finalBranch) return next(new AppError('Branch is required.', 400));
 
   const normalizedDate = toDateOnly(date);
+  console.log('📅 Normalized date:', normalizedDate);
   if (!normalizedDate) return next(new AppError('Invalid date.', 400));
 
   const payload = buildAttendancePayload(req.body, req.user);
+  console.log('📦 Payload:', payload);
+  
+  console.log('🔍 Finding/updating attendance record...');
   const record = await Attendance.findOneAndUpdate(
     { employee, date: normalizedDate },
     {
       $set: {
-        branch: finalBranch,
         status: payload.status,
         checkIn: payload.checkIn,
         checkOut: payload.checkOut,
@@ -465,7 +476,8 @@ exports.markAttendance = asyncHandler(async (req, res, next) => {
     },
     { upsert: true, new: true, runValidators: true }
   ).populate('employee', 'name role email phone branches').populate('branch', 'name code').populate('markedBy', 'name role');
-
+  
+  console.log('✅ Attendance record saved:', record._id);
   res.status(200).json({ success: true, data: { record } });
 });
 
@@ -479,7 +491,8 @@ exports.bulkMarkAttendance = asyncHandler(async (req, res, next) => {
   // For Branch Manager and Staff, auto-assign branch from their assigned branches
   let finalBranch = branch;
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
-    finalBranch = req.user.branches[0];
+    const userBranch = req.user.branches[0];
+    finalBranch = typeof userBranch === 'string' ? userBranch : (userBranch._id ? userBranch._id.toString() : userBranch.toString());
   }
 
   if (!finalBranch) return next(new AppError('Branch is required.', 400));
@@ -494,7 +507,6 @@ exports.bulkMarkAttendance = asyncHandler(async (req, res, next) => {
         filter: { employee: employeeId, date: normalizedDate },
         update: {
           $set: {
-            branch: finalBranch,
             status: payload.status,
             checkIn: payload.checkIn,
             checkOut: payload.checkOut,

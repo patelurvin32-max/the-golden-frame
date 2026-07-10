@@ -11,7 +11,7 @@ export type PaymentStatus = 'unpaid' | 'paid' | 'partial';
 export type BookingStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled';
 export type MembershipTier = 'silver' | 'gold' | 'platinum';
 export type ExpenseCategory = 'rent' | 'electricity' | 'salary' | 'internet' | 'maintenance' | 'suppliers' | 'others';
-export type InventoryCategory = 'cue_stick' | 'cue_tips' | 'balls' | 'chalk' | 'gloves' | 'food' | 'cold_drinks' | 'snacks' | 'other';
+export type InventoryCategoryType = 'cue_stick' | 'cue_tips' | 'balls' | 'chalk' | 'gloves' | 'food' | 'cold_drinks' | 'snacks' | 'other';
 export type AttendanceStatus = 'present' | 'absent' | 'half_day' | 'leave' | 'weekly_off' | 'holiday';
 
 export interface User {
@@ -97,6 +97,7 @@ export interface Customer {
   paymentStatus: 'paid' | 'unpaid' | 'refunded';
   paymentMethod: 'cash' | 'upi' | 'mixed';
   numberOfPlayers?: number;
+  billAmount: number;
   createdAt?: string;
 }
 
@@ -154,12 +155,15 @@ export interface InventoryItem {
   branch: any;
   category: InventoryCategoryDoc;
   unit: string;
-  stockQuantity: number;
-  lowStockThreshold: number;
+  stockQuantity?: number;
+  lowStockThreshold?: number;
   purchasePrice: number;
   sellingPrice?: number;
   sku?: string;
   isActive: boolean;
+  openingStock?: number;
+  currentStock?: number;
+  minimumStockAlert?: number;
 }
 
 export interface MenuCategoryDoc {
@@ -176,6 +180,7 @@ export interface MenuItem {
   name: string;
   branch: any;
   category: MenuCategoryDoc;
+  inventoryItem?: string;
   price: number;
   halfPrice?: number;
   fullPrice?: number;
@@ -262,6 +267,40 @@ export interface AttendanceHistoryStats {
   overtimeMinutes: number;
   workingMinutes: number;
   monthlyAttendancePercentage: number;
+}
+
+export interface StockTransaction {
+  _id: string;
+  inventoryItem: string;
+  customer?: string;
+  quantity: number;
+  type: 'sale' | 'refund' | 'restock' | 'adjustment';
+  previousStock: number;
+  newStock: number;
+  branch: any;
+  notes?: string;
+  createdBy?: string;
+  createdAt: string;
+}
+
+export interface InventoryReportItem {
+  _id: string;
+  name: string;
+  category: InventoryCategoryDoc;
+  openingStock: number;
+  soldQuantity: number;
+  remainingStock: number;
+  status: 'normal' | 'low_stock' | 'out_of_stock';
+  unit: string;
+  purchasePrice: number;
+  sellingPrice?: number;
+}
+
+export interface InventoryReportSummary {
+  totalItems: number;
+  lowStockItems: number;
+  outOfStockItems: number;
+  totalValue: number;
 }
 
 export interface ApiResponse<T> {

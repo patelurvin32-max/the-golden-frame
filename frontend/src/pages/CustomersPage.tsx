@@ -32,6 +32,8 @@ const emptyForm = {
   cashAmount: '',
   onlineAmount: '',
   numberOfPlayers: '',
+  additionalPlayers: '',
+  billAmount: '',
 };
 
 const PAYMENT_STATUSES = ['paid', 'unpaid', 'refunded'] as const;
@@ -82,7 +84,7 @@ export default function CustomersPage() {
   // Fetch menu items filtered by category and branch
   const menuParams: Record<string, string> = { limit: '1000' };
   if (form.menuCategoryId) menuParams.category = form.menuCategoryId;
-  if (form.branch) menuParams.branch = form.branch;
+  if (form.branch) menuParams.branch = form.branch as string;
   else if (selectedBranch) menuParams.branch = selectedBranch;
 
   const { data: menuItemsData } = useQuery({
@@ -92,7 +94,15 @@ export default function CustomersPage() {
   });
 
   const menuItems: MenuItem[] = (menuItemsData as any)?.data?.items || [];
-  const availableMenuItems = menuItems;
+  
+  // Deduplicate menu items by name when viewing all branches
+  const availableMenuItems = menuItems.reduce((unique: MenuItem[], item: MenuItem) => {
+    const exists = unique.find((u) => u.name === item.name);
+    if (!exists) {
+      unique.push(item);
+    }
+    return unique;
+  }, []);
 
   const customers: Customer[] = (data as any)?.data?.customers || [];
   const total: number = (data as any)?.total || 0;
@@ -193,6 +203,7 @@ export default function CustomersPage() {
     if (!form.menuCategoryId) { toast.error('Menu Category is required'); return; }
     if (!form.menuItemId) { toast.error('Menu Item is required'); return; }
     if (!form.startTime) { toast.error('Start Time is required'); return; }
+    if (!form.billAmount) { toast.error('Total Amount is required'); return; }
     if (!form.paymentStatus) { toast.error('Payment Status is required'); return; }
     if (!form.paymentMethod) { toast.error('Payment Method is required'); return; }
 
@@ -201,8 +212,7 @@ export default function CustomersPage() {
       const cashAmount = Number(form.cashAmount) || 0;
       const onlineAmount = Number(form.onlineAmount) || 0;
       const totalPaid = cashAmount + onlineAmount;
-      const menuItem = availableMenuItems.find((i) => i._id === form.menuItemId);
-      const totalBill = menuItem?.price || 0;
+      const totalBill = Number(form.billAmount) || 0;
 
       if (totalPaid !== totalBill) {
         toast.error(`Cash Amount + Online Amount must equal the total bill amount (${formatCurrency(totalBill)})`);
@@ -213,6 +223,7 @@ export default function CustomersPage() {
     const payload = {
       ...form,
       branch,
+      billAmount: Number(form.billAmount),
       startTime: new Date(form.startTime).toISOString(),
       ...(form.endTime && { endTime: new Date(form.endTime).toISOString() }),
       ...(form.numberOfPlayers && { numberOfPlayers: parseInt(form.numberOfPlayers) }),
@@ -242,7 +253,7 @@ export default function CustomersPage() {
       name: c.name,
       phone: c.phone,
       email: c.email || '',
-      branch: c.branch as any,
+      branch: (c.branch as any)?._id || c.branch || '',
       notes: c.notes || '',
       menuCategoryId: (c.menuCategoryId as any)?._id || c.menuCategoryId || '',
       menuItemId: (c.menuItemId as any)?._id || c.menuItemId || '',
@@ -253,6 +264,8 @@ export default function CustomersPage() {
       cashAmount: (c as any).cashAmount ? String((c as any).cashAmount) : '',
       onlineAmount: (c as any).onlineAmount ? String((c as any).onlineAmount) : '',
       numberOfPlayers: c.numberOfPlayers ? String(c.numberOfPlayers) : '',
+      additionalPlayers: (c as any).additionalPlayers || '',
+      billAmount: String((c as any).billAmount || ''),
     });
     setModal('edit');
   };
@@ -311,7 +324,7 @@ export default function CustomersPage() {
                       <TableCell className="text-sm font-medium">{c.name}</TableCell>
                       <TableCell className="text-sm">{(c as any).menuCategoryId?.name || '—'}</TableCell>
                       <TableCell className="text-sm">{(c as any).menuItemId?.name || '—'}</TableCell>
-                      <TableCell className="text-sm font-medium">{formatCurrency((c as any).menuItemId?.price || 0)}</TableCell>
+                      <TableCell className="text-sm font-medium">{formatCurrency((c as any).billAmount || 0)}</TableCell>
                       <TableCell className="text-sm capitalize">{c.paymentMethod}</TableCell>
                       <TableCell className="text-sm">{formatDate(c.createdAt || '', 'MMM dd, yyyy HH:mm')}</TableCell>
                       <TableCell>
@@ -420,11 +433,11 @@ export default function CustomersPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Notes</Label>
+              <Label>Additional Players</Label>
               <Input
-                value={form.notes}
-                onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
-                placeholder="Enter notes (optional)"
+                value={form.additionalPlayers}
+                onChange={(e) => setForm((f) => ({ ...f, additionalPlayers: e.target.value }))}
+                placeholder="Enter player names (e.g., Jinesh)"
               />
             </div>
           </div>
@@ -455,7 +468,7 @@ export default function CustomersPage() {
                   <option value="">Select item</option>
                   {availableMenuItems.map((item) => (
                     <option key={item._id} value={item._id}>
-                      {item.name} - {formatCurrency(item.price)}
+                      {item.name}
                     </option>
                   ))}
                 </Select>
@@ -463,6 +476,23 @@ export default function CustomersPage() {
                   <p className="text-xs text-muted-foreground">No available items for this category</p>
                 )}
               </div>
+            </div>
+          </div>
+
+          {/* Total Amount */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-semibold text-muted-foreground">Total Amount</h3>
+            <div className="space-y-1.5">
+              <Label>Total Amount / Bill Amount *</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.billAmount}
+                onChange={(e) => setForm((f) => ({ ...f, billAmount: e.target.value }))}
+                placeholder="Enter total bill amount"
+              />
+              <p className="text-xs text-muted-foreground">Enter the total bill amount manually</p>
             </div>
           </div>
 
@@ -486,16 +516,6 @@ export default function CustomersPage() {
                   onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
                 />
               </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Number of Players</Label>
-              <Input
-                type="number"
-                min="1"
-                value={form.numberOfPlayers}
-                onChange={(e) => setForm((f) => ({ ...f, numberOfPlayers: e.target.value }))}
-                placeholder="Enter number of players (optional)"
-              />
             </div>
           </div>
 
@@ -567,21 +587,33 @@ export default function CustomersPage() {
                     <p className="text-sm font-semibold">
                       {formatCurrency(
                         (Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) > 0
-                          ? Math.max(0, (availableMenuItems.find((i) => i._id === form.menuItemId)?.price || 0) - ((Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0)))
-                          : (availableMenuItems.find((i) => i._id === form.menuItemId)?.price || 0)
+                          ? Math.max(0, (Number(form.billAmount) || 0) - ((Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0)))
+                          : (Number(form.billAmount) || 0)
                       )}
                     </p>
                   </div>
                 </div>
                 {/* Validation Error */}
                 {(Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) > 0 &&
-                 (Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) !== (availableMenuItems.find((i) => i._id === form.menuItemId)?.price || 0) && (
+                 (Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) !== (Number(form.billAmount) || 0) && (
                   <p className="text-xs text-red-400">
-                    Cash Amount + Online Amount must equal the total bill amount ({formatCurrency(availableMenuItems.find((i) => i._id === form.menuItemId)?.price || 0)})
+                    Cash Amount + Online Amount must equal the total bill amount ({formatCurrency(Number(form.billAmount) || 0)})
                   </p>
                 )}
               </div>
             )}
+          </div>
+
+          {/* Notes */}
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label>Notes</Label>
+              <Input
+                value={form.notes}
+                onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+                placeholder="Enter notes (optional)"
+              />
+            </div>
           </div>
 
           <div className="flex gap-2 pt-2">

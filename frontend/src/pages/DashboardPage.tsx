@@ -16,7 +16,7 @@ export default function DashboardPage() {
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ['dashboard-stats', selectedBranch],
     queryFn: () => reportService.getDashboard(branchParam).then((r) => r.data.data),
-    refetchInterval: 30000,
+    refetchInterval: 300000,
   });
 
   const { data: revenueData } = useQuery({
@@ -37,7 +37,7 @@ export default function DashboardPage() {
   const { data: tablesData } = useQuery({
     queryKey: ['tables-live', selectedBranch],
     queryFn: () => tableService.getAll(branchParam).then((r) => r.data.data.tables),
-    refetchInterval: 15000,
+    refetchInterval: 300000,
   });
 
   // Chart data: merge revenue & expense by date

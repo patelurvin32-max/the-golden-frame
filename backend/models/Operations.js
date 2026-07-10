@@ -6,12 +6,13 @@ const inventorySchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     category: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory', required: true },
-    sku: { type: String, trim: true },
-    unit: { type: String, default: 'pcs' },
-    stockQuantity: { type: Number, default: 0, min: 0 },
-    lowStockThreshold: { type: Number, default: 5 },
-    purchasePrice: { type: Number, default: 0 },
-    sellingPrice: { type: Number, default: 0 },
+    sku: { type: String, trim: true, unique: true, sparse: true },
+    unit: { type: String, required: true, default: 'pcs' },
+    openingStock: { type: Number, default: 0, min: 0 },
+    currentStock: { type: Number, default: 0, min: 0 },
+    minimumStockAlert: { type: Number, default: 5 },
+    purchasePrice: { type: Number, required: true, min: 0 },
+    sellingPrice: { type: Number, required: true, min: 0 },
     purchaseHistory: [
       {
         quantity: Number,
@@ -79,6 +80,7 @@ const menuItemSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     category: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuCategory', required: true },
+    inventoryItem: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory' },
     price: { type: Number, required: true, min: 0 },
     halfPrice: { type: Number, min: 0 },
     fullPrice: { type: Number, min: 0 },
@@ -97,10 +99,34 @@ menuItemSchema.index({ availability: 1 });
 menuItemSchema.index({ status: 1 });
 menuItemSchema.index({ createdAt: -1 });
 
+// Stock Transaction Schema
+const stockTransactionSchema = new mongoose.Schema(
+  {
+    inventoryItem: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory', required: true },
+    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
+    quantity: { type: Number, required: true },
+    type: { type: String, enum: ['sale', 'refund', 'restock', 'adjustment'], required: true },
+    previousStock: { type: Number, required: true },
+    newStock: { type: Number, required: true },
+    branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
+    notes: { type: String, trim: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  },
+  { timestamps: true }
+);
+
+// Indexes for stock transactions
+stockTransactionSchema.index({ inventoryItem: 1 });
+stockTransactionSchema.index({ customer: 1 });
+stockTransactionSchema.index({ type: 1 });
+stockTransactionSchema.index({ branch: 1 });
+stockTransactionSchema.index({ createdAt: -1 });
+
 module.exports = {
   Inventory: mongoose.model('Inventory', inventorySchema),
   Expense: mongoose.model('Expense', expenseSchema),
   MembershipPlan: mongoose.model('MembershipPlan', membershipPlanSchema),
   MenuCategory: mongoose.model('MenuCategory', menuCategorySchema),
   MenuItem: mongoose.model('MenuItem', menuItemSchema),
+  StockTransaction: mongoose.model('StockTransaction', stockTransactionSchema),
 };

@@ -19,7 +19,7 @@ export const Navbar = () => {
   const { data: notifData } = useQuery({
     queryKey: ['notifications'],
     queryFn: () => notificationService.getAll().then((r) => r.data as any),
-    refetchInterval: 30000,
+    refetchInterval: 300000,
   });
 
   const notifications: Notification[] = notifData?.data?.notifications || [];

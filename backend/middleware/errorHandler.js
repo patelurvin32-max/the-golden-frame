@@ -47,6 +47,16 @@ module.exports = (err, req, res, next) => {
   err.statusCode = err.statusCode || 500;
   err.status = err.status || 'error';
 
+  // Always log the error details for debugging
+  console.error('❌ ERROR:', {
+    message: err.message,
+    statusCode: err.statusCode,
+    stack: err.stack,
+    path: req.path,
+    method: req.method,
+    body: req.body,
+  });
+
   if (process.env.NODE_ENV === 'development') {
     sendErrorDev(err, res);
     return;

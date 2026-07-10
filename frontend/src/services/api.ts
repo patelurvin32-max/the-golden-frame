@@ -1,11 +1,11 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 
-const BASE_URL = import.meta.env.VITE_API_URL 
-  ? `${import.meta.env.VITE_API_URL}/api`
-  : '/api';
+const API_BASE_URL = import.meta.env.DEV
+  ? '/api'
+  : (import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api');
 
 export const api = axios.create({
-  baseURL: BASE_URL,
+  baseURL: API_BASE_URL,
   withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
 });
@@ -28,17 +28,26 @@ const processQueue = (error: unknown, token: string | null) => {
   failedQueue = [];
 };
 
+const isAuthEndpoint = (url?: string) => Boolean(url && (url.includes('/auth/login') || url.includes('/auth/refresh')));
+
 api.interceptors.response.use(
   (res) => res,
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    const requestUrl = originalRequest?.url;
+
+    if (error.response?.status === 401 && isAuthEndpoint(requestUrl)) {
+      return Promise.reject(error);
+    }
 
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
         }).then((token) => {
-          originalRequest.headers.Authorization = `Bearer ${token}`;
+          if (originalRequest.headers) {
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+          }
           return api(originalRequest);
         });
       }
@@ -47,17 +56,19 @@ api.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        const { data } = await axios.post(`${BASE_URL}/auth/refresh`, {}, { withCredentials: true });
+        const { data } = await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true });
         const newToken: string = data.data.accessToken;
         localStorage.setItem('accessToken', newToken);
         api.defaults.headers.common.Authorization = `Bearer ${newToken}`;
         processQueue(null, newToken);
-        originalRequest.headers.Authorization = `Bearer ${newToken}`;
+        if (originalRequest.headers) {
+          originalRequest.headers.Authorization = `Bearer ${newToken}`;
+        }
         return api(originalRequest);
       } catch (refreshError) {
         processQueue(refreshError, null);
         localStorage.removeItem('accessToken');
-        window.location.href = '/login';
+        window.dispatchEvent(new Event('auth:logout'));
         return Promise.reject(refreshError);
       } finally {
         isRefreshing = false;

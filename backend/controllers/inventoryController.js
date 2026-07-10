@@ -1,4 +1,4 @@
-const { Inventory } = require('../models/Operations');
+const { Inventory, StockTransaction } = require('../models/Operations');
 const InventoryCategory = require('../models/InventoryCategory');
 const { Notification } = require('../models/System');
 const AppError = require('../utils/AppError');
@@ -21,7 +21,7 @@ exports.getInventory = asyncHandler(async (req, res) => {
     filter.category = req.query.category;
   }
   if (req.query.lowStock === 'true') {
-    filter.$expr = { $lte: ['$stockQuantity', '$lowStockThreshold'] };
+    filter.$expr = { $lte: ['$currentStock', '$minimumStockAlert'] };
   }
   if (req.query.search) {
     const searchRegex = new RegExp(req.query.search, 'i');
@@ -69,8 +69,9 @@ exports.getInventory = asyncHandler(async (req, res) => {
         branch: 1,
         category: '$categoryInfo', // Populate full category info
         unit: 1,
-        stockQuantity: 1,
-        lowStockThreshold: 1,
+        openingStock: 1,
+        currentStock: 1,
+        minimumStockAlert: 1,
         purchasePrice: 1,
         sellingPrice: 1,
         sku: 1,
@@ -103,6 +104,9 @@ exports.getCategories = asyncHandler(async (req, res) => {
   if (req.query.activeOnly === 'true') {
     filter.status = 'Active';
   }
+  if (req.user.role !== ROLES.SUPER_ADMIN) {
+    filter.branch = { $in: req.user.branches };
+  }
   const categories = await InventoryCategory.find(filter).sort('name');
 
   // Compute Total Items for each category
@@ -112,6 +116,7 @@ exports.getCategories = asyncHandler(async (req, res) => {
       return {
         _id: cat._id,
         name: cat.name,
+        branch: cat.branch,
         status: cat.status,
         totalItems,
         createdAt: cat.createdAt,
@@ -125,15 +130,24 @@ exports.getCategories = asyncHandler(async (req, res) => {
 
 // POST /api/inventory/categories
 exports.createCategory = asyncHandler(async (req, res, next) => {
-  const { name, status } = req.body;
+  const { name, branch, status } = req.body;
   if (!name) return next(new AppError('Category name is required.', 400));
 
-  const exists = await InventoryCategory.findOne({ name: { $regex: new RegExp(`^${name.trim()}$`, 'i') } });
-  if (exists) {
-    return next(new AppError('Category with this name already exists.', 400));
+  // For Branch Manager and Staff, auto-assign branch from their assigned branches
+  let finalBranch = branch;
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
+    finalBranch = req.user.branches[0];
   }
 
-  const category = await InventoryCategory.create({ name: name.trim(), status: status || 'Active' });
+  const exists = await InventoryCategory.findOne({ 
+    name: { $regex: new RegExp(`^${name.trim()}$`, 'i') },
+    branch: finalBranch
+  });
+  if (exists) {
+    return next(new AppError('Category with this name already exists in this branch.', 400));
+  }
+
+  const category = await InventoryCategory.create({ name: name.trim(), branch: finalBranch, status: status || 'Active' });
   res.status(201).json({ success: true, data: { category } });
 });
 
@@ -210,11 +224,24 @@ exports.restockItem = asyncHandler(async (req, res, next) => {
   const item = await Inventory.findById(req.params.id);
   if (!item) return next(new AppError('Item not found.', 404));
 
-  item.stockQuantity += quantity;
+  const previousStock = item.currentStock;
+  item.currentStock += quantity;
   item.purchaseHistory.push({ quantity, cost, supplier, addedBy: req.user._id });
   await item.save();
 
-  if (item.stockQuantity > item.lowStockThreshold) {
+  // Create stock transaction record
+  await StockTransaction.create({
+    inventoryItem: item._id,
+    quantity,
+    type: 'restock',
+    previousStock,
+    newStock: item.currentStock,
+    branch: item.branch,
+    notes: `Restocked ${quantity} ${item.unit}`,
+    createdBy: req.user._id,
+  });
+
+  if (item.currentStock > item.minimumStockAlert) {
     await Notification.deleteMany({
       type: 'low_inventory',
       'meta.inventoryId': item._id.toString(),
@@ -229,17 +256,71 @@ exports.restockItem = asyncHandler(async (req, res, next) => {
 exports.checkLowStock = async (inventoryId) => {
   const item = await Inventory.findById(inventoryId);
   if (!item) return;
-  if (item.stockQuantity <= item.lowStockThreshold) {
+  if (item.currentStock <= item.minimumStockAlert) {
     await Notification.create({
       branch: item.branch,
       type: 'low_inventory',
       title: 'Low Stock Alert',
-      message: `${item.name} is running low (${item.stockQuantity} ${item.unit} remaining).`,
+      message: `${item.name} is running low (${item.currentStock} ${item.unit} remaining).`,
       targetRoles: ['super_admin', 'branch_manager'],
       meta: { inventoryId: item._id.toString() },
     });
   }
 };
+
+// GET /api/inventory/report
+exports.getInventoryReport = asyncHandler(async (req, res) => {
+  const filter = { isActive: true };
+  if (req.user.role !== ROLES.SUPER_ADMIN) {
+    filter.branch = { $in: req.user.branches };
+  }
+  if (req.query.branch) filter.branch = req.query.branch;
+
+  const items = await Inventory.find(filter).populate('category');
+
+  // Calculate sold quantities from stock transactions
+  const itemsWithStats = await Promise.all(
+    items.map(async (item) => {
+      const soldQuantity = await StockTransaction.aggregate([
+        { $match: { inventoryItem: item._id, type: 'sale' } },
+        { $group: { _id: null, total: { $sum: '$quantity' } } }
+      ]);
+
+      const sold = soldQuantity[0]?.total || 0;
+      const remainingStock = item.currentStock;
+      const stockStatus = remainingStock === 0 ? 'out_of_stock' : 
+                          remainingStock <= item.minimumStockAlert ? 'low_stock' : 'normal';
+
+      return {
+        _id: item._id,
+        name: item.name,
+        category: item.category,
+        openingStock: item.openingStock,
+        soldQuantity: sold,
+        remainingStock: remainingStock,
+        status: stockStatus,
+        unit: item.unit,
+        purchasePrice: item.purchasePrice,
+        sellingPrice: item.sellingPrice,
+      };
+    })
+  );
+
+  const summary = {
+    totalItems: itemsWithStats.length,
+    lowStockItems: itemsWithStats.filter(i => i.status === 'low_stock').length,
+    outOfStockItems: itemsWithStats.filter(i => i.status === 'out_of_stock').length,
+    totalValue: itemsWithStats.reduce((sum, i) => sum + (i.remainingStock * i.purchasePrice), 0),
+  };
+
+  res.status(200).json({
+    success: true,
+    data: {
+      summary,
+      items: itemsWithStats
+    }
+  });
+});
 
 // DELETE /api/inventory/:id
 exports.deleteInventoryItem = asyncHandler(async (req, res, next) => {

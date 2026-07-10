@@ -11,17 +11,20 @@ export default function LoginPage() {
   const toast = useToast();
   const [form, setForm] = useState({ email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState('');
   const currentYear = new Date().getFullYear();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
     try {
       const result = await login(form.email, form.password);
       // Navigate after successful login
       navigate('/');
     } catch (err: any) {
-      console.error('Login error:', err);
-      toast.error(err?.response?.data?.message || 'Login failed');
+      const errorMessage = err?.response?.data?.message || 'Login failed';
+      setError(errorMessage);
+      toast.error(errorMessage);
     }
   };
 
@@ -90,6 +93,11 @@ export default function LoginPage() {
               {isLoading ? 'Signing in...' : 'Sign in'}
             </button>
           </form>
+          {error && (
+            <div className="mt-4 p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-sm">
+              {error}
+            </div>
+          )}
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-4">

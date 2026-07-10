@@ -18,7 +18,7 @@ const bookingController = require('../controllers/bookingController');
 const bookingRouter = express.Router();
 bookingRouter.use(protect, requirePermission('bookings:manage'));
 bookingRouter.get('/', bookingController.getBookings);
-bookingRouter.post('/', [body('branch').isMongoId(), body('table').isMongoId(), body('customer').isMongoId(), body('date').isISO8601(), body('startTime').notEmpty()], validate, bookingController.createBooking);
+bookingRouter.post('/', [body('branch').isMongoId(), body('table').isMongoId(), body('customer').isMongoId(), body('date').matches(/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?)?$/), body('startTime').notEmpty()], validate, bookingController.createBooking);
 bookingRouter.patch('/:id', bookingController.updateBooking);
 bookingRouter.patch('/:id/cancel', bookingController.cancelBooking);
 
@@ -27,7 +27,7 @@ const attendanceController = require('../controllers/attendanceController');
 const attendanceRouter = express.Router();
 attendanceRouter.use(protect, requirePermission('attendance:manage'));
 attendanceRouter.get('/', attendanceController.getAttendance);
-attendanceRouter.post('/', [body('employee').isMongoId(), body('date').isISO8601(), body('branch').optional({ checkFalsy: true }).isMongoId()], validate, attendanceController.markAttendance);
+attendanceRouter.post('/', [body('employee').isMongoId(), body('date').matches(/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?)?$/), body('branch').optional({ checkFalsy: true }).isMongoId()], validate, attendanceController.markAttendance);
 attendanceRouter.post('/bulk', attendanceController.bulkMarkAttendance);
 attendanceRouter.get('/history/:employeeId', attendanceController.getAttendanceHistory);
 attendanceRouter.get('/export/excel', attendanceController.exportAttendanceExcel);
