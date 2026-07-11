@@ -54,6 +54,11 @@ const activityLogSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+activityLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 30 });
+activityLogSchema.index({ branch: 1, createdAt: -1 });
+activityLogSchema.index({ action: 1, description: 1 });
+activityLogSchema.index({ createdAt: -1 });
+
 const settingsSchema = new mongoose.Schema(
   {
     businessName: { type: String, default: 'The Golden Frame' },

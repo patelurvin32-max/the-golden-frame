@@ -9,13 +9,11 @@ const mongoose = require('mongoose');
 const Customer = require('../models/Customer');
 const OrderCounter = require('../models/OrderCounter');
 
+const { getBusinessDayDateString } = require('../utils/businessDay');
+
 // Helper function to generate custom Order ID using OrderCounter
 const generateOrderId = async (date) => {
-  const today = date || new Date();
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, '0');
-  const day = String(today.getDate()).padStart(2, '0');
-  const dateStr = `${year}/${month}/${day}`;
+  const dateStr = getBusinessDayDateString(date || new Date());
 
   // Use OrderCounter for atomic increment
   const counter = await OrderCounter.findOneAndUpdate(

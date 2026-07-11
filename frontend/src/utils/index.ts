@@ -6,6 +6,14 @@ export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 export const formatCurrency = (amount: number, symbol = '₹') =>
   `${symbol}${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+export const parseCurrencyValue = (value: string) => {
+  if (typeof value !== 'string') return NaN;
+  const normalized = value.trim();
+  if (normalized === '') return NaN;
+  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) return NaN;
+  return Math.round(Number(normalized) * 100) / 100;
+};
+
 export const formatDate = (date: string | Date, format?: string) => {
   const d = new Date(date);
   if (format === 'MMM dd, yyyy HH:mm') {

@@ -15,7 +15,7 @@ const NAV_ITEMS = [
   { path: '/pending-payments', label: 'Pending Payments', icon: '💳', roles: ['super_admin', 'branch_manager', 'staff', 'cashier'] },
   { path: '/expenses', label: 'Expenses', icon: '💸', roles: ['super_admin', 'branch_manager'] },
   { path: '/attendance', label: 'Attendance', icon: '✅', roles: ['super_admin', 'branch_manager'] },
-  { path: '/reports', label: 'Reports', icon: '📈', roles: ['super_admin', 'branch_manager'] },
+  { path: '/reports', label: 'Reports', icon: '📈', roles: ['super_admin', 'admin'] },
   { path: '/users', label: 'Staff', icon: '👤', roles: ['super_admin'] },
   { path: '/branches', label: 'Branches', icon: '🏢', roles: ['super_admin'] },
   { path: '/settings', label: 'Settings', icon: '⚙️', roles: ['super_admin'] },
@@ -25,10 +25,16 @@ const NAV_ITEMS = [
 export const Sidebar = () => {
   const { pathname } = useLocation();
   const { user, logout } = useAuthStore();
-  const { sidebarOpen, toggleSidebar } = useAppStore();
+  const { sidebarOpen, toggleSidebar, setSidebarOpen } = useAppStore();
   const role = user?.role || 'staff';
 
   const filtered = NAV_ITEMS.filter((item) => item.roles.includes(role));
+
+  const handleItemClick = () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1024px)').matches) {
+      setSidebarOpen(false);
+    }
+  };
 
   return (
     <AnimatePresence>
@@ -50,7 +56,7 @@ export const Sidebar = () => {
             {filtered.map((item) => {
               const active = pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path));
               return (
-                <Link key={item.path} to={item.path}
+                <Link key={item.path} to={item.path} onClick={handleItemClick}
                   className={cn('flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200', active ? 'gradient-brand text-white shadow-lg shadow-blue-500/20' : 'text-muted-foreground hover:text-foreground hover:bg-accent')}
                 >
                   <span className="text-base w-5 text-center">{item.icon}</span>

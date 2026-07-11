@@ -67,13 +67,49 @@ const { ActivityLog } = require('../models/System');
 const logsRouter = express.Router();
 logsRouter.use(protect);
 logsRouter.get('/', asyncHandler(async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+  const skip = (page - 1) * limit;
+  const sortBy = ['createdAt', 'action', 'description'].includes(req.query.sortBy) ? req.query.sortBy : 'createdAt';
+  const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
   const filter = {};
+
   if (req.query.branch) filter.branch = req.query.branch;
-  const logs = await ActivityLog.find(filter)
-    .populate('user', 'name role')
-    .sort('-createdAt')
-    .limit(200);
-  res.status(200).json({ success: true, data: { logs } });
+  if (req.query.search) {
+    const search = req.query.search.toString().trim();
+    if (search.length > 0) {
+      const regex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [
+        { action: regex },
+        { description: regex },
+        { entity: regex },
+      ];
+    }
+  }
+
+  const [total, logs] = await Promise.all([
+    ActivityLog.countDocuments(filter),
+    ActivityLog.find(filter)
+      .populate('user', 'name role')
+      .sort({ [sortBy]: sortOrder })
+      .skip(skip)
+      .limit(limit),
+  ]);
+
+  const pages = Math.max(1, Math.ceil(total / limit));
+
+  res.status(200).json({
+    success: true,
+    data: {
+      logs,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages,
+      },
+    },
+  });
 }));
 
 // Notifications
@@ -82,6 +118,10 @@ const notifRouter = express.Router();
 notifRouter.use(protect);
 notifRouter.get('/', asyncHandler(async (req, res) => {
   const filter = { $or: [{ targetUser: req.user._id }, { targetRoles: { $in: [req.user.role] } }] };
+  if (req.user.role !== ROLES.SUPER_ADMIN) {
+    const branches = Array.isArray(req.user.branches) ? req.user.branches : [];
+    filter.branch = { $in: branches };
+  }
   const notifications = await Notification.find(filter).sort('-createdAt').limit(50);
   res.status(200).json({ success: true, data: { notifications } });
 }));

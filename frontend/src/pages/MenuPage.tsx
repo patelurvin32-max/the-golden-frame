@@ -52,7 +52,7 @@ export default function MenuPage() {
   // ── Queries ──────────────────────────────────────────────────────────────────
   const { data: branchData } = useQuery({
     queryKey: ['branches'],
-    queryFn: () => branchService.getAll().then((r) => r.data.data.branches)
+    queryFn: () => branchService.getAll().then((r) => r.data.data.branches),
   });
 
   const { data: inventoryItems } = useQuery({

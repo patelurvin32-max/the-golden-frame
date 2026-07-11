@@ -45,13 +45,14 @@ reservationSchema.index({ customerName: 'text', phoneNumber: 'text', reservation
 reservationSchema.index({ status: 1 });
 reservationSchema.index({ createdAt: -1 });
 
+const { getBusinessDayCompactString, getBusinessDayStart } = require('../utils/businessDay');
+
 reservationSchema.pre('save', async function generateId(next) {
   if (this.reservationId) return next();
 
-  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  const count = await mongoose.model('Reservation').countDocuments({ createdAt: { $gte: startOfDay } });
+  const dateStr = getBusinessDayCompactString(new Date());
+  const businessDayStart = getBusinessDayStart(new Date());
+  const count = await mongoose.model('Reservation').countDocuments({ createdAt: { $gte: businessDayStart } });
   this.reservationId = `RES-${dateStr}-${String(count + 1).padStart(4, '0')}`;
   next();
 });

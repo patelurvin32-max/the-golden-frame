@@ -4,6 +4,7 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { logActivity } = require('../services/activityLogService');
 const { ROLES } = require('../config/constants');
+const { createBranchNotification } = require('../services/notificationService');
 
 const buildFilter = (query, user) => {
   const filter = {};
@@ -190,7 +191,13 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     finalBranch = req.user.branches[0];
   }
 
-  const clash = await checkDoubleBooking({ branch: finalBranch, table, reservationDate, reservationTime, durationMinutes });
+  let finalTable = table;
+  if (!finalTable) {
+    finalTable = await getFirstAvailableTable({ branch: finalBranch, reservationDate, reservationTime, durationMinutes });
+    if (!finalTable) return next(new AppError('No available table for this reservation slot.', 409));
+  }
+
+  const clash = await checkDoubleBooking({ branch: finalBranch, table: finalTable, reservationDate, reservationTime, durationMinutes });
   if (clash) return next(new AppError(`Table is already reserved at this time (conflict with ${clash.reservationId}).`, 409));
 
   const reservation = await Reservation.create({
@@ -198,7 +205,7 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     phoneNumber,
     email,
     branch: finalBranch,
-    table,
+    table: finalTable,
     menuCategoryId,
     menuItemId,
     reservationDate: new Date(reservationDate),
@@ -217,6 +224,13 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     .populate('table', 'name type')
     .populate('menuCategoryId', 'name')
     .populate('menuItemId', 'name price');
+
+  await createBranchNotification({
+    branchId: finalBranch,
+    actor: req.user,
+    title: 'New Reservation Created',
+    message: `${req.user.name} created a new reservation (${reservation.reservationId}) for ${customerName}.`,
+  });
 
   await logActivity({
     userId: req.user._id,
@@ -361,4 +375,33 @@ async function checkDoubleBooking({ branch, table, reservationDate, reservationT
     if (reqStart < end && start < reqEnd) return r;
   }
   return null;
+}
+
+async function getFirstAvailableTable({ branch, reservationDate, reservationTime, durationMinutes = 60, excludeId }) {
+  const d = new Date(reservationDate);
+  const nextDay = new Date(d);
+  nextDay.setDate(d.getDate() + 1);
+
+  const [reqH, reqM] = reservationTime.split(':').map(Number);
+  const reqStart = reqH * 60 + reqM;
+  const reqEnd = reqStart + parseInt(durationMinutes, 10);
+
+  const overlapping = await Reservation.find({
+    branch,
+    reservationDate: { $gte: d, $lt: nextDay },
+    status: { $nin: ['cancelled', 'no_show', 'completed'] },
+    ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+  }).select('table reservationTime durationMinutes');
+
+  const blockedTableIds = new Set();
+  for (const r of overlapping) {
+    const [h, m] = r.reservationTime.split(':').map(Number);
+    const start = h * 60 + m;
+    const end = start + (r.durationMinutes || 60);
+    if (reqStart < end && start < reqEnd) blockedTableIds.add(r.table.toString());
+  }
+
+  const allTables = await Table.find({ branch, isActive: true }).select('_id');
+  const availableTable = allTables.find((t) => !blockedTableIds.has(t._id.toString()));
+  return availableTable?._id || null;
 }

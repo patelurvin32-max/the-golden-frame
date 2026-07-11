@@ -27,7 +27,7 @@ const STATUS_CONFIG: Record<ResStatus, { label: string; color: string; icon: str
 
 const EMPTY_FORM = {
   customerName: '', phoneNumber: '', email: '',
-  branch: '', table: '',
+  branch: '',
   reservationDate: '', reservationTime: '',
   durationMinutes: 60, numberOfGuests: 2,
   specialRequests: '', notes: '', status: 'pending',
@@ -134,16 +134,12 @@ function ReservationForm({
 }: {
   initial: any; onSubmit: (data: any) => void; onClose: () => void; loading: boolean;
 }) {
-  const [form, setForm] = useState({ ...EMPTY_FORM, ...initial });
-  const [availTables, setAvailTables] = useState<any[]>([]);
-  const [checkingAvail, setCheckingAvail] = useState(false);
+  const initialForm = { ...EMPTY_FORM, ...initial } as any;
+  delete initialForm.table;
+  const [form, setForm] = useState(initialForm);
   const { user } = useAuthStore();
 
   const { data: branches } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
-  const { data: allTables } = useQuery({
-    queryKey: ['tables', form.branch], enabled: !!form.branch,
-    queryFn: () => tableService.getAll({ branch: form.branch }).then((r) => r.data.data.tables),
-  });
 
   // Fetch menu categories
   const { data: categoriesData } = useQuery({
@@ -151,6 +147,7 @@ function ReservationForm({
     queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data),
   });
   const categories: any[] = (categoriesData as any)?.data?.categories || [];
+  const reservationCategories = categories.filter((cat: any) => cat.name?.trim().toLowerCase() !== 'beverage');
 
   // Fetch menu items filtered by category and branch
   const menuParams: Record<string, string> = { limit: '1000' };
@@ -176,23 +173,6 @@ function ReservationForm({
 
   const set = (k: string, v: any) => setForm((p: any) => ({ ...p, [k]: v }));
 
-  // Auto-check availability when slot changes
-  const checkAvailability = useCallback(async () => {
-    if (!form.branch || !form.reservationDate || !form.reservationTime) return;
-    setCheckingAvail(true);
-    try {
-      const params: any = { branch: form.branch, date: form.reservationDate, time: form.reservationTime, durationMinutes: form.durationMinutes };
-      if (initial._id) params.excludeId = initial._id;
-      const res = await reservationService.getAvailableTables(params);
-      setAvailTables((res.data as any).data.available || []);
-    } catch { setAvailTables([]); }
-    finally { setCheckingAvail(false); }
-  }, [form.branch, form.reservationDate, form.reservationTime, form.durationMinutes]);
-
-  useEffect(() => { checkAvailability(); }, [checkAvailability]);
-
-  const tablesToShow = form.reservationDate && form.reservationTime ? availTables : (allTables || []);
-
   return (
     <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
       {/* Customer */}
@@ -215,7 +195,7 @@ function ReservationForm({
       {canSelectBranch && (
         <div className="space-y-1.5">
           <Label>Branch *</Label>
-          <Select value={form.branch} onChange={(e) => { set('branch', e.target.value); set('table', ''); }}>
+          <Select value={form.branch} onChange={(e) => { set('branch', e.target.value); }}>
             <option value="">Select branch</option>
             {(branches || []).map((b: any) => <option key={b._id} value={b._id}>{b.name}</option>)}
           </Select>
@@ -253,7 +233,7 @@ function ReservationForm({
             onChange={(e) => set('menuCategoryId', e.target.value)}
           >
             <option value="">Select category</option>
-            {categories.map((cat: any) => (
+            {reservationCategories.map((cat: any) => (
               <option key={cat._id} value={cat._id}>{cat.name}</option>
             ))}
           </Select>
@@ -268,7 +248,7 @@ function ReservationForm({
             <option value="">Select item</option>
             {menuItems.map((item: any) => (
               <option key={item._id} value={item._id}>
-                {item.name} - ₹{item.price}
+                {item.name}
               </option>
             ))}
           </Select>
@@ -463,6 +443,7 @@ export default function ReservationsPage() {
   });
 
   const { data: branchList } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
+  
   const { data: tableList }  = useQuery({
     queryKey: ['tables-filter', branch], enabled: !!branch,
     queryFn: () => tableService.getAll({ branch }).then((r) => r.data.data.tables),
@@ -472,6 +453,7 @@ export default function ReservationsPage() {
     queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data),
   });
   const categories: any[] = (categoriesData as any)?.data?.categories || [];
+  const reservationCategories = categories.filter((cat: any) => cat.name?.trim().toLowerCase() !== 'beverage');
 
   const reservations: any[] = (listData as any)?.data || [];
   const totalRecords: number = (listData as any)?.totalRecords || 0;
@@ -511,8 +493,14 @@ export default function ReservationsPage() {
   // ── Handlers ──────────────────────────────────────────────────────────────
   const openView   = (r: any) => { setSelected(r); setModal('view'); };
   const openEdit   = (r: any) => {
-    setSelected({ ...r, branch: r.branch?._id || r.branch, table: r.table?._id || r.table,
-      reservationDate: new Date(r.reservationDate).toISOString().slice(0, 10) });
+    setSelected({
+      ...r,
+      branch: r.branch?._id || r.branch,
+      table: r.table?._id || r.table,
+      menuCategoryId: r.menuCategoryId?._id || r.menuCategoryId,
+      menuItemId: r.menuItemId?._id || r.menuItemId,
+      reservationDate: new Date(r.reservationDate).toISOString().slice(0, 10),
+    });
     setModal('edit');
   };
   const openCreate = () => { setSelected(null); setModal('create'); };
@@ -579,7 +567,7 @@ export default function ReservationsPage() {
             {/* Menu Category */}
             <Select value={menuCategoryFlt} onChange={(e) => setMenuCategoryFlt(e.target.value)}>
               <option value="">All Categories</option>
-              {categories.map((cat: any) => <option key={cat._id} value={cat._id}>{cat.name}</option>)}
+              {reservationCategories.map((cat: any) => <option key={cat._id} value={cat._id}>{cat.name}</option>)}
             </Select>
 
             {/* Date from */}

@@ -47,7 +47,9 @@ customerSchema.index({ branch: 1 });
 customerSchema.index({ paymentStatus: 1 });
 customerSchema.index({ paymentMethod: 1 });
 customerSchema.index({ createdAt: -1 });
-// Compound indexes for pending payments queries
+// Compound indexes for common queries
+customerSchema.index({ branch: 1, isActive: 1, createdAt: -1 }); // For customer list queries
+customerSchema.index({ menuCategoryId: 1, branch: 1, isActive: 1 }); // For filtering by category and branch
 customerSchema.index({ paymentStatus: 1, createdAt: -1 });
 customerSchema.index({ paymentStatus: 1, branch: 1, createdAt: -1 });
 customerSchema.index({ paymentStatus: 1, billAmount: -1 });

@@ -13,6 +13,16 @@ import { formatDate, formatDateTime, cn } from '@/utils';
 import type { Branch, User } from '@/types';
 import { useAppStore } from '@/store';
 
+type LogsResponse = {
+  logs: any[];
+  pagination: {
+    total: number;
+    page: number;
+    limit: number;
+    pages: number;
+  };
+};
+
 // ── Branches ──────────────────────────────────────────────────────────────────
 export function BranchesPage() {
   const qc = useQueryClient();
@@ -28,7 +38,7 @@ export function BranchesPage() {
     closingTime: '23:00',
   });
 
-  const { data, isLoading } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
+  const { data: branches = [], isLoading } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
 
   const createMutation = useMutation({
     mutationFn: (d: any) => branchService.create(d),
@@ -54,8 +64,6 @@ export function BranchesPage() {
     mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) => branchService.update(id, { isActive } as any),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['branches'] }); toast.success('Branch updated'); },
   });
-
-  const branches: Branch[] = data || [];
 
   const resetForm = () => ({
     name: '',
@@ -246,7 +254,7 @@ export function UsersPage() {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [form, setForm] = useState<StaffFormState>(createEmptyStaffForm());
 
-  const { data: branchData } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
+  const { data: branchesData } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
   const { data, isLoading } = useQuery({ queryKey: ['users'], queryFn: () => userService.getAll().then((r) => r.data.data.users) });
 
   const createMutation = useMutation({
@@ -279,7 +287,7 @@ export function UsersPage() {
   });
 
   const users: User[] = data || [];
-  const branches: Branch[] = branchData || [];
+  const branches: Branch[] = branchesData || [];
   const roleColor: Record<string, string> = { super_admin: 'default', branch_manager: 'info', staff: 'outline', cashier: 'warning' };
 
   const openCreateModal = () => {
@@ -391,7 +399,7 @@ export function UsersPage() {
         size="xl"
       >
         <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Full Name *</Label>
               <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
@@ -636,24 +644,78 @@ export function BookingsPage() {
 // ── Audit Logs ────────────────────────────────────────────────────────────────
 export function LogsPage() {
   const { selectedBranch } = useAppStore();
-  const params: Record<string, string> = {};
-  if (selectedBranch) params.branch = selectedBranch;
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState<'createdAt' | 'action' | 'description'>('createdAt');
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const pageSize = 10;
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['logs', selectedBranch],
-    queryFn: () => logsService.getAll(params).then((r) => (r.data as any).data?.logs || []),
+  const params: Record<string, string> = {
+    page: String(page),
+    limit: String(pageSize),
+    sortBy,
+    sortOrder,
+  };
+  if (selectedBranch) params.branch = selectedBranch;
+  if (search.trim()) params.search = search.trim();
+
+  const { data, isLoading } = useQuery<LogsResponse, any>({
+    queryKey: ['logs', selectedBranch, search, sortBy, sortOrder, page],
+    queryFn: () => logsService.getAll(params).then((r) => (r.data as any).data || { logs: [], pagination: { total: 0, page: 1, limit: pageSize, pages: 1 } }),
   });
 
-  const logs = data || [];
+  const logs = (data?.logs || []) as any[];
+  const pagination = data?.pagination || { total: 0, page: 1, limit: pageSize, pages: 1 };
+  const totalPages = Math.max(1, pagination.pages);
+  const from = pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.limit + 1;
+  const to = Math.min(pagination.page * pagination.limit, pagination.total);
+
+  const pageItems: (number | '...')[] = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i += 1) pageItems.push(i);
+  } else {
+    pageItems.push(1);
+    if (pagination.page > 3) pageItems.push('...');
+    for (let i = Math.max(2, pagination.page - 1); i <= Math.min(totalPages - 1, pagination.page + 1); i += 1) {
+      pageItems.push(i);
+    }
+    if (pagination.page < totalPages - 2) pageItems.push('...');
+    pageItems.push(totalPages);
+  }
+
+  const handleSearch = (value: string) => {
+    setSearch(value);
+    setPage(1);
+  };
 
   return (
     <div className="space-y-5 animate-fade-in">
-      <PageHeader title="Audit Logs" subtitle="Complete activity history" />
+      <PageHeader title="Audit Logs"  />
       <Card>
+        <div className="flex flex-col gap-3 px-4 py-4 border-b border-border sm:flex-row sm:items-center sm:justify-between">
+          <Input
+            placeholder="Search logs"
+            value={search}
+            onChange={(e) => handleSearch(e.target.value)}
+            className="min-w-0 flex-1 max-w-sm"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Select value={sortBy} onChange={(e) => { setSortBy(e.target.value as 'createdAt' | 'action' | 'description'); setPage(1); }} className="h-9 text-sm">
+              <option value="createdAt">Sort by Time</option>
+              <option value="action">Sort by Action</option>
+              <option value="description">Sort by Description</option>
+            </Select>
+            <Select value={sortOrder} onChange={(e) => { setSortOrder(e.target.value as 'asc' | 'desc'); setPage(1); }} className="h-9 text-sm">
+              <option value="desc">Newest first</option>
+              <option value="asc">Oldest first</option>
+            </Select>
+          </div>
+        </div>
         {isLoading ? <div className="p-4 space-y-3">{[...Array(8)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
           : logs.length === 0 ? <EmptyState icon="📋" title="No logs yet" />
           : (
-            <Table2>
+            <>
+              <Table2>
               <TableHeader>
                 <TableRow>
                   <TableHead>Time</TableHead>
@@ -673,13 +735,39 @@ export function LogsPage() {
                 ))}
               </TableBody>
             </Table2>
+              <div className="flex flex-col gap-3 px-4 py-3 border-t border-border sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-sm text-muted-foreground">
+                  Showing <span className="text-foreground">{from}–{to}</span> of <span className="text-foreground">{pagination.total}</span> records
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button size="sm" variant="outline" disabled={pagination.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+                    Previous
+                  </Button>
+                  {pageItems.map((item, index) => item === '...' ? (
+                    <span key={`dots-${index}`} className="inline-flex h-8 min-w-[32px] items-center justify-center rounded-lg border border-border px-2 text-xs text-muted-foreground">…</span>
+                  ) : (
+                    <Button
+                      key={item}
+                      size="sm"
+                      variant={item === pagination.page ? 'default' : 'outline'}
+                      className={item === pagination.page ? 'border-transparent bg-muted text-foreground' : ''}
+                      onClick={() => setPage(item as number)}
+                    >
+                      {item}
+                    </Button>
+                  ))}
+                  <Button size="sm" variant="outline" disabled={pagination.page >= totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </>
           )}
       </Card>
     </div>
   );
 }
 
-// ── Settings ──────────────────────────────────────────────────────────────────
 export function SettingsPage() {
   const toast = useToast();
   const [form, setForm] = useState({ businessName: 'The Golden Frame', currency: 'INR', currencySymbol: '₹', taxPercent: 0, receiptFooterNote: 'Thank you for visiting!', timezone: 'Asia/Kolkata' });

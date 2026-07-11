@@ -94,6 +94,7 @@ const menuItemSchema = new mongoose.Schema(
 // Indexes for menu items
 menuItemSchema.index({ branch: 1, status: 1 });
 menuItemSchema.index({ category: 1 });
+menuItemSchema.index({ category: 1, branch: 1, status: 1 }); // Compound index for filtering by category and branch
 menuItemSchema.index({ name: 1 });
 menuItemSchema.index({ availability: 1 });
 menuItemSchema.index({ status: 1 });

@@ -54,7 +54,7 @@ export default function InventoryPage() {
   // ── Queries ──────────────────────────────────────────────────────────────────
   const { data: branchData } = useQuery({
     queryKey: ['branches'],
-    queryFn: () => branchService.getAll().then((r) => r.data.data.branches)
+    queryFn: () => branchService.getAll().then((r) => r.data.data.branches),
   });
 
   const { data: activeCategories } = useQuery({

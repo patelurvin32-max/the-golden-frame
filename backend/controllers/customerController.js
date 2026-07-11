@@ -4,14 +4,19 @@ const { Inventory, MenuItem, StockTransaction } = require('../models/Operations'
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ROLES } = require('../config/constants');
+const { createBranchNotification } = require('../services/notificationService');
+
+const parseCurrencyValue = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num * 100) / 100;
+};
+
+const { getBusinessDayDateString } = require('../utils/businessDay');
 
 // Helper function to generate custom Order ID with thread-safety using atomic counter
-const generateOrderId = async () => {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, '0');
-  const day = String(today.getDate()).padStart(2, '0');
-  const dateStr = `${year}/${month}/${day}`;
+const generateOrderId = async (date = new Date()) => {
+  const dateStr = getBusinessDayDateString(date);
 
   // Use findOneAndUpdate with atomic increment to prevent race conditions
   const counter = await OrderCounter.findOneAndUpdate(
@@ -63,7 +68,8 @@ exports.getCustomers = asyncHandler(async (req, res) => {
       .limit(limit)
       .populate('menuCategoryId', 'name status')
       .populate('menuItemId', 'name price availability status')
-      .populate('branch', 'name code'),
+      .populate('branch', 'name code')
+      .lean(), // Use lean() for faster queries
     Customer.countDocuments(filter),
   ]);
 
@@ -84,7 +90,8 @@ exports.getCustomer = asyncHandler(async (req, res, next) => {
   const customer = await Customer.findById(req.params.id)
     .populate('menuCategoryId', 'name status')
     .populate('menuItemId', 'name price availability status')
-    .populate('branch', 'name code');
+    .populate('branch', 'name code')
+    .lean(); // Use lean() for faster queries
   if (!customer) return next(new AppError('Customer not found.', 404));
   res.status(200).json({ success: true, data: { customer } });
 });
@@ -99,7 +106,8 @@ exports.lookupCustomer = asyncHandler(async (req, res) => {
   })
     .populate('menuCategoryId', 'name status')
     .populate('menuItemId', 'name price availability status')
-    .populate('branch', 'name code');
+    .populate('branch', 'name code')
+    .lean(); // Use lean() for faster queries
 
   if (!customer) {
     return res.status(200).json({ success: true, data: { customer: null } });
@@ -117,10 +125,10 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
 
   // Validate mixed payment amounts
   if (req.body.paymentMethod === 'mixed') {
-    const cashAmount = Number(req.body.cashAmount) || 0;
-    const onlineAmount = Number(req.body.onlineAmount) || 0;
-    const totalPaid = cashAmount + onlineAmount;
-    const totalBill = Number(req.body.billAmount) || 0;
+    const cashAmount = parseCurrencyValue(req.body.cashAmount) || 0;
+    const onlineAmount = parseCurrencyValue(req.body.onlineAmount) || 0;
+    const totalPaid = Math.round((cashAmount + onlineAmount) * 100) / 100;
+    const totalBill = parseCurrencyValue(req.body.billAmount) || 0;
 
     if (totalPaid !== totalBill) {
       return next(new AppError(`Cash Amount + Online Amount must equal the total bill amount (${totalBill})`, 400));
@@ -152,11 +160,26 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     });
   }
   
+  // Normalize currency values for storage
+  req.body.billAmount = parseCurrencyValue(req.body.billAmount);
+  req.body.cashAmount = parseCurrencyValue(req.body.cashAmount) || 0;
+  req.body.onlineAmount = parseCurrencyValue(req.body.onlineAmount) || 0;
+  req.body.totalPaid = Math.round((req.body.cashAmount + req.body.onlineAmount) * 100) / 100;
+
   // Generate custom Order ID for new customer
   const orderId = await generateOrderId();
   req.body.orderId = orderId;
   
   const customer = await Customer.create(req.body);
+
+  // Create customer notification for Super Admin and branch manager when created by staff/branch manager
+  await createBranchNotification({
+    branchId: customer.branch,
+    actor: req.user,
+    title: 'New Customer Created',
+    message: `${req.user.name} created a new customer (${customer.name}) in branch ${customer.branch}.`,
+    superAdminOnly: req.user.role === ROLES.SUPER_ADMIN,
+  });
 
   // Deduct stock if menu item is linked to inventory
   if (menuItem && menuItem.inventoryItem) {
@@ -205,10 +228,10 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
 
   // Validate mixed payment amounts if payment method is mixed
   if (req.body.paymentMethod === 'mixed') {
-    const cashAmount = Number(req.body.cashAmount) || 0;
-    const onlineAmount = Number(req.body.onlineAmount) || 0;
-    const totalPaid = cashAmount + onlineAmount;
-    const totalBill = Number(req.body.billAmount) || 0;
+    const cashAmount = parseCurrencyValue(req.body.cashAmount) || 0;
+    const onlineAmount = parseCurrencyValue(req.body.onlineAmount) || 0;
+    const totalPaid = Math.round((cashAmount + onlineAmount) * 100) / 100;
+    const totalBill = parseCurrencyValue(req.body.billAmount) || 0;
 
     if (totalPaid !== totalBill) {
       return next(new AppError(`Cash Amount + Online Amount must equal the total bill amount (${totalBill})`, 400));
@@ -281,6 +304,20 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
         }
       }
     }
+  }
+
+  // Normalize currency values for storage on update
+  if (req.body.billAmount !== undefined) {
+    req.body.billAmount = parseCurrencyValue(req.body.billAmount);
+  }
+  if (req.body.cashAmount !== undefined) {
+    req.body.cashAmount = parseCurrencyValue(req.body.cashAmount);
+  }
+  if (req.body.onlineAmount !== undefined) {
+    req.body.onlineAmount = parseCurrencyValue(req.body.onlineAmount);
+  }
+  if (req.body.cashAmount !== undefined || req.body.onlineAmount !== undefined) {
+    req.body.totalPaid = Math.round(((req.body.cashAmount || 0) + (req.body.onlineAmount || 0)) * 100) / 100;
   }
 
   const customer = await Customer.findByIdAndUpdate(req.params.id, req.body, {

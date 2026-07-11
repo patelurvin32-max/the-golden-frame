@@ -33,56 +33,16 @@ exports.getMenuItems = asyncHandler(async (req, res) => {
     ];
   }
 
-  // Use aggregation to join with category for sorting and filtering
-  const pipeline = [
-    { $match: filter },
-    {
-      $lookup: {
-        from: 'menucategories',
-        localField: 'category',
-        foreignField: '_id',
-        as: 'categoryInfo'
-      }
-    },
-    { $unwind: '$categoryInfo' },
-    {
-      $sort: {
-        'categoryInfo.name': 1,
-        'name': 1
-      }
-    }
-  ];
-
-  // Count total records matching filter
-  const countPipeline = [...pipeline, { $count: 'total' }];
-  const countResult = await MenuItem.aggregate(countPipeline);
-  const total = countResult[0]?.total || 0;
-
-  // Add pagination stages
-  const paginatedPipeline = [
-    ...pipeline,
-    { $skip: skip },
-    { $limit: limit },
-    {
-      $project: {
-        _id: 1,
-        name: 1,
-        branch: 1,
-        category: '$categoryInfo',
-        price: 1,
-        halfPrice: 1,
-        fullPrice: 1,
-        description: 1,
-        imageUrl: 1,
-        availability: 1,
-        status: 1,
-        createdAt: 1,
-        updatedAt: 1
-      }
-    }
-  ];
-
-  const items = await MenuItem.aggregate(paginatedPipeline);
+  // Use simple find with populate instead of aggregation for better performance
+  const [items, total] = await Promise.all([
+    MenuItem.find(filter)
+      .populate('category', 'name status')
+      .sort({ name: 1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(), // Use lean() for faster queries
+    MenuItem.countDocuments(filter)
+  ]);
 
   res.status(200).json({
     success: true,
@@ -104,29 +64,36 @@ exports.getMenuCategories = asyncHandler(async (req, res) => {
   if (req.query.activeOnly === 'true') {
     filter.status = 'Active';
   }
-  const categories = await MenuCategory.find(filter).sort('name');
+  const categories = await MenuCategory.find(filter).sort('name').lean();
 
-  // Compute Total Items for each category
-  const categoriesWithCount = await Promise.all(
-    categories.map(async (cat) => {
-      // Apply branch filter to item count based on user role
-      const itemFilter = { category: cat._id, status: 'Active' };
-      if (req.user.role !== ROLES.SUPER_ADMIN) {
-        itemFilter.branch = { $in: req.user.branches };
-      } else if (req.query.branch) {
-        itemFilter.branch = new mongoose.Types.ObjectId(req.query.branch);
-      }
-      const totalItems = await MenuItem.countDocuments(itemFilter);
-      return {
-        _id: cat._id,
-        name: cat.name,
-        status: cat.status,
-        totalItems,
-        createdAt: cat.createdAt,
-        updatedAt: cat.updatedAt,
-      };
-    })
+  // Build branch filter for item counts
+  let branchFilter = {};
+  if (req.user.role !== ROLES.SUPER_ADMIN) {
+    branchFilter = { branch: { $in: req.user.branches } };
+  } else if (req.query.branch) {
+    branchFilter = { branch: new mongoose.Types.ObjectId(req.query.branch) };
+  }
+
+  // Use aggregation to count items for all categories in a single query
+  const categoryCounts = await MenuItem.aggregate([
+    { $match: { status: 'Active', ...branchFilter } },
+    { $group: { _id: '$category', totalItems: { $sum: 1 } } }
+  ]);
+
+  // Create a map for quick lookup
+  const countMap = new Map(
+    categoryCounts.map(c => [c._id.toString(), c.totalItems])
   );
+
+  // Attach counts to categories
+  const categoriesWithCount = categories.map(cat => ({
+    _id: cat._id,
+    name: cat.name,
+    status: cat.status,
+    totalItems: countMap.get(cat._id.toString()) || 0,
+    createdAt: cat.createdAt,
+    updatedAt: cat.updatedAt,
+  }));
 
   res.status(200).json({ success: true, count: categoriesWithCount.length, data: { categories: categoriesWithCount } });
 });

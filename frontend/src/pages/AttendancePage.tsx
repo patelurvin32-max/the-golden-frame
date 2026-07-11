@@ -121,7 +121,7 @@ function AttendanceHistoryModal({
   return (
     <Modal open={open} onClose={onClose} title={employee ? `${employee.name} Attendance History` : 'Attendance History'} size="xl">
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
           {[
             { label: 'Last 30 Days', value: stats?.totalDays ?? 0 },
             { label: 'Monthly %', value: stats ? `${stats.monthlyAttendancePercentage}%` : '0%' },
@@ -174,7 +174,7 @@ function AttendanceHistoryModal({
                       <TableCell className="text-sm">{formatTimeValue(record.checkIn)}</TableCell>
                       <TableCell className="text-sm">{formatTimeValue(record.checkOut)}</TableCell>
                       <TableCell className="text-sm">{record.workingHours ? formatDuration(record.workingHours) : '—'}</TableCell>
-                      <TableCell className="max-w-[240px] truncate text-sm text-muted-foreground">{record.notes || '—'}</TableCell>
+                      <TableCell className="max-w-[240px] min-w-0 truncate text-sm text-muted-foreground">{record.notes || '—'}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -548,7 +548,7 @@ export default function AttendancePage() {
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
         <SummaryCard label="Total Staff" value={summary.totalStaff} />
         <SummaryCard label="Present" value={summary.present} />
         <SummaryCard label="Absent" value={summary.absent} />
@@ -557,16 +557,16 @@ export default function AttendancePage() {
 
       <Card>
         <CardContent className="space-y-4 p-4">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="space-y-1.5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+            <div className="space-y-1.5 w-full sm:w-auto">
               <Label>Date</Label>
-              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-[150px]" />
+              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-[150px]" />
             </div>
-            <div className="space-y-1.5 flex-1 min-w-[220px]">
+            <div className="space-y-1.5 flex-1 min-w-0 w-full">
               <Label>Search Employee</Label>
               <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name or email" />
             </div>
-            <div className="space-y-1.5 min-w-[180px]">
+            <div className="space-y-1.5 w-full sm:w-auto min-w-0">
               <Label>Role Filter</Label>
               <Select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
                 <option value="">All Roles</option>
@@ -575,7 +575,7 @@ export default function AttendancePage() {
                 <option value="cashier">Cashier</option>
               </Select>
             </div>
-            <div className="space-y-1.5 min-w-[180px]">
+            <div className="space-y-1.5 w-full sm:w-auto min-w-0">
               <Label>Status Filter</Label>
               <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
                 <option value="">All Status</option>
@@ -584,11 +584,11 @@ export default function AttendancePage() {
                 ))}
               </Select>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 w-full sm:w-auto">
               <Label>Export Attendance</Label>
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => exportMutation.mutate({ format: 'pdf', params: reportRange })}>Export PDF</Button>
-                <Button size="sm" variant="outline" onClick={() => exportMutation.mutate({ format: 'excel', params: reportRange })}>Export Excel</Button>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button size="sm" className="w-full sm:w-auto" variant="outline" onClick={() => exportMutation.mutate({ format: 'pdf', params: reportRange })}>Export PDF</Button>
+                <Button size="sm" className="w-full sm:w-auto" variant="outline" onClick={() => exportMutation.mutate({ format: 'excel', params: reportRange })}>Export Excel</Button>
               </div>
             </div>
           </div>
@@ -620,8 +620,8 @@ export default function AttendancePage() {
             <EmptyState icon="👥" title="No staff members found" description="Try adjusting the date or filters." />
           ) : (
             <>
-              <div className="hidden md:block">
-                <Table2 className="min-w-[1200px]">
+              <div className="hidden md:block overflow-x-auto">
+                <Table2 className="min-w-full">
                   <TableHeader>
                     <TableRow>
                       <TableHead className="sticky top-0 z-20 bg-card w-10">
@@ -698,7 +698,7 @@ export default function AttendancePage() {
                               <Select
                                 value={employeeStatus}
                                 onChange={(e) => updateDraft(user, { status: e.target.value as AttendanceStatus }, true)}
-                                className="w-[140px]"
+                                className="w-full sm:w-[140px]"
                               >
                                 <option value="">Select</option>
                                 {STATUS_OPTIONS.map((status) => (
@@ -759,7 +759,7 @@ export default function AttendancePage() {
                             className="mt-1 rounded border-border"
                           />
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           <div className="space-y-1">
                             <Label className="text-xs">Check In</Label>
                             <Input type="time" value={draft.checkIn ?? record?.checkIn ?? ''} onChange={(e) => updateDraft(user, { checkIn: e.target.value })} />
@@ -769,7 +769,7 @@ export default function AttendancePage() {
                             <Input type="time" value={draft.checkOut ?? record?.checkOut ?? ''} onChange={(e) => updateDraft(user, { checkOut: e.target.value })} />
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           <div className="space-y-1">
                             <Label className="text-xs">Working Hours</Label>
                             <Input value={workingMinutes !== null ? formatDuration(workingMinutes) : '—'} readOnly />

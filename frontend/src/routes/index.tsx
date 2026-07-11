@@ -48,15 +48,15 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
 
 // ── Root: silently re-hydrate user on first load ───────────────────────────────
 function AuthHydrator({ children }: { children: React.ReactNode }) {
-  const { fetchMe, isAuthenticated, isLoading } = useAuthStore();
+  const { fetchMe, isLoading } = useAuthStore();
   const hasAttemptedHydration = useRef(false);
   useEffect(() => {
     const token = localStorage.getItem('accessToken');
-    if (token && !isAuthenticated && !isLoading && !hasAttemptedHydration.current) {
+    if (token && !isLoading && !hasAttemptedHydration.current) {
       hasAttemptedHydration.current = true;
       fetchMe();
     }
-  }, [fetchMe, isAuthenticated, isLoading]);
+  }, [fetchMe, isLoading]);
   return <>{children}</>;
 }
 
@@ -83,7 +83,7 @@ export function AppRoutes() {
             <Route path="attendance" element={<AttendancePage />} />
             <Route path="bookings" element={<BookingsPage />} />
             <Route path="reservations" element={<ReservationsPage />} />
-            <Route path="reports" element={<ReportsPage />} />
+            <Route path="reports" element={<ProtectedRoute roles={['super_admin', 'admin']}><ReportsPage /></ProtectedRoute>} />
             {/* Super admin only */}
             <Route path="users" element={<ProtectedRoute roles={['super_admin']}><UsersPage /></ProtectedRoute>} />
             <Route path="branches" element={<ProtectedRoute roles={['super_admin']}><BranchesPage /></ProtectedRoute>} />

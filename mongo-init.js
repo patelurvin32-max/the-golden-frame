@@ -23,6 +23,9 @@ db.createCollection('expenses');
 db.createCollection('attendance');
 db.createCollection('notifications');
 db.createCollection('activitylogs');
+db.activitylogs.createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 30 });
+db.activitylogs.createIndex({ branch: 1, createdAt: -1 });
+db.activitylogs.createIndex({ action: 1, description: 1 });
 db.createCollection('settings');
 db.createCollection('membershipplans');
 

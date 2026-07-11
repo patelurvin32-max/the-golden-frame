@@ -36,21 +36,20 @@ export default function LoginPage() {
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="relative w-full max-w-md p-8">
         {/* Logo */}
-        <div className="text-center mb-8">
-          <img 
-            src="/assets/tgf.jpg" 
-            alt="The Golden Frame Logo" 
-            className="h-24 w-24 rounded-2xl mx-auto mb-4 shadow-lg shadow-blue-500/30 object-contain"
+        {/* Logo */}
+        <div className="text-center mb-6">
+          <img
+            src="/assets/tgf.jpg"
+            alt="The Golden Frame Logo"
+            className="mx-auto mb-4 h-auto w-64 sm:w-72 md:w-80 lg:w-96 object-contain"
           />
-          <h1 className="text-3xl font-bold text-gradient">The Golden Frame</h1>
         </div>
-
         {/* Card */}
         <div className="rounded-2xl border border-border bg-card p-6 shadow-2xl">
-          <h2 className="text-lg font-semibold mb-5">Sign in to your account</h2>
+          <h2 className="text-lg font-semibold mt-2 mb-6">Sign in to your account</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1.5">
-              <Label htmlFor="email">Email address</Label>
+              <Label htmlFor="email">Email</Label>
               <input
                 id="email"
                 type="email"
@@ -85,8 +84,8 @@ export default function LoginPage() {
                 </button>
               </div>
             </div>
-            <button 
-              type="submit" 
+            <button
+              type="submit"
               disabled={isLoading}
               className="w-full h-11 px-6 text-base rounded-xl font-medium transition-all duration-200 bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:opacity-90 shadow-lg shadow-blue-500/25 disabled:opacity-50 disabled:pointer-events-none"
             >

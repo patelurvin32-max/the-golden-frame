@@ -15,9 +15,12 @@ const cookieOptions = (maxAgeMs) => {
     secure: isProduction || sameSiteValue === 'none',
     sameSite: sameSiteValue,
     maxAge: maxAgeMs,
+    path: '/',
   };
 
-  if (isProduction && process.env.CLIENT_URL) {
+  // Don't set domain in production for cross-origin cookies
+  // The browser will handle it correctly with SameSite=None and Secure
+  if (!isProduction && process.env.CLIENT_URL && process.env.CLIENT_URL.includes('localhost')) {
     try {
       const clientUrl = new URL(process.env.CLIENT_URL);
       options.domain = clientUrl.hostname;

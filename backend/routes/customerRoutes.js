@@ -21,6 +21,20 @@ router
       body('paymentStatus').notEmpty().withMessage('Payment Status is required'),
       body('paymentMethod').notEmpty().withMessage('Payment Method is required')
         .isIn(['cash', 'upi', 'mixed']).withMessage('Invalid payment method'),
+      body('billAmount')
+        .notEmpty().withMessage('Total Amount is required')
+        .custom((value) => {
+          const text = typeof value === 'number' ? String(value) : value;
+          return /^\d+(\.\d{1,2})?$/.test(text);
+        }).withMessage('Total Amount must be a valid number with up to two decimals'),
+      body('cashAmount').optional().custom((value) => {
+        const text = typeof value === 'number' ? String(value) : value;
+        return /^\d+(\.\d{1,2})?$/.test(text);
+      }).withMessage('Cash Amount must be a valid number with up to two decimals'),
+      body('onlineAmount').optional().custom((value) => {
+        const text = typeof value === 'number' ? String(value) : value;
+        return /^\d+(\.\d{1,2})?$/.test(text);
+      }).withMessage('Online Amount must be a valid number with up to two decimals'),
     ],
     validate,
     customerController.createCustomer

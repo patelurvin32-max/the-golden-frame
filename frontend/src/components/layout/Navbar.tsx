@@ -11,14 +11,16 @@ export const Navbar = () => {
   const { user } = useAuthStore();
   const [showNotif, setShowNotif] = useState(false);
 
-  const { data: branchData } = useQuery({
+  const { data: branches = [] } = useQuery({
     queryKey: ['branches'],
     queryFn: () => branchService.getAll().then((r) => r.data.data.branches),
+    enabled: user?.role === 'super_admin',
   });
 
   const { data: notifData } = useQuery({
     queryKey: ['notifications'],
     queryFn: () => notificationService.getAll().then((r) => r.data as any),
+    enabled: Boolean(user),
     refetchInterval: 300000,
   });
 
@@ -33,14 +35,14 @@ export const Navbar = () => {
       </button>
 
       {/* Branch selector (manager/staff restricted to assigned branches) */}
-      {user?.role === 'super_admin' && branchData && (
+      {user?.role === 'super_admin' && Array.isArray(branches) && branches.length > 0 && (
         <Select
           value={selectedBranch || ''}
           onChange={(e) => setSelectedBranch(e.target.value || null)}
           className="w-40 h-8 text-xs"
         >
           <option value="">All Branches</option>
-          {branchData.map((b: Branch) => (
+          {branches.map((b: Branch) => (
             <option key={b._id} value={b._id}>{b.name}</option>
           ))}
         </Select>
