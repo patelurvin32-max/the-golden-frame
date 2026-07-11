@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { customerService, menuService, billingService, branchService } from '@/services';
@@ -9,7 +9,7 @@ import {
   Table2, TableHeader, TableBody, TableRow, TableHead, TableCell,
   Badge, Modal, useToast, ConfirmDialog
 } from '@/components/ui';
-import { formatCurrency, formatDate, cn } from '@/utils';
+import { formatCurrency, formatDate, parseCurrencyValue, cn } from '@/utils';
 
 const TIERS: Record<string, { color: string; icon: string }> = {
   silver: { color: 'bg-slate-500/10 text-slate-300 border-slate-500/20', icon: '🥈' },
@@ -68,18 +68,21 @@ export default function CustomersPage() {
   const { data: categoriesData } = useQuery({
     queryKey: ['menu-categories'],
     queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data),
+    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
+    gcTime: 15 * 60 * 1000, // Keep in cache for 15 minutes
   });
 
-  const categories: MenuCategoryDoc[] = (categoriesData as any)?.data?.categories || [];
+  const categories: MenuCategoryDoc[] = Array.isArray((categoriesData as any)?.data?.categories) ? (categoriesData as any).data.categories : [];
 
   // Fetch branches for admin/super admin
   const { data: branchesData } = useQuery({
     queryKey: ['branches'],
-    queryFn: () => branchService.getAll().then((r) => r.data),
+    queryFn: () => branchService.getAll().then((r) => r.data.data.branches),
     enabled: user?.role === 'admin' || user?.role === 'super_admin',
+    staleTime: 15 * 60 * 1000,
+    gcTime: 20 * 60 * 1000,
   });
-
-  const branches: Branch[] = Array.isArray(branchesData) ? branchesData : (branchesData as any)?.data?.branches || [];
+  const branches: Branch[] = Array.isArray(branchesData) ? branchesData : [];
 
   // Fetch menu items filtered by category and branch
   const menuParams: Record<string, string> = { limit: '1000' };
@@ -91,20 +94,24 @@ export default function CustomersPage() {
     queryKey: ['menu-items', form.menuCategoryId, form.branch || selectedBranch],
     queryFn: () => menuService.getAll(menuParams).then((r) => r.data),
     enabled: !!form.menuCategoryId,
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+    gcTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
   });
 
-  const menuItems: MenuItem[] = (menuItemsData as any)?.data?.items || [];
+  const menuItems: MenuItem[] = Array.isArray((menuItemsData as any)?.data?.items) ? (menuItemsData as any).data.items : [];
   
-  // Deduplicate menu items by name when viewing all branches
-  const availableMenuItems = menuItems.reduce((unique: MenuItem[], item: MenuItem) => {
-    const exists = unique.find((u) => u.name === item.name);
-    if (!exists) {
-      unique.push(item);
-    }
-    return unique;
-  }, []);
+  // Deduplicate menu items by name when viewing all branches (memoized)
+  const availableMenuItems = useMemo(() => {
+    return menuItems.reduce((unique: MenuItem[], item: MenuItem) => {
+      const exists = unique.find((u) => u.name === item.name);
+      if (!exists) {
+        unique.push(item);
+      }
+      return unique;
+    }, []);
+  }, [menuItems]);
 
-  const customers: Customer[] = (data as any)?.data?.customers || [];
+  const customers: Customer[] = Array.isArray((data as any)?.data?.customers) ? (data as any).data.customers : [];
   const total: number = (data as any)?.total || 0;
   const pages: number = (data as any)?.pages || 1;
   const filtered: number = (data as any)?.filtered || total;
@@ -207,15 +214,19 @@ export default function CustomersPage() {
     if (!form.paymentStatus) { toast.error('Payment Status is required'); return; }
     if (!form.paymentMethod) { toast.error('Payment Method is required'); return; }
 
-    // Mixed payment validation
-    if (form.paymentMethod === 'mixed') {
-      const cashAmount = Number(form.cashAmount) || 0;
-      const onlineAmount = Number(form.onlineAmount) || 0;
-      const totalPaid = cashAmount + onlineAmount;
-      const totalBill = Number(form.billAmount) || 0;
+    const billAmount = parseCurrencyValue(form.billAmount);
+    if (Number.isNaN(billAmount)) {
+      toast.error('Total Amount must be a valid number with up to two decimals');
+      return;
+    }
 
-      if (totalPaid !== totalBill) {
-        toast.error(`Cash Amount + Online Amount must equal the total bill amount (${formatCurrency(totalBill)})`);
+    const cashAmount = parseCurrencyValue(form.cashAmount) || 0;
+    const onlineAmount = parseCurrencyValue(form.onlineAmount) || 0;
+    const totalPaid = Math.round((cashAmount + onlineAmount) * 100) / 100;
+
+    if (form.paymentMethod === 'mixed') {
+      if (totalPaid !== billAmount) {
+        toast.error(`Cash Amount + Online Amount must equal the total bill amount (${formatCurrency(billAmount)})`);
         return;
       }
     }
@@ -223,14 +234,14 @@ export default function CustomersPage() {
     const payload = {
       ...form,
       branch,
-      billAmount: Number(form.billAmount),
+      billAmount,
       startTime: new Date(form.startTime).toISOString(),
       ...(form.endTime && { endTime: new Date(form.endTime).toISOString() }),
-      ...(form.numberOfPlayers && { numberOfPlayers: parseInt(form.numberOfPlayers) }),
+      ...(form.numberOfPlayers && { numberOfPlayers: parseInt(form.numberOfPlayers, 10) }),
       ...(form.paymentMethod === 'mixed' && {
-        cashAmount: Number(form.cashAmount) || 0,
-        onlineAmount: Number(form.onlineAmount) || 0,
-        totalPaid: (Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0),
+        cashAmount,
+        onlineAmount,
+        totalPaid,
       }),
     };
 
@@ -492,7 +503,6 @@ export default function CustomersPage() {
                 onChange={(e) => setForm((f) => ({ ...f, billAmount: e.target.value }))}
                 placeholder="Enter total bill amount"
               />
-              <p className="text-xs text-muted-foreground">Enter the total bill amount manually</p>
             </div>
           </div>
 
