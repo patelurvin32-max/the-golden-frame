@@ -18,7 +18,19 @@ const ROLE_LIST = Object.values(ROLES);
 const PERMISSIONS = {
   [ROLES.ADMIN]: [
     'dashboard:view',
+    'tables:view',
+    'tables:operate',
+    'billing:manage',
+    'customers:manage',
+    'customers:create',
+    'customers:view',
+    'inventory:manage',
+    'expenses:manage',
+    'attendance:manage',
     'reports:view',
+    'bookings:manage',
+    'menu:manage',
+    'menu:view',
   ],
   [ROLES.BRANCH_MANAGER]: [
     'dashboard:view',
