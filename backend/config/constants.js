@@ -54,6 +54,7 @@ const PERMISSIONS = {
     'billing:manage',
     'customers:view',
     'customers:create',
+    'bookings:manage',
     'menu:view',
     'reports:view',
   ],
