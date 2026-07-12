@@ -76,12 +76,40 @@ router.patch(
       if (receipt.footer) Object.assign(settings.receipt.footer, receipt.footer);
     }
 
-    const allowed = ['businessName', 'logoUrl', 'currency', 'currencySymbol', 'taxPercent', 'timezone', 'backupEnabled'];
+    const allowed = [
+      'businessName',
+      'logoUrl',
+      'currency',
+      'currencySymbol',
+      'taxPercent',
+      'timezone',
+      'backupEnabled',
+      'dailyReportEnabled',
+      'dailyReportFromEmail',
+    ];
     allowed.forEach((key) => {
       if (body[key] !== undefined) {
         settings[key] = body[key];
       }
     });
+
+    if (body.dailyReportEmails !== undefined) {
+      settings.dailyReportEmails = Array.isArray(body.dailyReportEmails)
+        ? body.dailyReportEmails
+        : String(body.dailyReportEmails).split(/[,;]+/).map((email) => email.trim()).filter(Boolean);
+    }
+
+    if (body.dailyReportRecipientEmails !== undefined) {
+      settings.dailyReportRecipientEmails = Array.isArray(body.dailyReportRecipientEmails)
+        ? body.dailyReportRecipientEmails
+        : String(body.dailyReportRecipientEmails).split(/[,;]+/).map((email) => email.trim()).filter(Boolean);
+    }
+
+    if (body.dailyReportBranchIds !== undefined) {
+      settings.dailyReportBranchIds = Array.isArray(body.dailyReportBranchIds)
+        ? body.dailyReportBranchIds
+        : String(body.dailyReportBranchIds).split(/[,;]+/).map((branchId) => branchId.trim()).filter(Boolean);
+    }
 
     settings.markModified('receipt');
     await settings.save();

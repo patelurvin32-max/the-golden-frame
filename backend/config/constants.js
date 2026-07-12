@@ -54,6 +54,7 @@ const PERMISSIONS = {
     'billing:manage',
     'customers:view',
     'customers:create',
+    'customers:manage',
     'bookings:manage',
     'menu:view',
     'reports:view',
@@ -72,7 +73,7 @@ const TABLE_STATUS = ['available', 'running', 'reserved', 'maintenance'];
 
 const BOOKING_STATUS = ['pending', 'confirmed', 'completed', 'cancelled'];
 
-const PAYMENT_METHODS = ['cash', 'upi', 'mixed'];
+const PAYMENT_METHODS = ['cash', 'upi', 'mixed', 'wallet'];
 
 const MEMBERSHIP_TIERS = ['silver', 'gold', 'platinum'];
 

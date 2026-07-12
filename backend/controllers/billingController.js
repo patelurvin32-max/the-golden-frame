@@ -1,6 +1,7 @@
 const { Bill, Payment } = require('../models/Billing');
 const Session = require('../models/Session');
 const Customer = require('../models/Customer');
+const Order = require('../models/Order');
 const { Inventory } = require('../models/Operations');
 const { MenuItem } = require('../models/Operations');
 const { Settings } = require('../models/System');
@@ -71,7 +72,7 @@ exports.createBill = asyncHandler(async (req, res, next) => {
   // 3. Discount calculation
   let discountAmount = 0;
   if (discountType === 'flat') discountAmount = Math.min(discountValue, subtotal);
-  if (discountType === 'percent') discountAmount = Math.round((subtotal * discountValue) / 100 * 100) / 100;
+  if (discountType === 'percent') discountAmount = (subtotal * discountValue) / 100;
 
   // 4. Membership discount
   let membershipDiscount = 0;
@@ -81,7 +82,7 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     if (customer?.membership?.tier) {
       const plan = await MembershipPlan.findOne({ tier: customer.membership.tier, isActive: true });
       if (plan) {
-        membershipDiscount = Math.round((subtotal * plan.discountPercent) / 100 * 100) / 100;
+        membershipDiscount = (subtotal * plan.discountPercent) / 100;
       }
     }
   }
@@ -90,7 +91,7 @@ exports.createBill = asyncHandler(async (req, res, next) => {
   const settings = await Settings.findOne();
   const taxPercent = settings?.taxPercent || 0;
   const afterDiscounts = Math.max(0, subtotal - discountAmount - membershipDiscount);
-  const tax = Math.round((afterDiscounts * taxPercent) / 100 * 100) / 100;
+  const tax = (afterDiscounts * taxPercent) / 100;
   const total = afterDiscounts + tax;
 
   const invoiceNumber = await generateInvoiceNumber();
@@ -166,9 +167,17 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
 // GET /api/bills/:id/pdf  — stream PDF invoice
 exports.downloadPDF = asyncHandler(async (req, res, next) => {
   const bill = await Bill.findById(req.params.id)
-    .populate('customer', 'name phone paymentMethod cashAmount onlineAmount')
-    .populate('branch', 'name');
+    .populate('customer', 'name phone walletBalance')
+    .populate('order', 'paymentMethod cashAmount onlineAmount')
+    .populate('branch', 'name address phone')
+    .populate('session')
+    .populate('createdBy', 'name');
   if (!bill) return next(new AppError('Bill not found.', 404));
+
+  // Populate session table details if session exists
+  if (bill.session) {
+    await bill.session.populate('table', 'name type');
+  }
 
   const settings = await Settings.findOne();
   const pdfBuffer = await generateInvoicePDF(bill.toObject(), settings?.toObject() || {});
@@ -226,26 +235,39 @@ exports.getBill = asyncHandler(async (req, res, next) => {
 
 // POST /api/bills/from-customer  — create a bill directly from customer data
 exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
-  const { customerId } = req.body;
+  const { customerId, orderId } = req.body;
 
-  const customer = await Customer.findById(customerId)
-    .populate('menuCategoryId', 'name')
-    .populate('menuItemId', 'name price')
-    .populate('branch', 'name');
+  let order;
+  if (orderId) {
+    order = await Order.findById(orderId)
+      .populate('menuCategoryId', 'name')
+      .populate('menuItemId', 'name price')
+      .populate('customer', 'name phone branch walletBalance')
+      .populate('branch', 'name');
+  } else if (customerId) {
+    order = await Order.findOne({ customer: customerId, isActive: true })
+      .populate('menuCategoryId', 'name')
+      .populate('menuItemId', 'name price')
+      .populate('customer', 'name phone branch walletBalance')
+      .populate('branch', 'name')
+      .sort('-createdAt');
+  }
   
-  if (!customer) return next(new AppError('Customer not found.', 404));
+  if (!order) return next(new AppError('Order not found.', 404));
 
-  // Build line items from customer's billAmount
+  const customer = order.customer;
+
+  // Build line items from order's billAmount
   const items = [];
   let subtotal = 0;
 
-  if (customer.menuItemId) {
-    const menuItem = customer.menuItemId;
-    const itemTotal = customer.billAmount || menuItem.price || 0;
+  if (order.menuItemId) {
+    const menuItem = order.menuItemId;
+    const itemTotal = order.billAmount || menuItem.price || 0;
     items.push({
-      description: `${customer.menuCategoryId?.name || 'Menu'} - ${menuItem.name}`,
+      description: `${order.menuCategoryId?.name || 'Menu'} - ${menuItem.name}`,
       quantity: 1,
-      unitPrice: customer.billAmount || menuItem.price || 0,
+      unitPrice: order.billAmount || menuItem.price || 0,
       total: itemTotal,
       type: 'other',
     });
@@ -255,36 +277,39 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
   // Tax calculation
   const settings = await Settings.findOne();
   const taxPercent = settings?.taxPercent || 0;
-  const tax = Math.round((subtotal * taxPercent) / 100 * 100) / 100;
+  const tax = (subtotal * taxPercent) / 100;
   const total = subtotal + tax;
 
   const invoiceNumber = await generateInvoiceNumber();
 
   const bill = await Bill.create({
     invoiceNumber,
-    branch: customer.branch._id || customer.branch,
+    branch: order.branch._id || order.branch,
     customer: customer._id,
+    order: order._id,
     items,
     subtotal,
     tax,
     total,
-    paymentStatus: customer.paymentStatus || 'unpaid',
+    walletUsed: order.walletAmount || 0,
+    walletBalance: customer.walletBalance || 0,
+    paymentStatus: order.paymentStatus || 'unpaid',
     createdBy: req.user._id,
   });
 
   // Update customer spending
-  await Customer.findByIdAndUpdate(customerId, { $inc: { totalSpending: total } });
+  await Customer.findByIdAndUpdate(customer._id, { $inc: { totalSpending: total } });
 
   await logActivity({
     userId: req.user._id,
-    branchId: customer.branch._id || customer.branch,
+    branchId: order.branch._id || order.branch,
     action: 'bill.create',
     entity: 'Bill',
     entityId: bill._id,
-    description: `${req.user.name} created bill ${invoiceNumber} from customer ${customer.name} — ₹${total}`,
+    description: `${req.user.name} created bill ${invoiceNumber} from order ${order.orderId} — ₹${total}`,
     ipAddress: req.ip,
   });
 
-  const populated = await Bill.findById(bill._id).populate('customer', 'name phone').populate('branch', 'name');
+  const populated = await Bill.findById(bill._id).populate('customer', 'name phone walletBalance').populate('branch', 'name');
   res.status(201).json({ success: true, data: { bill: populated } });
 });

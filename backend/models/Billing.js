@@ -19,6 +19,7 @@ const billSchema = new mongoose.Schema(
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
     session: { type: mongoose.Schema.Types.ObjectId, ref: 'Session' },
+    order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
     items: [billItemSchema],
     subtotal: { type: Number, required: true, default: 0 },
     discountType: { type: String, enum: ['flat', 'percent', null], default: null },
@@ -28,6 +29,8 @@ const billSchema = new mongoose.Schema(
     membershipDiscount: { type: Number, default: 0 },
     tax: { type: Number, default: 0 },
     total: { type: Number, required: true, default: 0 },
+    walletUsed: { type: Number, default: 0 },
+    walletBalance: { type: Number, default: 0 },
     paymentStatus: { type: String, enum: ['unpaid', 'paid', 'partial'], default: 'unpaid' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     pdfUrl: { type: String },
@@ -53,6 +56,11 @@ const paymentSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+billSchema.index({ branch: 1, createdAt: -1, paymentStatus: 1 });
+billSchema.index({ branch: 1, createdAt: -1, customer: 1 });
+paymentSchema.index({ branch: 1, createdAt: -1, method: 1 });
+paymentSchema.index({ bill: 1, createdAt: -1 });
 
 module.exports = {
   Bill: mongoose.model('Bill', billSchema),

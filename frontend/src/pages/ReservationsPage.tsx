@@ -137,6 +137,7 @@ function ReservationForm({
   const initialForm = { ...EMPTY_FORM, ...initial } as any;
   delete initialForm.table;
   const [form, setForm] = useState(initialForm);
+  const [phoneError, setPhoneError] = useState('');
   const { user } = useAuthStore();
 
   const { data: branches } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
@@ -183,7 +184,21 @@ function ReservationForm({
         </div>
         <div className="space-y-1.5">
           <Label>Mobile Number *</Label>
-          <Input value={form.phoneNumber} onChange={(e) => set('phoneNumber', e.target.value)} placeholder="+91 98765 43210" />
+          <Input 
+            value={form.phoneNumber} 
+            onChange={(e) => {
+              const numericPhone = e.target.value.replace(/\D/g, '').slice(0, 10);
+              set('phoneNumber', numericPhone);
+              if (numericPhone.length > 0 && numericPhone.length < 10) {
+                setPhoneError('Mobile number must contain exactly 10 digits.');
+              } else {
+                setPhoneError('');
+              }
+            }}
+            placeholder="10-digit mobile number"
+            maxLength={10}
+          />
+          {phoneError && <p className="text-xs text-red-400">{phoneError}</p>}
         </div>
       </div>
       <div className="space-y-1.5">

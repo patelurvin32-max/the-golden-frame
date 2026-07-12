@@ -11,7 +11,8 @@ export const parseCurrencyValue = (value: string) => {
   const normalized = value.trim();
   if (normalized === '') return NaN;
   if (!/^\d+(\.\d{1,2})?$/.test(normalized)) return NaN;
-  return Math.round(Number(normalized) * 100) / 100;
+  // Return exact value without any rounding - preserve user input
+  return Number(normalized);
 };
 
 export const formatDate = (date: string | Date, format?: string) => {
@@ -45,7 +46,7 @@ export const getElapsedMinutes = (startTime: string, pauses: { pausedAt: string;
 };
 
 export const getRunningAmount = (minutes: number, hourlyRate: number) =>
-  Math.round(((minutes / 60) * hourlyRate + Number.EPSILON) * 100) / 100;
+  (minutes / 60) * hourlyRate;
 
 export const downloadBlob = (blob: Blob, filename: string) => {
   const url = URL.createObjectURL(blob);

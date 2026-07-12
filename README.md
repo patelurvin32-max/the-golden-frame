@@ -21,6 +21,10 @@ A **production-ready, full-stack restaurant and cafe management platform** built
 | **Audit Logs** | Complete activity history for compliance |
 | **Settings** | Business name, currency, tax %, receipt footer |
 
+## Daily Business Report Email
+
+The backend supports an automated daily business report email flow for each branch. Configure the delivery recipient and mail transport with environment variables such as `DAILY_REPORT_RECIPIENT_EMAILS`, `DAILY_REPORT_SCHEDULER_SECRET`, `REPORT_FROM_EMAIL`, and either `RESEND_API_KEY` or SMTP settings.
+
 ---
 
 ## 🏗️ Architecture

@@ -1,8 +1,11 @@
 // ── Expense Routes ────────────────────────────────────────────────────────────
 const express = require('express');
+const asyncHandler = require('../utils/asyncHandler');
 const { body } = require('express-validator');
 const { protect, requirePermission } = require('../middleware/auth');
 const validate = require('../middleware/validate');
+const schedulerAuth = require('../middleware/schedulerAuth');
+const { runDailyBusinessReport } = require('../services/dailyBusinessReportService');
 
 // Expenses
 const expenseController = require('../controllers/expenseController');
@@ -46,7 +49,6 @@ reportsRouter.get('/export/excel', reportsController.exportExcel);
 
 // Settings
 const { Settings } = require('../models/System');
-const asyncHandler = require('../utils/asyncHandler');
 const { ROLES } = require('../config/constants');
 const settingsRouter = express.Router();
 settingsRouter.use(protect);
@@ -130,4 +132,23 @@ notifRouter.patch('/:id/read', asyncHandler(async (req, res) => {
   res.status(200).json({ success: true });
 }));
 
-module.exports = { expenseRouter, bookingRouter, attendanceRouter, reportsRouter, settingsRouter, logsRouter, notifRouter };
+// Internal scheduler trigger for automated report dispatch
+const schedulerRouter = express.Router();
+schedulerRouter.post('/daily-business-report', schedulerAuth, asyncHandler(async (req, res) => {
+  const result = await runDailyBusinessReport({
+    settings: req.body?.settings,
+    now: req.body?.now ? new Date(req.body.now) : new Date(),
+    triggeredBy: req.body?.triggeredBy || 'scheduler',
+  });
+
+  const hasFailures = Array.isArray(result.results) && result.results.some((entry) => entry.status === 'failed');
+
+  res.status(hasFailures ? 207 : 200).json({
+    success: !hasFailures,
+    message: 'Daily business report processing completed.',
+    partialFailure: hasFailures,
+    data: result,
+  });
+}));
+
+module.exports = { expenseRouter, bookingRouter, attendanceRouter, reportsRouter, settingsRouter, logsRouter, notifRouter, schedulerRouter };

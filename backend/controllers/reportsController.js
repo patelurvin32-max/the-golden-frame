@@ -3,6 +3,8 @@ const { Expense } = require('../models/Operations');
 const Session = require('../models/Session');
 const Table = require('../models/Table');
 const Customer = require('../models/Customer');
+const Order = require('../models/Order');
+const WalletTransaction = require('../models/WalletTransaction');
 const asyncHandler = require('../utils/asyncHandler');
 const ExcelJS = require('exceljs');
 const { ROLES } = require('../config/constants');
@@ -36,6 +38,13 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
     runningTables,
     availableTables,
     todayCustomers,
+    totalWalletBalance,
+    todayWalletCredits,
+    todayWalletDebits,
+    todayPaidOrders,
+    todayPartialOrders,
+    todayUnpaidOrders,
+    totalOutstandingBalance,
   ] = await Promise.all([
     Bill.aggregate([{ $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: todayStart } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
     Bill.aggregate([{ $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: monthStart } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
@@ -111,6 +120,15 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
     Table.countDocuments({ ...(bf ? { branch: bf } : {}), status: 'running', isActive: true }),
     Table.countDocuments({ ...(bf ? { branch: bf } : {}), status: 'available', isActive: true }),
     Session.countDocuments({ ...(matchBranch), startTime: { $gte: todayStart } }),
+    Customer.aggregate([{ $match: { ...matchBranch, isActive: true } }, { $group: { _id: null, total: { $sum: '$walletBalance' } } }]),
+    WalletTransaction.aggregate([{ $match: { ...matchBranch, type: 'credit', createdAt: { $gte: todayStart } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+    WalletTransaction.aggregate([{ $match: { ...matchBranch, type: 'debit', createdAt: { $gte: todayStart } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+    // Payment status breakdown
+    Order.aggregate([{ $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: todayStart } } }, { $count: 'count' }]),
+    Order.aggregate([{ $match: { ...matchBranch, paymentStatus: 'partial', createdAt: { $gte: todayStart } } }, { $count: 'count' }]),
+    Order.aggregate([{ $match: { ...matchBranch, paymentStatus: 'unpaid', createdAt: { $gte: todayStart } } }, { $count: 'count' }]),
+    // Total outstanding balance
+    Order.aggregate([{ $match: { ...matchBranch, paymentStatus: { $in: ['partial', 'unpaid'] } } }, { $group: { _id: null, total: { $sum: '$pendingPaymentAmount' } } }]),
   ]);
 
   const todayRev = todayRevenue[0]?.total || 0;
@@ -134,6 +152,17 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
       collection: {
         cash: { today: todayCash, month: monthCash },
         online: { today: todayOnline, month: monthOnline },
+      },
+      wallet: {
+        totalBalance: totalWalletBalance[0]?.total || 0,
+        todayCredits: todayWalletCredits[0]?.total || 0,
+        todayDebits: todayWalletDebits[0]?.total || 0,
+      },
+      paymentStatus: {
+        paid: todayPaidOrders[0]?.count || 0,
+        partial: todayPartialOrders[0]?.count || 0,
+        unpaid: todayUnpaidOrders[0]?.count || 0,
+        outstandingBalance: totalOutstandingBalance[0]?.total || 0,
       },
     },
   });

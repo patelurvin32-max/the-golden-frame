@@ -1,10 +1,11 @@
 import { useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { settingsService } from '@/services';
+import { branchService, settingsService } from '@/services';
 import api from '@/services/api';
 import { Button, Card, CardContent, Input, Label, Select, useToast } from '@/components/ui';
 import { cn } from '@/utils';
+import type { Branch } from '@/types';
 
 type SettingsState = {
   businessName: string;
@@ -14,6 +15,10 @@ type SettingsState = {
   taxPercent: number;
   timezone: string;
   backupEnabled: boolean;
+  dailyReportEnabled: boolean;
+  dailyReportFromEmail: string;
+  dailyReportEmails: string;
+  dailyReportBranchIds: string[];
   receipt: {
     templateName: string;
     fontStyle: 'Helvetica' | 'Courier' | 'Times-Roman';
@@ -68,6 +73,10 @@ const createDefaultSettings = (): SettingsState => ({
   taxPercent: 0,
   timezone: 'Asia/Kolkata',
   backupEnabled: true,
+  dailyReportEnabled: true,
+  dailyReportFromEmail: '',
+  dailyReportEmails: '',
+  dailyReportBranchIds: [],
   receipt: {
     templateName: 'The Golden Frame Receipt',
     fontStyle: 'Helvetica',
@@ -410,6 +419,10 @@ export default function SettingsPage() {
   const [logoUploading, setLogoUploading] = useState(false);
   const [activeTab, setActiveTab] = useState<'brand' | 'receipt' | 'system'>('brand');
   const [settings, setSettings] = useState<SettingsState>(createDefaultSettings());
+  const { data: branchesData = [] } = useQuery({
+    queryKey: ['branches'],
+    queryFn: () => branchService.getAll().then((response) => response.data.data.branches),
+  });
 
   useQuery({
     queryKey: ['settings'],
@@ -420,6 +433,13 @@ export default function SettingsPage() {
           setSettings((current) => ({
             ...current,
             ...data,
+            dailyReportFromEmail: data.dailyReportFromEmail || current.dailyReportFromEmail,
+            dailyReportBranchIds: (data.dailyReportBranchIds || []).map((branch: any) => (typeof branch === 'string' ? branch : branch._id)),
+            dailyReportEmails: Array.isArray(data.dailyReportEmails)
+              ? data.dailyReportEmails.join(', ')
+              : Array.isArray(data.dailyReportRecipientEmails)
+                ? data.dailyReportRecipientEmails.join(', ')
+                : current.dailyReportEmails,
             receipt: {
               ...current.receipt,
               ...(data.receipt || {}),
@@ -454,6 +474,15 @@ export default function SettingsPage() {
 
   const setTop = (key: keyof Omit<SettingsState, 'receipt'>, value: SettingsState[keyof Omit<SettingsState, 'receipt'>]) => {
     setSettings((current) => ({ ...current, [key]: value }));
+  };
+
+  const setBranchSelection = (branchId: string, checked: boolean) => {
+    setSettings((current) => ({
+      ...current,
+      dailyReportBranchIds: checked
+        ? [...current.dailyReportBranchIds, branchId]
+        : current.dailyReportBranchIds.filter((id) => id !== branchId),
+    }));
   };
 
   const setHeader = (key: keyof SettingsState['receipt']['header'], value: string | boolean) => {
@@ -914,6 +943,60 @@ export default function SettingsPage() {
                     <p className="text-xs text-muted-foreground">Automatically backup data daily</p>
                   </div>
                   <Toggle checked={settings.backupEnabled} onChange={(value) => setTop('backupEnabled', value)} />
+                </div>
+                <div className="space-y-4 rounded-xl border border-border bg-muted/20 p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium">Daily Business Report</p>
+                      <p className="text-xs text-muted-foreground">Send the automated daily report by email</p>
+                    </div>
+                    <Toggle
+                      checked={settings.dailyReportEnabled}
+                      onChange={(value) => setTop('dailyReportEnabled', value)}
+                    />
+                  </div>
+                  {settings.dailyReportEnabled ? (
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div className="space-y-1.5">
+                        <Label>Sender Email</Label>
+                        <Input
+                          value={settings.dailyReportFromEmail}
+                          onChange={(e) => setTop('dailyReportFromEmail', e.target.value)}
+                          placeholder="reports@thegoldenframe.com"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Client Email</Label>
+                        <Input
+                          value={settings.dailyReportEmails}
+                          onChange={(e) => setTop('dailyReportEmails', e.target.value)}
+                          placeholder="client@example.com"
+                        />
+                      </div>
+                      <div className="space-y-1.5 md:col-span-2">
+                        <Label>Branches</Label>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          {branchesData.map((branch: Branch) => (
+                            <label
+                              key={branch._id}
+                              className="flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm"
+                            >
+                              <input
+                                type="checkbox"
+                                className="rounded border-border"
+                                checked={settings.dailyReportBranchIds.includes(branch._id)}
+                                onChange={(e) => setBranchSelection(branch._id, e.target.checked)}
+                              />
+                              <span>{branch.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Leave empty to include all active branches.
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-400">
                   <p className="mb-1 font-semibold">Danger Zone</p>

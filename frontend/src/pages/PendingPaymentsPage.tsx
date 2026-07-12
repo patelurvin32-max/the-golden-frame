@@ -11,13 +11,16 @@ import {
 } from '@/components/ui';
 import { formatCurrency, formatDate, cn } from '@/utils';
 
-const PAYMENT_METHODS = ['cash', 'upi'] as const;
+const PAYMENT_METHODS = ['cash', 'upi', 'mixed', 'wallet'] as const;
 const OVERDUE_DAYS = 7;
 const HIGH_VALUE_THRESHOLD = 2000;
 
 const emptyPaymentForm = {
-  paymentStatus: 'paid' as 'paid' | 'unpaid',
-  paymentMethod: 'cash' as 'cash' | 'upi',
+  paymentStatus: 'paid' as 'paid' | 'partial' | 'unpaid',
+  paymentMethod: 'cash' as 'cash' | 'upi' | 'mixed' | 'wallet',
+  cashAmount: '',
+  onlineAmount: '',
+  walletAmount: '',
   paymentNotes: '',
 };
 
@@ -79,9 +82,10 @@ export default function PendingPaymentsPage() {
   }, [customers]);
 
   const updatePaymentMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: any }) => customerService.update(id, data),
+    mutationFn: ({ id, data }: { id: string; data: any }) => customerService.receivePayment(id, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['customers', selectedBranch, search, page, rowsPerPage, 'unpaid', sortBy, sortOrder] });
+      qc.invalidateQueries({ queryKey: ['customers', selectedBranch, search, page, rowsPerPage, 'partial', sortBy, sortOrder] });
       qc.invalidateQueries({ queryKey: ['reports'] });
       toast.success('Payment received successfully!');
       setPaymentModal(false);
@@ -103,9 +107,16 @@ export default function PendingPaymentsPage() {
 
   const handleReceivePayment = (customer: Customer) => {
     setSelectedCustomer(customer);
+    const billAmount = (customer as any).billAmount || 0;
+    const totalPaid = (customer as any).totalPaid || 0;
+    const pendingAmount = Math.max(0, billAmount - totalPaid);
+    
     setPaymentForm({
-      paymentStatus: 'paid',
+      paymentStatus: pendingAmount > 0 ? 'partial' : 'paid',
       paymentMethod: customer.paymentMethod === 'mixed' ? 'cash' : customer.paymentMethod,
+      cashAmount: '',
+      onlineAmount: '',
+      walletAmount: '',
       paymentNotes: '',
     });
     setPaymentModal(true);
@@ -114,9 +125,24 @@ export default function PendingPaymentsPage() {
   const handleSavePayment = () => {
     if (!selectedCustomer) return;
 
+    const billAmount = (selectedCustomer as any).billAmount || 0;
+    const totalPaid = (selectedCustomer as any).totalPaid || 0;
+    
+    const cashAmount = Number(paymentForm.cashAmount) || 0;
+    const onlineAmount = Number(paymentForm.onlineAmount) || 0;
+    const walletAmount = Number(paymentForm.walletAmount) || 0;
+    const todayPayment = cashAmount + onlineAmount + walletAmount;
+    
+    if (todayPayment === 0) {
+      toast.error('Please enter at least some payment amount');
+      return;
+    }
+
     const payload = {
-      paymentStatus: paymentForm.paymentStatus,
       paymentMethod: paymentForm.paymentMethod,
+      cashAmount,
+      onlineAmount,
+      walletAmount,
       notes: paymentForm.paymentNotes,
     };
 
@@ -326,7 +352,7 @@ export default function PendingPaymentsPage() {
           setPaymentForm(emptyPaymentForm);
         }}
         title="Receive Payment"
-        size="md"
+        size="lg"
       >
         {selectedCustomer && (
           <div className="space-y-4">
@@ -343,12 +369,22 @@ export default function PendingPaymentsPage() {
                   <p className="text-sm font-medium">{selectedCustomer.phone}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Total Bill Amount</p>
+                  <p className="text-xs text-muted-foreground">Bill Amount</p>
                   <p className="text-sm font-bold">{formatCurrency((selectedCustomer as any).billAmount || 0)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Current Payment Status</p>
-                  <Badge variant="danger">Unpaid</Badge>
+                  <p className="text-xs text-muted-foreground">Total Paid</p>
+                  <p className="text-sm font-semibold">{formatCurrency((selectedCustomer as any).totalPaid || 0)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Pending Amount</p>
+                  <p className="text-sm font-bold text-amber-400">{formatCurrency(Math.max(0, ((selectedCustomer as any).billAmount || 0) - ((selectedCustomer as any).totalPaid || 0)))}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Current Status</p>
+                  <Badge variant={(selectedCustomer as any).paymentStatus === 'paid' ? 'success' : (selectedCustomer as any).paymentStatus === 'partial' ? 'warning' : 'danger'}>
+                    {(selectedCustomer as any).paymentStatus === 'paid' ? 'Paid' : (selectedCustomer as any).paymentStatus === 'partial' ? 'Partial' : 'Unpaid'}
+                  </Badge>
                 </div>
               </div>
             </div>
@@ -357,26 +393,73 @@ export default function PendingPaymentsPage() {
             <div className="space-y-3">
               <h3 className="text-sm font-semibold text-muted-foreground">Payment Details</h3>
               <div className="space-y-1.5">
-                <Label>Payment Status *</Label>
-                <Select
-                  value={paymentForm.paymentStatus}
-                  onChange={(e) => setPaymentForm((f) => ({ ...f, paymentStatus: e.target.value as any }))}
-                >
-                  <option value="paid">Paid</option>
-                  <option value="unpaid">Unpaid</option>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
                 <Label>Payment Method *</Label>
                 <Select
                   value={paymentForm.paymentMethod}
                   onChange={(e) => setPaymentForm((f) => ({ ...f, paymentMethod: e.target.value as any }))}
                 >
                   {PAYMENT_METHODS.map((method) => (
-                    <option key={method} value={method} className="capitalize">{method === 'upi' ? 'Online' : method}</option>
+                    <option key={method} value={method} className="capitalize">
+                      {method === 'wallet' ? 'Wallet / Advance Balance' : method === 'upi' ? 'Online (UPI)' : method}
+                    </option>
                   ))}
                 </Select>
               </div>
+              
+              {/* Payment Amount Fields */}
+              <div className="space-y-3 p-3 bg-muted/30 rounded-lg border border-border">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Cash Amount</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={paymentForm.cashAmount}
+                      onChange={(e) => setPaymentForm((f) => ({ ...f, cashAmount: e.target.value }))}
+                      placeholder="Enter cash amount"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Online Amount (UPI)</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={paymentForm.onlineAmount}
+                      onChange={(e) => setPaymentForm((f) => ({ ...f, onlineAmount: e.target.value }))}
+                      placeholder="Enter online amount"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Wallet Amount</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={paymentForm.walletAmount}
+                    onChange={(e) => setPaymentForm((f) => ({ ...f, walletAmount: e.target.value }))}
+                    placeholder="Enter wallet amount"
+                  />
+                  <p className="text-xs text-muted-foreground">Available: {formatCurrency((selectedCustomer as any).walletBalance || 0)}</p>
+                </div>
+                
+                {/* Payment Summary */}
+                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-border">
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Today's Payment</p>
+                    <p className="text-sm font-semibold">{formatCurrency((Number(paymentForm.cashAmount) || 0) + (Number(paymentForm.onlineAmount) || 0) + (Number(paymentForm.walletAmount) || 0))}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Remaining Pending</p>
+                    <p className="text-sm font-semibold text-amber-400">
+                      {formatCurrency(Math.max(0, ((selectedCustomer as any).billAmount || 0) - ((selectedCustomer as any).totalPaid || 0) - ((Number(paymentForm.cashAmount) || 0) + (Number(paymentForm.onlineAmount) || 0) + (Number(paymentForm.walletAmount) || 0))))}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              
               <div className="space-y-1.5">
                 <Label>Payment Notes</Label>
                 <Input

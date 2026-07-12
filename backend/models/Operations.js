@@ -47,6 +47,10 @@ const expenseSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+expenseSchema.index({ branch: 1, date: -1 });
+expenseSchema.index({ branch: 1, date: -1, category: 1 });
+expenseSchema.index({ createdAt: -1 });
+
 const membershipPlanSchema = new mongoose.Schema(
   {
     tier: { type: String, enum: MEMBERSHIP_TIERS, required: true, unique: true },
@@ -105,6 +109,7 @@ const stockTransactionSchema = new mongoose.Schema(
   {
     inventoryItem: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory', required: true },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
+    order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
     quantity: { type: Number, required: true },
     type: { type: String, enum: ['sale', 'refund', 'restock', 'adjustment'], required: true },
     previousStock: { type: Number, required: true },
@@ -119,6 +124,7 @@ const stockTransactionSchema = new mongoose.Schema(
 // Indexes for stock transactions
 stockTransactionSchema.index({ inventoryItem: 1 });
 stockTransactionSchema.index({ customer: 1 });
+stockTransactionSchema.index({ order: 1 });
 stockTransactionSchema.index({ type: 1 });
 stockTransactionSchema.index({ branch: 1 });
 stockTransactionSchema.index({ createdAt: -1 });

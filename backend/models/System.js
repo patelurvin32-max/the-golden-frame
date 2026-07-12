@@ -66,9 +66,15 @@ const settingsSchema = new mongoose.Schema(
     currency: { type: String, default: 'INR' },
     currencySymbol: { type: String, default: '₹' },
     taxPercent: { type: Number, default: 0 },
+    gstNumber: { type: String, trim: true },
     receiptFooterNote: { type: String, default: 'Thank you for visiting!' },
     timezone: { type: String, default: 'Asia/Kolkata' },
     backupEnabled: { type: Boolean, default: true },
+    dailyReportEnabled: { type: Boolean, default: true },
+    dailyReportFromEmail: { type: String, trim: true },
+    dailyReportEmails: [{ type: String, trim: true, lowercase: true }],
+    dailyReportRecipientEmails: [{ type: String, trim: true, lowercase: true }],
+    dailyReportBranchIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Branch' }],
   },
   { timestamps: true }
 );

@@ -134,7 +134,7 @@ exports.stopSession = asyncHandler(async (req, res, next) => {
 
   session.endTime = new Date();
   session.billableMinutes = session.calculateBillableMinutes() + session.extendedMinutes;
-  session.amount = Math.round(((session.billableMinutes / 60) * session.hourlyRate + Number.EPSILON) * 100) / 100;
+  session.amount = (session.billableMinutes / 60) * session.hourlyRate;
   session.status = 'completed';
   await session.save();
 

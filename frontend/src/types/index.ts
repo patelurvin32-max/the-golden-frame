@@ -6,7 +6,7 @@ export type Role = 'super_admin' | 'admin' | 'branch_manager' | 'staff' | 'cashi
 export type TableType = 'pool' | 'snooker' | 'ps5';
 export type TableStatus = 'available' | 'running' | 'reserved' | 'maintenance';
 export type SessionStatus = 'running' | 'paused' | 'completed' | 'cancelled';
-export type PaymentMethod = 'cash' | 'upi' | 'mixed';
+export type PaymentMethod = 'cash' | 'upi' | 'mixed' | 'wallet';
 export type PaymentStatus = 'unpaid' | 'paid' | 'partial';
 export type BookingStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled';
 export type MembershipTier = 'silver' | 'gold' | 'platinum';
@@ -89,13 +89,15 @@ export interface Customer {
     rewardPoints: number;
   };
   notes?: string;
+  walletBalance?: number;
+  outstandingBalance?: number;
   // Menu Management fields
   menuCategoryId: string;
   menuItemId: string;
   startTime: string;
   endTime?: string;
   paymentStatus: 'paid' | 'unpaid' | 'refunded';
-  paymentMethod: 'cash' | 'upi' | 'mixed';
+  paymentMethod: 'cash' | 'upi' | 'mixed' | 'wallet';
   numberOfPlayers?: number;
   billAmount: number;
   createdAt?: string;

@@ -1,0 +1,42 @@
+name: Daily Business Report
+
+on:
+  schedule:
+    - cron: '40 23 * * *'
+  workflow_dispatch:
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger backend report endpoint
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          DAILY_REPORT_SCHEDULER_SECRET: ${{ secrets.DAILY_REPORT_SCHEDULER_SECRET }}
+        run: |
+          if [ -z "$BACKEND_URL" ]; then
+            echo "BACKEND_URL is not configured."
+            exit 1
+          fi
+
+          if [ -z "$DAILY_REPORT_SCHEDULER_SECRET" ]; then
+            echo "DAILY_REPORT_SCHEDULER_SECRET is not configured."
+            exit 1
+          fi
+
+          response=$(curl -sS -w '\n%{http_code}' -X POST "$BACKEND_URL/api/internal/reports/daily-business-report" \
+            -H "Content-Type: application/json" \
+            -H "x-daily-report-secret: $DAILY_REPORT_SCHEDULER_SECRET" \
+            -d '{}')
+
+          http_code=$(echo "$response" | tail -n 1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "$body"
+
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Report trigger failed with HTTP $http_code"
+            exit 1
+          fi
+
+          echo "Report trigger succeeded."

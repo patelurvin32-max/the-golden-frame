@@ -27,17 +27,23 @@ const emptyForm = {
   menuItemId: '',
   startTime: '',
   endTime: '',
-  paymentStatus: 'unpaid' as 'paid' | 'unpaid' | 'refunded',
-  paymentMethod: 'cash' as 'cash' | 'upi' | 'mixed',
+  paymentStatus: 'unpaid' as 'paid' | 'partial' | 'unpaid' | 'refunded',
+  paymentMethod: 'cash' as 'cash' | 'upi' | 'mixed' | 'wallet',
   cashAmount: '',
   onlineAmount: '',
+  walletAmount: '',
+  amountReceived: '',
+  pendingPaymentAmount: '',
   numberOfPlayers: '',
   additionalPlayers: '',
   billAmount: '',
+  addToWallet: false,
+  extraAmount: '',
+  walletBalance: 0,
 };
 
-const PAYMENT_STATUSES = ['paid', 'unpaid', 'refunded'] as const;
-const PAYMENT_METHODS = ['cash', 'upi', 'mixed'] as const;
+const PAYMENT_STATUSES = ['paid', 'partial', 'unpaid', 'refunded'] as const;
+const PAYMENT_METHODS = ['cash', 'upi', 'mixed', 'wallet'] as const;
 
 export default function CustomersPage() {
   const qc = useQueryClient();
@@ -53,6 +59,7 @@ export default function CustomersPage() {
   const [form, setForm] = useState(emptyForm);
   const [deleteConfirm, setDeleteConfirm] = useState<Customer | null>(null);
   const [isLookingUp, setIsLookingUp] = useState(false);
+  const [phoneError, setPhoneError] = useState('');
 
   const params: Record<string, string> = { page: String(page), limit: String(rowsPerPage) };
   if (selectedBranch) params.branch = selectedBranch;
@@ -120,6 +127,7 @@ export default function CustomersPage() {
     mutationFn: (d: any) => customerService.create(d),
     onSuccess: (response) => {
       const message = response.data.message;
+      
       if (message && message.includes('Existing customer found')) {
         // Existing customer was loaded
         toast.success(message);
@@ -139,8 +147,11 @@ export default function CustomersPage() {
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) => customerService.update(id, data),
-    onSuccess: () => {
+    onSuccess: (response) => {
+      const updatedWalletBalance = response.data.data?.customer?.walletBalance || 0;
       qc.invalidateQueries({ queryKey: ['customers'] });
+      // Update form with fresh wallet balance from response
+      setForm((f) => ({ ...f, walletBalance: updatedWalletBalance }));
       toast.success('Customer updated');
       setModal(null);
       setSelected(null);
@@ -170,11 +181,21 @@ export default function CustomersPage() {
 
   // Auto-lookup customer by phone number
   const handlePhoneChange = async (phone: string) => {
-    setForm((f) => ({ ...f, phone }));
-    if (phone.length >= 10 && selectedBranch) {
+    // Only allow numeric digits (0-9), limit to 10 digits
+    const numericPhone = phone.replace(/\D/g, '').slice(0, 10);
+    setForm((f) => ({ ...f, phone: numericPhone }));
+    
+    // Set validation error if phone is provided but not 10 digits
+    if (numericPhone.length > 0 && numericPhone.length < 10) {
+      setPhoneError('Mobile number must contain exactly 10 digits.');
+    } else {
+      setPhoneError('');
+    }
+    
+    if (numericPhone.length === 10) {
       setIsLookingUp(true);
       try {
-        const response = await customerService.lookup(phone, selectedBranch);
+        const response = await customerService.lookup(numericPhone, selectedBranch || undefined);
         const customer = response.data.data.customer;
         if (customer) {
           setForm((f) => ({
@@ -183,6 +204,7 @@ export default function CustomersPage() {
             phone: customer.phone,
             email: customer.email || '',
             notes: customer.notes || '',
+            walletBalance: customer.walletBalance || 0,
           }));
           toast.success('Customer found! Details populated.');
         }
@@ -193,6 +215,25 @@ export default function CustomersPage() {
       }
     }
   };
+
+  // Auto-update wallet amount when payment method changes to wallet
+  useEffect(() => {
+    if (form.paymentMethod === 'wallet' && form.billAmount && form.walletBalance > 0) {
+      const walletUsed = Math.min(form.walletBalance, Number(form.billAmount));
+      setForm((f) => ({
+        ...f,
+        walletAmount: String(walletUsed),
+        cashAmount: String(Math.max(0, Number(form.billAmount) - walletUsed)),
+        onlineAmount: '0',
+      }));
+    } else if (form.paymentMethod !== 'wallet') {
+      // Reset wallet fields when switching away from wallet payment
+      setForm((f) => ({
+        ...f,
+        walletAmount: '',
+      }));
+    }
+  }, [form.paymentMethod, form.billAmount, form.walletBalance]);
 
   const handleSave = () => {
     // Auto-assign branch from user's branches for Branch Manager/Staff
@@ -215,18 +256,83 @@ export default function CustomersPage() {
     if (!form.paymentMethod) { toast.error('Payment Method is required'); return; }
 
     const billAmount = parseCurrencyValue(form.billAmount);
+    
     if (Number.isNaN(billAmount)) {
       toast.error('Total Amount must be a valid number with up to two decimals');
       return;
     }
 
-    const cashAmount = parseCurrencyValue(form.cashAmount) || 0;
-    const onlineAmount = parseCurrencyValue(form.onlineAmount) || 0;
-    const totalPaid = Math.round((cashAmount + onlineAmount) * 100) / 100;
+    let cashAmount = parseCurrencyValue(form.cashAmount) || 0;
+    let onlineAmount = parseCurrencyValue(form.onlineAmount) || 0;
+    let walletAmount = parseCurrencyValue(form.walletAmount) || 0;
+    const amountReceived = parseCurrencyValue(form.amountReceived) || 0;
+    
+    // Calculate total paid from individual payment methods
+    let totalPaid = cashAmount + onlineAmount + walletAmount;
+    
+    // For simple payment methods (cash, upi), use amountReceived if individual amounts are not provided
+    if (form.paymentMethod === 'cash' && cashAmount === 0 && amountReceived > 0) {
+      cashAmount = amountReceived;
+      totalPaid = amountReceived;
+    } else if (form.paymentMethod === 'upi' && onlineAmount === 0 && amountReceived > 0) {
+      onlineAmount = amountReceived;
+      totalPaid = amountReceived;
+    }
+    
+    // Round values to avoid floating-point precision issues
+    const roundedBillAmount = Math.round(billAmount * 100) / 100;
+    const roundedTotalPaid = Math.round(totalPaid * 100) / 100;
+    
+    // Calculate pending amount
+    const pendingAmount = Math.max(0, roundedBillAmount - roundedTotalPaid);
+    
+    // Validation based on payment status
+    if (form.paymentStatus === 'paid') {
+      // For paid status, total paid must be >= bill amount
+      if (roundedTotalPaid < roundedBillAmount) {
+        toast.error(`For Paid status, Amount Received must be greater than or equal to the Bill Amount (${formatCurrency(roundedBillAmount)})`);
+        return;
+      }
+    } else if (form.paymentStatus === 'partial') {
+      // For partial status, allow any amount less than bill amount
+      // No validation error needed, just calculate pending
+      if (roundedTotalPaid === 0) {
+        toast.error('For Partial status, at least some payment must be received');
+        return;
+      }
+    } else if (form.paymentStatus === 'unpaid') {
+      // For unpaid status, allow zero payment
+      // Set all amounts to 0 if not provided
+      if (roundedTotalPaid === 0) {
+        // This is valid for unpaid status
+        cashAmount = 0;
+        onlineAmount = 0;
+        walletAmount = 0;
+      }
+    }
+    
+    // Automatic wallet deduction when payment method is wallet
+    if (form.paymentMethod === 'wallet' && form.paymentStatus !== 'unpaid') {
+      walletAmount = Math.min(form.walletBalance || 0, roundedBillAmount);
+      cashAmount = 0;
+      onlineAmount = 0;
+      totalPaid = walletAmount;
+      // If wallet doesn't cover full bill, remaining amount needs to be paid
+      const remainingBill = Math.max(0, roundedBillAmount - walletAmount);
+      if (remainingBill > 0) {
+        // For now, we'll require manual input for remaining amount
+        // or we could auto-set cashAmount to remainingBill
+        cashAmount = remainingBill;
+        totalPaid = walletAmount + cashAmount;
+      }
+    }
+    
+    const extraAmount = totalPaid > billAmount ? totalPaid - billAmount : 0;
 
-    if (form.paymentMethod === 'mixed') {
-      if (totalPaid !== billAmount) {
-        toast.error(`Cash Amount + Online Amount must equal the total bill amount (${formatCurrency(billAmount)})`);
+    // Validate wallet balance
+    if (walletAmount > 0) {
+      if (walletAmount > form.walletBalance) {
+        toast.error(`Insufficient wallet balance. Available: ${formatCurrency(form.walletBalance)}, Required: ${formatCurrency(walletAmount)}`);
         return;
       }
     }
@@ -235,13 +341,36 @@ export default function CustomersPage() {
       ...form,
       branch,
       billAmount,
+      amountReceived: totalPaid,
+      cashAmount,
+      onlineAmount,
+      walletAmount,
       startTime: new Date(form.startTime).toISOString(),
       ...(form.endTime && { endTime: new Date(form.endTime).toISOString() }),
       ...(form.numberOfPlayers && { numberOfPlayers: parseInt(form.numberOfPlayers, 10) }),
       ...(form.paymentMethod === 'mixed' && {
         cashAmount,
         onlineAmount,
+        walletAmount,
         totalPaid,
+      }),
+      ...(form.paymentMethod === 'wallet' && {
+        walletAmount,
+        cashAmount,
+        onlineAmount,
+        totalPaid,
+      }),
+      ...(form.paymentMethod === 'cash' && {
+        cashAmount: totalPaid,
+        totalPaid,
+      }),
+      ...(form.paymentMethod === 'upi' && {
+        onlineAmount: totalPaid,
+        totalPaid,
+      }),
+      ...(form.addToWallet && extraAmount > 0 && {
+        addToWallet: true,
+        extraAmount,
       }),
     };
 
@@ -258,8 +387,24 @@ export default function CustomersPage() {
     setModal('create');
   };
 
-  const openEdit = (c: Customer) => {
+  const openEdit = async (c: Customer) => {
     setSelected(c);
+    
+    // Fetch fresh customer data to get latest wallet balance
+    let freshWalletBalance = 0;
+    if (c.phone) {
+      try {
+        const response = await customerService.lookup(c.phone, selectedBranch || undefined);
+        const customer = response.data.data.customer;
+        if (customer) {
+          freshWalletBalance = customer.walletBalance || 0;
+        }
+      } catch (error) {
+        // If lookup fails, use the stale value from order data
+        freshWalletBalance = (c as any).walletBalance || 0;
+      }
+    }
+    
     setForm({
       name: c.name,
       phone: c.phone,
@@ -271,12 +416,18 @@ export default function CustomersPage() {
       startTime: c.startTime ? new Date(c.startTime).toISOString().slice(0, 16) : '',
       endTime: c.endTime ? new Date(c.endTime).toISOString().slice(0, 16) : '',
       paymentStatus: c.paymentStatus,
-      paymentMethod: c.paymentMethod as 'cash' | 'upi' | 'mixed',
+      paymentMethod: c.paymentMethod as 'cash' | 'upi' | 'mixed' | 'wallet',
       cashAmount: (c as any).cashAmount ? String((c as any).cashAmount) : '',
       onlineAmount: (c as any).onlineAmount ? String((c as any).onlineAmount) : '',
+      walletAmount: (c as any).walletAmount ? String((c as any).walletAmount) : '',
+      amountReceived: (c as any).totalPaid ? String((c as any).totalPaid) : String((c as any).billAmount || ''),
+      pendingPaymentAmount: (c as any).pendingPaymentAmount ? String((c as any).pendingPaymentAmount) : '',
       numberOfPlayers: c.numberOfPlayers ? String(c.numberOfPlayers) : '',
       additionalPlayers: (c as any).additionalPlayers || '',
       billAmount: String((c as any).billAmount || ''),
+      addToWallet: false,
+      extraAmount: '',
+      walletBalance: freshWalletBalance,
     });
     setModal('edit');
   };
@@ -321,6 +472,7 @@ export default function CustomersPage() {
                   <TableHead>Menu Item</TableHead>
                   <TableHead>Bill Amount</TableHead>
                   <TableHead>Payment Method</TableHead>
+                  <TableHead>Payment Status</TableHead>
                   <TableHead>Created At</TableHead>
                   <TableHead>Actions</TableHead>
                 </TableRow>
@@ -337,6 +489,11 @@ export default function CustomersPage() {
                       <TableCell className="text-sm">{(c as any).menuItemId?.name || '—'}</TableCell>
                       <TableCell className="text-sm font-medium">{formatCurrency((c as any).billAmount || 0)}</TableCell>
                       <TableCell className="text-sm capitalize">{c.paymentMethod}</TableCell>
+                      <TableCell>
+                        <Badge variant={(c as any).paymentStatus === 'paid' ? 'success' : (c as any).paymentStatus === 'partial' ? 'warning' : 'danger'}>
+                          {(c as any).paymentStatus === 'paid' ? 'Paid' : (c as any).paymentStatus === 'partial' ? 'Partial' : 'Unpaid'}
+                        </Badge>
+                      </TableCell>
                       <TableCell className="text-sm">{formatDate(c.createdAt || '', 'MMM dd, yyyy HH:mm')}</TableCell>
                       <TableCell>
                         <div className="flex gap-1">
@@ -399,7 +556,6 @@ export default function CustomersPage() {
         <div className="space-y-4 max-h-[70vh] overflow-y-auto">
           {/* Customer Info */}
           <div className="space-y-3">
-            <h3 className="text-sm font-semibold text-muted-foreground">Customer Information</h3>
             {(user?.role === 'admin' || user?.role === 'super_admin') && (
               <div className="space-y-1.5">
                 <Label>Branch *</Label>
@@ -430,7 +586,9 @@ export default function CustomersPage() {
                   onChange={(e) => handlePhoneChange(e.target.value)}
                   placeholder="Enter phone number"
                   disabled={isLookingUp}
+                  maxLength={10}
                 />
+                {phoneError && <p className="text-xs text-red-400">{phoneError}</p>}
                 {isLookingUp && <p className="text-xs text-muted-foreground">Looking up customer...</p>}
               </div>
             </div>
@@ -455,7 +613,6 @@ export default function CustomersPage() {
 
           {/* Menu Selection */}
           <div className="space-y-3">
-            <h3 className="text-sm font-semibold text-muted-foreground">Menu Selection</h3>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Menu Category *</Label>
@@ -492,15 +649,18 @@ export default function CustomersPage() {
 
           {/* Total Amount */}
           <div className="space-y-3">
-            <h3 className="text-sm font-semibold text-muted-foreground">Total Amount</h3>
             <div className="space-y-1.5">
               <Label>Total Amount / Bill Amount *</Label>
               <Input
                 type="number"
                 min="0"
-                step="0.01"
+                step="any"
                 value={form.billAmount}
-                onChange={(e) => setForm((f) => ({ ...f, billAmount: e.target.value }))}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  // Preserve exact value entered by user
+                  setForm((f) => ({ ...f, billAmount: value }));
+                }}
                 placeholder="Enter total bill amount"
               />
             </div>
@@ -508,7 +668,6 @@ export default function CustomersPage() {
 
           {/* Session Details */}
           <div className="space-y-3">
-            <h3 className="text-sm font-semibold text-muted-foreground">Session Details</h3>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Start Time *</Label>
@@ -531,7 +690,6 @@ export default function CustomersPage() {
 
           {/* Payment Info */}
           <div className="space-y-3">
-            <h3 className="text-sm font-semibold text-muted-foreground">Payment Details</h3>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Payment Status *</Label>
@@ -551,15 +709,141 @@ export default function CustomersPage() {
                   onChange={(e) => setForm((f) => ({ ...f, paymentMethod: e.target.value as any }))}
                 >
                   {PAYMENT_METHODS.map((method) => (
-                    <option key={method} value={method} className="capitalize">{method}</option>
+                    <option key={method} value={method} className="capitalize">
+                      {method === 'wallet' ? 'Wallet / Advance Balance' : method}
+                    </option>
                   ))}
                 </Select>
               </div>
             </div>
+            
+            {/* Available Wallet Balance */}
+            <div className="space-y-1.5">
+              <Label>Available Wallet Balance</Label>
+              <Input
+                type="text"
+                value={formatCurrency(form.walletBalance || 0)}
+                readOnly
+                className="bg-muted/50"
+              />
+            </div>
+
+            {/* Wallet Calculation Display */}
+            {form.paymentMethod === 'wallet' && form.billAmount && (
+              <div className="space-y-2 p-3 bg-blue-500/10 rounded-lg border border-blue-500/20">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Wallet Used</span>
+                  <span className="text-sm font-semibold text-blue-400">
+                    {formatCurrency(Math.min(form.walletBalance || 0, Number(form.billAmount) || 0))}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Remaining Bill Amount</span>
+                  <span className="text-sm font-semibold">
+                    {formatCurrency(Math.max(0, (Number(form.billAmount) || 0) - Math.min(form.walletBalance || 0, Number(form.billAmount) || 0)))}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Remaining Wallet Balance</span>
+                  <span className="text-sm font-semibold text-green-400">
+                    {formatCurrency(Math.max(0, (form.walletBalance || 0) - Math.min(form.walletBalance || 0, Number(form.billAmount) || 0)))}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <Label>Amount Received</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.amountReceived}
+                onChange={(e) => setForm((f) => ({ ...f, amountReceived: e.target.value }))}
+                placeholder="Enter amount received (optional)"
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave empty to assume full payment of {formatCurrency(Number(form.billAmount) || 0)}
+              </p>
+            </div>
+
+            {/* Extra Amount Display */}
+            {form.amountReceived && Number(form.amountReceived) > 0 && Number(form.billAmount) > 0 && (
+              <div className="space-y-2 p-3 bg-muted/30 rounded-lg border border-border">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Bill Amount</span>
+                  <span className="text-sm font-semibold">{formatCurrency(Number(form.billAmount) || 0)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Amount Received</span>
+                  <span className="text-sm font-semibold">{formatCurrency(Number(form.amountReceived) || 0)}</span>
+                </div>
+                <div className="flex items-center justify-between pt-2 border-t border-border">
+                  <span className="text-sm text-muted-foreground">Extra Amount</span>
+                  <span className={`text-sm font-semibold ${Number(form.amountReceived) > Number(form.billAmount) ? 'text-green-400' : 'text-muted-foreground'}`}>
+                    {formatCurrency(Math.max(0, (Number(form.amountReceived) || 0) - (Number(form.billAmount) || 0)))}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Wallet Confirmation for Extra Amount */}
+            {form.amountReceived && Number(form.amountReceived) > Number(form.billAmount) && (
+              <div className="space-y-2 p-3 bg-green-500/10 rounded-lg border border-green-500/20">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">Customer paid extra</p>
+                    <p className="text-sm font-semibold text-green-400">
+                      {formatCurrency((Number(form.amountReceived) || 0) - (Number(form.billAmount) || 0))}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="addToWallet"
+                      checked={form.addToWallet}
+                      onChange={(e) => setForm((f) => ({ ...f, addToWallet: e.target.checked }))}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="addToWallet" className="text-sm cursor-pointer">
+                      Add to Wallet Balance
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Mixed Payment Fields */}
             {form.paymentMethod === 'mixed' && (
               <div className="space-y-3 mt-3 p-3 bg-muted/30 rounded-lg border border-border">
+                {form.walletBalance > 0 && (
+                  <div className="flex items-center justify-between pb-2 border-b border-border">
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground">Available Wallet Balance</p>
+                      <p className="text-sm font-semibold text-green-400">
+                        {formatCurrency(form.walletBalance)}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="useWallet"
+                        checked={form.walletAmount !== ''}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setForm((f) => ({ ...f, walletAmount: String(Math.min(form.walletBalance, Number(form.billAmount) || 0)) }));
+                          } else {
+                            setForm((f) => ({ ...f, walletAmount: '' }));
+                          }
+                        }}
+                        className="w-4 h-4"
+                      />
+                      <label htmlFor="useWallet" className="text-sm cursor-pointer">
+                        Use Wallet Balance
+                      </label>
+                    </div>
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <Label>Cash Amount *</Label>
@@ -584,30 +868,118 @@ export default function CustomersPage() {
                     />
                   </div>
                 </div>
+                {form.walletAmount !== '' && (
+                  <div className="space-y-1.5">
+                    <Label>Wallet Amount</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      max={form.walletBalance}
+                      value={form.walletAmount}
+                      onChange={(e) => setForm((f) => ({ ...f, walletAmount: e.target.value }))}
+                      placeholder="Enter wallet amount"
+                    />
+                  </div>
+                )}
+                <div className="space-y-1.5">
+                  <Label>Pending Payment Amount</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.pendingPaymentAmount}
+                    onChange={(e) => setForm((f) => ({ ...f, pendingPaymentAmount: e.target.value }))}
+                    placeholder="Enter pending payment amount"
+                  />
+                </div>
                 {/* Payment Summary */}
-                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-border">
+                <div className="grid grid-cols-3 gap-3 pt-2 border-t border-border">
                   <div className="space-y-1">
-                    <p className="text-xs text-muted-foreground">Total Paid</p>
+                    <p className="text-xs text-muted-foreground">Total Bill</p>
                     <p className="text-sm font-semibold">
-                      {formatCurrency((Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0))}
+                      {formatCurrency(Number(form.billAmount) || 0)}
                     </p>
                   </div>
                   <div className="space-y-1">
-                    <p className="text-xs text-muted-foreground">Remaining Balance</p>
+                    <p className="text-xs text-muted-foreground">Total Paid</p>
                     <p className="text-sm font-semibold">
-                      {formatCurrency(
-                        (Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) > 0
-                          ? Math.max(0, (Number(form.billAmount) || 0) - ((Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0)))
-                          : (Number(form.billAmount) || 0)
-                      )}
+                      {formatCurrency((Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) + (Number(form.walletAmount) || 0))}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Pending Payment</p>
+                    <p className="text-sm font-semibold text-amber-400">
+                      {formatCurrency(Math.max(0, (Number(form.billAmount) || 0) - ((Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) + (Number(form.walletAmount) || 0))))}
                     </p>
                   </div>
                 </div>
                 {/* Validation Error */}
-                {(Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) > 0 &&
-                 (Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) !== (Number(form.billAmount) || 0) && (
+                {(Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) + (Number(form.walletAmount) || 0) + (Number(form.pendingPaymentAmount) || 0) > 0 &&
+                 (Number(form.cashAmount) || 0) + (Number(form.onlineAmount) || 0) + (Number(form.walletAmount) || 0) + (Number(form.pendingPaymentAmount) || 0) !== (Number(form.billAmount) || 0) && (
                   <p className="text-xs text-red-400">
-                    Cash Amount + Online Amount must equal the total bill amount ({formatCurrency(Number(form.billAmount) || 0)})
+                    Total payment (Cash + UPI + Wallet + Pending) must equal the bill amount ({formatCurrency(Number(form.billAmount) || 0)})
+                  </p>
+                )}
+                {(Number(form.walletAmount) || 0) > form.walletBalance && (
+                  <p className="text-xs text-red-400">
+                    Insufficient wallet balance. Available: {formatCurrency(form.walletBalance)}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Wallet Payment Fields */}
+            {form.paymentMethod === 'wallet' && (
+              <div className="space-y-3 mt-3 p-3 bg-muted/30 rounded-lg border border-border">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Available Wallet Balance</p>
+                    <p className="text-lg font-semibold text-green-400">
+                      {formatCurrency(form.walletBalance)}
+                    </p>
+                  </div>
+                  <div className="space-y-1 text-right">
+                    <p className="text-xs text-muted-foreground">Bill Amount</p>
+                    <p className="text-sm font-semibold">
+                      {formatCurrency(Number(form.billAmount) || 0)}
+                    </p>
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Wallet Amount to Use *</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    max={form.walletBalance}
+                    value={form.walletAmount}
+                    onChange={(e) => setForm((f) => ({ ...f, walletAmount: e.target.value }))}
+                    placeholder="Enter wallet amount"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Maximum: {formatCurrency(form.walletBalance)}
+                  </p>
+                </div>
+                {/* Payment Summary */}
+                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-border">
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Wallet Amount Used</p>
+                    <p className="text-sm font-semibold">
+                      {formatCurrency(Number(form.walletAmount) || 0)}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Remaining Wallet Balance</p>
+                    <p className="text-sm font-semibold">
+                      {formatCurrency(form.walletBalance - (Number(form.walletAmount) || 0))}
+                    </p>
+                  </div>
+                </div>
+                {/* Validation Error */}
+                {(Number(form.walletAmount) || 0) > form.walletBalance && (
+                  <p className="text-xs text-red-400">
+                    Insufficient wallet balance. Available: {formatCurrency(form.walletBalance)}
                   </p>
                 )}
               </div>

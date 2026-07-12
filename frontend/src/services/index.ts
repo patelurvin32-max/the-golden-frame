@@ -44,10 +44,12 @@ export const sessionService = {
 export const customerService = {
   getAll: (params?: Record<string, string>) => api.get<ApiResponse<{ customers: Customer[] }>>('/customers', { params }),
   getOne: (id: string) => api.get<ApiResponse<{ customer: Customer }>>(`/customers/${id}`),
-  lookup: (phone: string, branch?: string) => api.get<ApiResponse<{ customer: Customer | null }>>(`/customers/lookup/${phone}`, { params: branch ? { branch } : {} }),
+  lookup: (phone: string, branch?: string) => api.get<ApiResponse<{ customer: Customer | null }>>(`/customers/lookup/${phone}`, { params: { ...branch ? { branch } : {}, _t: Date.now() } }),
   create: (data: Partial<Customer>) => api.post<ApiResponse<{ customer: Customer }>>('/customers', data),
   update: (id: string, data: Partial<Customer>) => api.patch<ApiResponse<{ customer: Customer }>>(`/customers/${id}`, data),
   delete: (id: string) => api.delete(`/customers/${id}`),
+  receivePayment: (id: string, data: Record<string, unknown>) => api.post<ApiResponse<{ customer: Customer }>>(`/customers/${id}/receive-payment`, data),
+  getPaymentHistory: (id: string) => api.get<ApiResponse<{ paymentHistory: any[] }>>(`/customers/${id}/payment-history`),
 };
 
 // ── Billing ───────────────────────────────────────────────────────────────────
@@ -162,4 +164,12 @@ export const reservationService = {
   update: (id: string, data: Record<string, unknown>) => api.patch(`/reservations/${id}`, data),
   changeStatus: (id: string, status: string, note?: string) => api.patch(`/reservations/${id}/status`, { status, note }),
   delete: (id: string) => api.delete(`/reservations/${id}`),
+};
+
+// ── Wallet ─────────────────────────────────────────────────────────────────────
+export const walletService = {
+  getTransactions: (params?: Record<string, string>) => api.get('/wallet/transactions', { params }),
+  getCustomerHistory: (customerId: string, params?: Record<string, string>) => api.get(`/wallet/customer/${customerId}`, { params }),
+  addBalance: (data: { customerId: string; amount: number; description?: string; paymentMethod?: string }) => api.post('/wallet/add-balance', data),
+  getSummary: (params?: Record<string, string>) => api.get('/wallet/summary', { params }),
 };

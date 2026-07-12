@@ -32,6 +32,10 @@ const sessionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+sessionSchema.index({ branch: 1, status: 1, startTime: -1 });
+sessionSchema.index({ branch: 1, startTime: -1 });
+sessionSchema.index({ branch: 1, endTime: -1 });
+
 sessionSchema.methods.calculateBillableMinutes = function calculateBillableMinutes() {
   const end = this.endTime || new Date();
   let totalMs = end - this.startTime;
@@ -47,7 +51,7 @@ sessionSchema.methods.calculateBillableMinutes = function calculateBillableMinut
 
 sessionSchema.methods.calculateAmount = function calculateAmount() {
   const minutes = this.calculateBillableMinutes();
-  return Math.round(((minutes / 60) * this.hourlyRate + Number.EPSILON) * 100) / 100;
+  return (minutes / 60) * this.hourlyRate;
 };
 
 module.exports = mongoose.model('Session', sessionSchema);
