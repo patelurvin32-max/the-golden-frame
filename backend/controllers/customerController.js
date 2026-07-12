@@ -22,16 +22,28 @@ const { getBusinessDayDateString } = require('../utils/businessDay');
 const generateOrderId = async (date = new Date()) => {
   const dateStr = getBusinessDayDateString(date);
 
-  // Use findOneAndUpdate with atomic increment to prevent race conditions
-  const counter = await OrderCounter.findOneAndUpdate(
-    { date: dateStr },
-    { $inc: { sequence: 1 } },
-    { new: true, upsert: true }
-  );
+  try {
+    // Use findOneAndUpdate with atomic increment to prevent race conditions
+    const counter = await OrderCounter.findOneAndUpdate(
+      { date: dateStr },
+      { $inc: { sequence: 1 } },
+      { new: true, upsert: true }
+    );
 
-  const sequence = counter.sequence;
-  const sequenceStr = String(sequence).padStart(4, '0');
-  return `${dateStr}/${sequenceStr}`;
+    if (!counter) {
+      throw new Error('Failed to generate order counter');
+    }
+
+    const sequence = counter.sequence;
+    const sequenceStr = String(sequence).padStart(4, '0');
+    return `${dateStr}/${sequenceStr}`;
+  } catch (error) {
+    console.error('Error generating order ID:', error);
+    // Fallback: use timestamp-based ID if OrderCounter fails
+    const timestamp = Date.now();
+    const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+    return `${dateStr}/${timestamp}-${random}`;
+  }
 };
 
 // Helper function to generate Customer ID
@@ -266,6 +278,11 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
 
   // Generate custom Order ID for the new order
   const orderId = await generateOrderId();
+  
+  // Validate that orderId was generated successfully
+  if (!orderId || orderId === 'null') {
+    return next(new AppError('Failed to generate order ID. Please try again.', 500));
+  }
   
   // Determine final payment status based on calculations
   let finalPaymentStatus = paymentStatus;
