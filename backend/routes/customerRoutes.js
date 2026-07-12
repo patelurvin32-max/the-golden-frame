@@ -3,6 +3,7 @@ const { body } = require('express-validator');
 const { protect, requirePermission } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 const customerController = require('../controllers/customerController');
+const { MenuCategory } = require('../models/Operations');
 
 const router = express.Router();
 
@@ -18,7 +19,20 @@ router
       body('branch').optional().isMongoId().withMessage('Invalid Branch ID'),
       body('menuCategoryId').isMongoId().withMessage('Menu Category is required'),
       body('menuItemId').isMongoId().withMessage('Menu Item is required'),
-      body('startTime').notEmpty().withMessage('Start Time is required'),
+      body('startTime').custom(async (value, { req }) => {
+        // Check if the selected category is Accessories or Beverage (product purchases)
+        const category = await MenuCategory.findById(req.body.menuCategoryId);
+        const categoryName = category?.name?.toLowerCase() || '';
+        if (categoryName === 'accessories' || categoryName === 'beverage' || categoryName === 'beverages') {
+          // startTime is optional for product categories
+          return true;
+        }
+        // startTime is required for session-based categories
+        if (!value) {
+          throw new Error('Start Time is required');
+        }
+        return true;
+      }),
       body('paymentStatus').notEmpty().withMessage('Payment Status is required'),
       body('paymentMethod').notEmpty().withMessage('Payment Method is required')
         .isIn(['cash', 'upi', 'mixed']).withMessage('Invalid payment method'),
@@ -48,7 +62,25 @@ router.get('/lookup/:phone', protect, customerController.lookupCustomer);
 router
   .route('/:id')
   .get(protect, requirePermission('customers:view'), customerController.getCustomer)
-  .patch(protect, requirePermission('customers:manage'), customerController.updateCustomer)
+  .patch(protect, requirePermission('customers:manage'), [
+      body('startTime').optional().custom(async (value, { req }) => {
+        // If startTime is being provided, validate it
+        if (value !== undefined && value !== '') {
+          // Check if the selected category is Accessories or Beverage (product purchases)
+          const category = await MenuCategory.findById(req.body.menuCategoryId);
+          const categoryName = category?.name?.toLowerCase() || '';
+          if (categoryName === 'accessories' || categoryName === 'beverage' || categoryName === 'beverages') {
+            // startTime is optional for product categories
+            return true;
+          }
+          return true;
+        }
+        return true;
+      }),
+    ],
+    validate,
+    customerController.updateCustomer
+  )
   .delete(protect, requirePermission('customers:manage'), customerController.deleteCustomer);
 
 // Payment-related routes

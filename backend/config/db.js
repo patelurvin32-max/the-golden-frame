@@ -9,6 +9,24 @@ const connectDB = async () => {
     const conn = await mongoose.connect(process.env.MONGO_URI);
     console.log(`✅ MongoDB connected: ${conn.connection.host}`);
 
+    // Production safety net:
+    // Older deployments created a stale unique index on customers.orderId.
+    // That index treats missing orderId values as null, which blocks new
+    // customer inserts with "Duplicate value for 'orderId': 'null'".
+    // Drop it automatically if it is still present.
+    try {
+      const customersCollection = mongoose.connection.db.collection('customers');
+      const indexes = await customersCollection.indexes();
+      const staleIndex = indexes.find(index => index.name === 'orderId_1');
+
+      if (staleIndex) {
+        await customersCollection.dropIndex('orderId_1');
+        console.log('🧹 Dropped stale customers.orderId index');
+      }
+    } catch (indexError) {
+      console.warn('⚠️  Skipped customer index cleanup:', indexError.message);
+    }
+
     mongoose.connection.on('error', (err) => {
       console.error('MongoDB connection error:', err);
     });

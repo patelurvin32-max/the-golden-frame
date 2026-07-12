@@ -342,6 +342,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     totalPaid,
     billAmount,
     additionalPlayers: req.body.additionalPlayers,
+    createdBy: req.user._id,
   });
   
   // Create payment history record

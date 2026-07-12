@@ -9,7 +9,7 @@ const orderSchema = new mongoose.Schema(
     // Menu Management fields
     menuCategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuCategory', required: true },
     menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: true },
-    startTime: { type: Date, required: true },
+    startTime: { type: Date },
     endTime: { type: Date },
     paymentStatus: { type: String, enum: ['paid', 'partial', 'unpaid', 'refunded'], required: true },
     paymentMethod: { type: String, enum: PAYMENT_METHODS, required: true },
@@ -22,6 +22,7 @@ const orderSchema = new mongoose.Schema(
     billAmount: { type: Number, required: true }, // Manually entered bill/total amount
     additionalPlayers: { type: String, trim: true },
     isActive: { type: Boolean, default: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );

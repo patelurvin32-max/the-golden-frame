@@ -383,6 +383,157 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       branch: e.branch?.name || '',
       notes: e.notes || '',
     }));
+  } else if (type === 'orders') {
+    const bf = branchFilter(req);
+    const matchStage = { isActive: { $ne: false } };
+    if (bf) {
+      matchStage.branch = bf;
+    }
+    if (req.query.from || req.query.to) {
+      matchStage.createdAt = {};
+      if (req.query.from) {
+        matchStage.createdAt.$gte = new Date(req.query.from);
+      }
+      if (req.query.to) {
+        const toDate = new Date(req.query.to);
+        toDate.setHours(23, 59, 59, 999);
+        matchStage.createdAt.$lte = toDate;
+      }
+    }
+
+    const pipeline = [
+      { $match: matchStage },
+      {
+        $lookup: {
+          from: 'customers',
+          localField: 'customer',
+          foreignField: '_id',
+          as: 'customerDoc',
+        },
+      },
+      { $unwind: { path: '$customerDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'branches',
+          localField: 'branch',
+          foreignField: '_id',
+          as: 'branchDoc',
+        },
+      },
+      { $unwind: { path: '$branchDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'menucategories',
+          localField: 'menuCategoryId',
+          foreignField: '_id',
+          as: 'menuCategoryDoc',
+        },
+      },
+      { $unwind: { path: '$menuCategoryDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'menuitems',
+          localField: 'menuItemId',
+          foreignField: '_id',
+          as: 'menuItemDoc',
+        },
+      },
+      { $unwind: { path: '$menuItemDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'createdBy',
+          foreignField: '_id',
+          as: 'createdByDoc',
+        },
+      },
+      { $unwind: { path: '$createdByDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          orderId: 1,
+          customerName: { $ifNull: ['$customerDoc.name', 'Walk-in'] },
+          mobileNumber: { $ifNull: ['$customerDoc.phone', ''] },
+          branchName: { $ifNull: ['$branchDoc.name', ''] },
+          menuCategory: { $ifNull: ['$menuCategoryDoc.name', ''] },
+          menuItem: { $ifNull: ['$menuItemDoc.name', ''] },
+          quantity: { $literal: 1 },
+          billAmount: 1,
+          amountReceived: 1,
+          walletUsed: '$walletAmount',
+          walletAdded: {
+            $cond: [
+              { $gt: ['$amountReceived', '$billAmount'] },
+              { $subtract: ['$amountReceived', '$billAmount'] },
+              0,
+            ],
+          },
+          paymentMethod: 1,
+          paymentStatus: 1,
+          createdBy: { $ifNull: ['$createdByDoc.name', '—'] },
+          createdAt: 1,
+        },
+      },
+    ];
+
+    if (req.query.search) {
+      const searchRegex = new RegExp(req.query.search, 'i');
+      pipeline.push({
+        $match: {
+          $or: [
+            { orderId: searchRegex },
+            { customerName: searchRegex },
+            { mobileNumber: searchRegex },
+            { branchName: searchRegex },
+            { menuCategory: searchRegex },
+            { menuItem: searchRegex },
+          ],
+        },
+      });
+    }
+
+    const sortBy = req.query.sortBy || 'createdAt';
+    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+    pipeline.push({ $sort: { [sortBy]: sortOrder, _id: -1 } });
+
+    const orders = await Order.aggregate(pipeline).allowDiskUse(true);
+
+    sheet.columns = [
+      { header: 'Order ID', key: 'orderId', width: 20 },
+      { header: 'Customer Name', key: 'customerName', width: 20 },
+      { header: 'Mobile Number', key: 'mobileNumber', width: 15 },
+      { header: 'Branch Name', key: 'branchName', width: 15 },
+      { header: 'Menu Category', key: 'menuCategory', width: 15 },
+      { header: 'Menu Item', key: 'menuItem', width: 20 },
+      { header: 'Quantity', key: 'quantity', width: 10 },
+      { header: 'Bill Amount', key: 'billAmount', width: 12 },
+      { header: 'Amount Received', key: 'amountReceived', width: 15 },
+      { header: 'Wallet Used', key: 'walletUsed', width: 12 },
+      { header: 'Wallet Added', key: 'walletAdded', width: 12 },
+      { header: 'Payment Method', key: 'paymentMethod', width: 15 },
+      { header: 'Payment Status', key: 'paymentStatus', width: 15 },
+      { header: 'Created By', key: 'createdBy', width: 15 },
+      { header: 'Created At', key: 'createdAt', width: 20 },
+    ];
+
+    orders.forEach((o) => {
+      sheet.addRow({
+        orderId: o.orderId,
+        customerName: o.customerName,
+        mobileNumber: o.mobileNumber,
+        branchName: o.branchName,
+        menuCategory: o.menuCategory,
+        menuItem: o.menuItem,
+        quantity: o.quantity,
+        billAmount: o.billAmount,
+        amountReceived: o.amountReceived,
+        walletUsed: o.walletUsed,
+        walletAdded: o.walletAdded,
+        paymentMethod: o.paymentMethod,
+        paymentStatus: o.paymentStatus,
+        createdBy: o.createdBy,
+        createdAt: o.createdAt ? new Date(o.createdAt).toLocaleString('en-IN') : '—',
+      });
+    });
   }
 
   // Style header row
@@ -395,4 +546,328 @@ exports.exportExcel = asyncHandler(async (req, res) => {
   });
   await workbook.xlsx.write(res);
   res.end();
+});
+
+// GET /api/reports/orders?from=&to=&branch=&page=&limit=&search=&sortBy=&sortOrder=
+exports.getOrderDetailsReport = asyncHandler(async (req, res, next) => {
+  const bf = branchFilter(req);
+  const matchStage = { isActive: { $ne: false } };
+  if (bf) {
+    matchStage.branch = bf;
+  }
+
+  if (req.query.from || req.query.to) {
+    matchStage.createdAt = {};
+    if (req.query.from) {
+      matchStage.createdAt.$gte = new Date(req.query.from);
+    }
+    if (req.query.to) {
+      const toDate = new Date(req.query.to);
+      toDate.setHours(23, 59, 59, 999);
+      matchStage.createdAt.$lte = toDate;
+    }
+  }
+
+  const pipeline = [
+    { $match: matchStage },
+    {
+      $lookup: {
+        from: 'customers',
+        localField: 'customer',
+        foreignField: '_id',
+        as: 'customerDoc',
+      },
+    },
+    { $unwind: { path: '$customerDoc', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'branches',
+        localField: 'branch',
+        foreignField: '_id',
+        as: 'branchDoc',
+      },
+    },
+    { $unwind: { path: '$branchDoc', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'menucategories',
+        localField: 'menuCategoryId',
+        foreignField: '_id',
+        as: 'menuCategoryDoc',
+      },
+    },
+    { $unwind: { path: '$menuCategoryDoc', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'menuitems',
+        localField: 'menuItemId',
+        foreignField: '_id',
+        as: 'menuItemDoc',
+      },
+    },
+    { $unwind: { path: '$menuItemDoc', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'createdBy',
+        foreignField: '_id',
+        as: 'createdByDoc',
+      },
+    },
+    { $unwind: { path: '$createdByDoc', preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        orderId: 1,
+        customerName: { $ifNull: ['$customerDoc.name', 'Walk-in'] },
+        mobileNumber: { $ifNull: ['$customerDoc.phone', ''] },
+        branchName: { $ifNull: ['$branchDoc.name', ''] },
+        menuCategory: { $ifNull: ['$menuCategoryDoc.name', ''] },
+        menuItem: { $ifNull: ['$menuItemDoc.name', ''] },
+        quantity: { $literal: 1 },
+        billAmount: 1,
+        amountReceived: 1,
+        walletUsed: '$walletAmount',
+        walletAdded: {
+          $cond: [
+            { $gt: ['$amountReceived', '$billAmount'] },
+            { $subtract: ['$amountReceived', '$billAmount'] },
+            0,
+          ],
+        },
+        paymentMethod: 1,
+        paymentStatus: 1,
+        createdBy: { $ifNull: ['$createdByDoc.name', '—'] },
+        createdAt: 1,
+      },
+    },
+  ];
+
+  if (req.query.search) {
+    const searchRegex = new RegExp(req.query.search, 'i');
+    pipeline.push({
+      $match: {
+        $or: [
+          { orderId: searchRegex },
+          { customerName: searchRegex },
+          { mobileNumber: searchRegex },
+          { branchName: searchRegex },
+          { menuCategory: searchRegex },
+          { menuItem: searchRegex },
+        ],
+      },
+    });
+  }
+
+  const sortBy = req.query.sortBy || 'createdAt';
+  const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+  pipeline.push({ $sort: { [sortBy]: sortOrder, _id: -1 } });
+
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 10;
+  const skip = (page - 1) * limit;
+
+  pipeline.push({
+    $facet: {
+      metadata: [{ $count: 'total' }],
+      data: [{ $skip: skip }, { $limit: limit }],
+    },
+  });
+
+  const results = await Order.aggregate(pipeline).allowDiskUse(true);
+  const total = results[0]?.metadata[0]?.total || 0;
+  const data = results[0]?.data || [];
+
+  res.status(200).json({
+    success: true,
+    total,
+    page,
+    pages: Math.ceil(total / limit),
+    limit,
+    data: { orders: data },
+  });
+});
+
+// GET /api/reports/orders-summary?from=&to=&branch=
+exports.getOrderSummaryReport = asyncHandler(async (req, res, next) => {
+  const bf = branchFilter(req);
+  const matchStage = { isActive: { $ne: false } };
+  if (bf) {
+    matchStage.branch = bf;
+  }
+
+  if (req.query.from || req.query.to) {
+    matchStage.createdAt = {};
+    if (req.query.from) {
+      matchStage.createdAt.$gte = new Date(req.query.from);
+    }
+    if (req.query.to) {
+      const toDate = new Date(req.query.to);
+      toDate.setHours(23, 59, 59, 999);
+      matchStage.createdAt.$lte = toDate;
+    }
+  }
+
+  // 1. Summary totals
+  const summaryPipeline = [
+    { $match: matchStage },
+    {
+      $group: {
+        _id: null,
+        totalOrders: { $sum: 1 },
+        totalRevenue: { $sum: '$billAmount' },
+        totalCashCollection: {
+          $sum: {
+            $cond: [
+              { $in: ['$paymentMethod', ['cash', 'mixed']] },
+              '$cashAmount',
+              0,
+            ],
+          },
+        },
+        totalUPICollection: {
+          $sum: {
+            $cond: [
+              { $in: ['$paymentMethod', ['upi', 'mixed']] },
+              '$onlineAmount',
+              0,
+            ],
+          },
+        },
+        totalWalletPayments: { $sum: '$walletAmount' },
+        totalPendingAmount: { $sum: '$pendingPaymentAmount' },
+      },
+    },
+  ];
+
+  // 2. Pending Payments Details
+  const pendingPipeline = [
+    { $match: { ...matchStage, pendingPaymentAmount: { $gt: 0 } } },
+    {
+      $lookup: {
+        from: 'customers',
+        localField: 'customer',
+        foreignField: '_id',
+        as: 'customerDoc',
+      },
+    },
+    { $unwind: { path: '$customerDoc', preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        orderId: 1,
+        customerName: { $ifNull: ['$customerDoc.name', 'Walk-in'] },
+        mobileNumber: { $ifNull: ['$customerDoc.phone', ''] },
+        billAmount: 1,
+        amountPaid: '$amountReceived',
+        pendingAmount: '$pendingPaymentAmount',
+        paymentMethod: 1,
+        createdAt: 1,
+      },
+    },
+    { $sort: { createdAt: -1 } },
+  ];
+
+  // 3. Top Selling Items
+  const topSellingPipeline = [
+    { $match: matchStage },
+    {
+      $lookup: {
+        from: 'menucategories',
+        localField: 'menuCategoryId',
+        foreignField: '_id',
+        as: 'categoryDoc',
+      },
+    },
+    { $unwind: { path: '$categoryDoc', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'menuitems',
+        localField: 'menuItemId',
+        foreignField: '_id',
+        as: 'itemDoc',
+      },
+    },
+    { $unwind: { path: '$itemDoc', preserveNullAndEmptyArrays: true } },
+    {
+      $group: {
+        _id: {
+          categoryName: '$categoryDoc.name',
+          itemName: '$itemDoc.name',
+        },
+        quantitySold: { $sum: 1 },
+      },
+    },
+    { $sort: { quantitySold: -1 } },
+    { $limit: 10 },
+  ];
+
+  // 4. Wallet Transactions
+  const walletMatch = {};
+  if (bf) {
+    walletMatch.branch = bf;
+  }
+  if (req.query.from || req.query.to) {
+    walletMatch.createdAt = {};
+    if (req.query.from) {
+      walletMatch.createdAt.$gte = new Date(req.query.from);
+    }
+    if (req.query.to) {
+      const toDate = new Date(req.query.to);
+      toDate.setHours(23, 59, 59, 999);
+      walletMatch.createdAt.$lte = toDate;
+    }
+  }
+
+  const [summaryResult, pendingResult, topSellingResult, walletTransactions] = await Promise.all([
+    Order.aggregate(summaryPipeline),
+    Order.aggregate(pendingPipeline),
+    Order.aggregate(topSellingPipeline),
+    WalletTransaction.find(walletMatch)
+      .select('orderId customerName customerPhone type amount balance createdAt')
+      .sort({ createdAt: -1 })
+      .lean(),
+  ]);
+
+  const summary = summaryResult[0] || {
+    totalOrders: 0,
+    totalRevenue: 0,
+    totalCashCollection: 0,
+    totalUPICollection: 0,
+    totalWalletPayments: 0,
+    totalPendingAmount: 0,
+  };
+
+  const averageOrderValue = summary.totalOrders > 0 ? (summary.totalRevenue / summary.totalOrders) : 0;
+
+  const topSellingItems = topSellingResult.map((item) => {
+    const categoryName = item._id.categoryName || 'Menu';
+    const itemName = item._id.itemName || categoryName || 'Unknown';
+    return {
+      name: itemName,
+      category: categoryName,
+      quantitySold: item.quantitySold,
+    };
+  });
+
+  const walletTransactionsData = walletTransactions.map((tx) => ({
+    orderId: tx.orderId || '—',
+    customerName: tx.customerName || '—',
+    mobileNumber: tx.customerPhone || '—',
+    walletCredit: tx.type === 'credit' ? tx.amount : 0,
+    walletDebit: tx.type === 'debit' ? tx.amount : 0,
+    remainingBalance: tx.balance,
+    createdAt: tx.createdAt,
+  }));
+
+  res.status(200).json({
+    success: true,
+    data: {
+      summary: {
+        ...summary,
+        averageOrderValue,
+      },
+      pendingPayments: pendingResult,
+      walletTransactions: walletTransactionsData,
+      topSellingItems,
+    },
+  });
 });

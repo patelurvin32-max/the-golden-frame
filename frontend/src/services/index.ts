@@ -114,6 +114,8 @@ export const reportService = {
   getRevenue: (params?: Record<string, string>) => api.get('/reports/revenue', { params }),
   getTableUsage: (params?: Record<string, string>) => api.get('/reports/table-usage', { params }),
   getBranchComparison: () => api.get('/reports/branch-comparison'),
+  getOrders: (params?: Record<string, string>) => api.get('/reports/orders', { params }),
+  getOrdersSummary: (params?: Record<string, string>) => api.get('/reports/orders-summary', { params }),
   exportExcel: (params?: Record<string, string>) => api.get('/reports/export/excel', { params, responseType: 'blob' }),
 };
 

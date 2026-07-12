@@ -45,6 +45,8 @@ reportsRouter.get('/dashboard', reportsController.getDashboardStats);
 reportsRouter.get('/revenue', reportsController.getRevenueReport);
 reportsRouter.get('/table-usage', reportsController.getTableUsageReport);
 reportsRouter.get('/branch-comparison', reportsController.getBranchComparison);
+reportsRouter.get('/orders', reportsController.getOrderDetailsReport);
+reportsRouter.get('/orders-summary', reportsController.getOrderSummaryReport);
 reportsRouter.get('/export/excel', reportsController.exportExcel);
 
 // Settings

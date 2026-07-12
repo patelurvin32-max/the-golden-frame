@@ -81,6 +81,11 @@ export default function CustomersPage() {
 
   const categories: MenuCategoryDoc[] = Array.isArray((categoriesData as any)?.data?.categories) ? (categoriesData as any).data.categories : [];
 
+  // Check if selected category is Accessories or Beverage (product purchases, not session-based)
+  const selectedCategory = categories.find((cat) => cat._id === form.menuCategoryId);
+  const categoryName = selectedCategory?.name?.toLowerCase() || '';
+  const isProductCategory = categoryName === 'accessories' || categoryName === 'beverage' || categoryName === 'beverages';
+
   // Fetch branches for admin/super admin
   const { data: branchesData } = useQuery({
     queryKey: ['branches'],
@@ -250,7 +255,8 @@ export default function CustomersPage() {
     if (!form.phone) { toast.error('Phone Number is required'); return; }
     if (!form.menuCategoryId) { toast.error('Menu Category is required'); return; }
     if (!form.menuItemId) { toast.error('Menu Item is required'); return; }
-    if (!form.startTime) { toast.error('Start Time is required'); return; }
+    // Only require Start Time for session-based categories (not Accessories or Beverages)
+    if (!isProductCategory && !form.startTime) { toast.error('Start Time is required'); return; }
     if (!form.billAmount) { toast.error('Total Amount is required'); return; }
     if (!form.paymentStatus) { toast.error('Payment Status is required'); return; }
     if (!form.paymentMethod) { toast.error('Payment Method is required'); return; }
@@ -345,7 +351,7 @@ export default function CustomersPage() {
       cashAmount,
       onlineAmount,
       walletAmount,
-      startTime: new Date(form.startTime).toISOString(),
+      ...(form.startTime && { startTime: new Date(form.startTime).toISOString() }),
       ...(form.endTime && { endTime: new Date(form.endTime).toISOString() }),
       ...(form.numberOfPlayers && { numberOfPlayers: parseInt(form.numberOfPlayers, 10) }),
       ...(form.paymentMethod === 'mixed' && {
@@ -666,27 +672,29 @@ export default function CustomersPage() {
             </div>
           </div>
 
-          {/* Session Details */}
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Start Time *</Label>
-                <Input
-                  type="datetime-local"
-                  value={form.startTime}
-                  onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>End Time</Label>
-                <Input
-                  type="datetime-local"
-                  value={form.endTime}
-                  onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
-                />
+          {/* Session Details - Only show for session-based categories */}
+          {!isProductCategory && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Start Time *</Label>
+                  <Input
+                    type="datetime-local"
+                    value={form.startTime}
+                    onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>End Time</Label>
+                  <Input
+                    type="datetime-local"
+                    value={form.endTime}
+                    onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Payment Info */}
           <div className="space-y-3">
