@@ -277,11 +277,40 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   }
 
   // Generate custom Order ID for the new order
-  const orderId = await generateOrderId();
+  let orderId;
+  let retryCount = 0;
+  const maxRetries = 3;
   
-  // Validate that orderId was generated successfully
-  if (!orderId || orderId === 'null') {
-    return next(new AppError('Failed to generate order ID. Please try again.', 500));
+  while (retryCount < maxRetries) {
+    try {
+      orderId = await generateOrderId();
+      
+      // Validate that orderId was generated successfully
+      if (!orderId || orderId === 'null' || orderId === null) {
+        throw new Error('Generated orderId is null or invalid');
+      }
+      
+      // Check if this orderId already exists (to handle race conditions)
+      const existingOrder = await Order.findOne({ orderId });
+      if (existingOrder) {
+        console.log(`OrderId ${orderId} already exists, retrying...`);
+        retryCount++;
+        continue;
+      }
+      
+      // If we get here, orderId is valid and unique
+      break;
+    } catch (error) {
+      console.error('Error generating order ID (attempt', retryCount + 1, '):', error);
+      retryCount++;
+      
+      if (retryCount >= maxRetries) {
+        return next(new AppError('Failed to generate unique order ID after multiple attempts. Please try again.', 500));
+      }
+      
+      // Wait a bit before retrying
+      await new Promise(resolve => setTimeout(resolve, 100 * retryCount));
+    }
   }
   
   // Determine final payment status based on calculations
