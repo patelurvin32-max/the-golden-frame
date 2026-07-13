@@ -246,8 +246,18 @@ const getBranchIdsForReport = async (settings) => {
 
 const getReportRecipientsForSettings = (settings) => determineRecipients(settings);
 
-const buildDailyBusinessReportForBranch = async ({ branchId, settings, now = new Date() }) => {
-  const timezone = settings?.timezone || process.env.REPORT_TIMEZONE || 'Asia/Kolkata';
+const resolveReportSettings = async (settings) => {
+  if (settings && typeof settings === 'object') {
+    return settings;
+  }
+
+  const dbSettings = await Settings.findOne().lean();
+  return dbSettings || {};
+};
+
+const generateDailyBusinessReportForBranch = async ({ branchId, settings, now = new Date() }) => {
+  const resolvedSettings = await resolveReportSettings(settings);
+  const timezone = resolvedSettings?.timezone || process.env.REPORT_TIMEZONE || 'Asia/Kolkata';
   const window = getDailyBusinessWindow(now, timezone);
   const branch = await Branch.findById(branchId).select('name code isActive').lean();
   if (!branch) {
@@ -601,8 +611,9 @@ const buildDailyBusinessReportForBranch = async ({ branchId, settings, now = new
 };
 
 const runDailyBusinessReportForBranch = async ({ branchId, settings, now = new Date(), triggeredBy = 'scheduler' }) => {
-  const report = await buildDailyBusinessReportForBranch({ branchId, settings, now });
-  const recipients = getReportRecipientsForSettings(settings);
+  const resolvedSettings = await resolveReportSettings(settings);
+  const report = await generateDailyBusinessReportForBranch({ branchId, settings: resolvedSettings, now });
+  const recipients = getReportRecipientsForSettings(resolvedSettings);
   if (!recipients.length) {
     const delivery = await DailyReportDelivery.findOneAndUpdate(
       { reportType: 'daily_business_report', branch: report.branchId, reportDateKey: report.reportDateKey },
@@ -690,6 +701,8 @@ const runDailyBusinessReportForBranch = async ({ branchId, settings, now = new D
   delivery.triggeredBy = triggeredBy;
   await delivery.save();
 
+  const senderAddress = resolvedSettings?.dailyReportFromEmail || buildSenderAddress();
+
   let sendResult = null;
   let lastError = null;
   const maxAttempts = 2;
@@ -703,7 +716,7 @@ const runDailyBusinessReportForBranch = async ({ branchId, settings, now = new D
         subject: report.subject,
         html: report.html,
         text: report.text,
-        from: activeSettings.dailyReportFromEmail || buildSenderAddress(),
+        from: senderAddress,
         messageType: 'daily_business_report',
         metadata: {
           branchId: report.branchId,
@@ -763,7 +776,7 @@ const runDailyBusinessReportForBranch = async ({ branchId, settings, now = new D
 };
 
 const runDailyBusinessReport = async ({ settings, now = new Date(), triggeredBy = 'scheduler' }) => {
-  const activeSettings = settings || (await Settings.findOne().lean()) || {};
+  const activeSettings = await resolveReportSettings(settings);
   if (activeSettings.dailyReportEnabled === false) {
     return {
       timeZone: activeSettings.timezone || process.env.REPORT_TIMEZONE || 'Asia/Kolkata',
@@ -803,7 +816,7 @@ module.exports = {
   buildSubject,
   buildDailyReportHtml,
   buildPlainTextReport,
-  buildDailyBusinessReportForBranch,
+  generateDailyBusinessReportForBranch,
   runDailyBusinessReportForBranch,
   runDailyBusinessReport,
   determineRecipients,
