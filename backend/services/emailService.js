@@ -93,13 +93,21 @@ const buildBrevoApiRequest = ({ to, subject, html, text, from, replyTo, cc, bcc,
     htmlContent: html,
     textContent: text,
     replyTo: replyTo ? parseDisplayAddress(replyTo) : undefined,
-    cc: normalizeRecipientList(cc, recipientName),
-    bcc: normalizeRecipientList(bcc, recipientName),
     tags: Array.isArray(tags) ? tags : undefined,
     params: metadata && typeof metadata === 'object' ? metadata : undefined,
   };
 
-  console.log('BREVO PAYLOAD:', JSON.stringify(emailData, null, 2));
+  const ccRecipients = normalizeRecipientList(cc, recipientName);
+  if (ccRecipients.length) {
+    emailData.cc = ccRecipients;
+  }
+
+  const bccRecipients = normalizeRecipientList(bcc, recipientName);
+  if (bccRecipients.length) {
+    emailData.bcc = bccRecipients;
+  }
+
+  console.log('BREVO FINAL PAYLOAD:', JSON.stringify(emailData, null, 2));
 
   return emailData;
 };
