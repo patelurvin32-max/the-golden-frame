@@ -378,7 +378,7 @@ const buildDailyBusinessReportForBranch = async ({ branchId, settings, now = new
                   $dateToString: {
                     date: '$createdAt',
                     timezone,
-                    format: '%d %b %Y, %I:%M %p',
+                    format: '%d %b %Y, %H:%M:%S',
                   },
                 },
                 createdBy: { $ifNull: ['$createdByUser.name', '—'] },
