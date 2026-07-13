@@ -38,25 +38,29 @@ const parseDisplayAddress = (value) => {
   return { email: raw.toLowerCase(), name: '' };
 };
 
-const formatRecipient = (value) => {
+const getDefaultRecipientName = () => process.env.BREVO_TO_NAME || 'The Golden Frame';
+
+const formatRecipient = (value, fallbackName = getDefaultRecipientName()) => {
   if (!value) return null;
   if (typeof value === 'string') {
     const parsed = parseDisplayAddress(value);
-    return parsed.email ? parsed : null;
+    return parsed.email
+      ? { email: parsed.email, name: parsed.name || fallbackName }
+      : null;
   }
 
   const email = String(value.email || '').trim().toLowerCase();
   if (!email) return null;
   return {
     email,
-    name: value.name ? String(value.name).trim() : '',
+    name: value.name ? String(value.name).trim() : fallbackName,
   };
 };
 
-const normalizeRecipientList = (value) => {
+const normalizeRecipientList = (value, fallbackName = getDefaultRecipientName()) => {
   const list = Array.isArray(value) ? value : parseEmailList(value);
   return [...new Map(list.map((item) => {
-    const formatted = formatRecipient(item);
+    const formatted = formatRecipient(item, fallbackName);
     return formatted ? [formatted.email, formatted] : null;
   }).filter(Boolean)).values()];
 };
@@ -78,21 +82,26 @@ const buildSenderAddress = () =>
 
 const buildBrevoApiRequest = ({ to, subject, html, text, from, replyTo, cc, bcc, tags, metadata }) => {
   const sender = parseDisplayAddress(from);
-  return {
+  const recipientName = getDefaultRecipientName();
+  const emailData = {
     sender: {
       email: sender.email,
       name: sender.name || process.env.BREVO_FROM_NAME || 'The Golden Frame',
     },
-    to: normalizeRecipientList(to),
+    to: normalizeRecipientList(to, recipientName),
     subject,
     htmlContent: html,
     textContent: text,
     replyTo: replyTo ? parseDisplayAddress(replyTo) : undefined,
-    cc: normalizeRecipientList(cc),
-    bcc: normalizeRecipientList(bcc),
+    cc: normalizeRecipientList(cc, recipientName),
+    bcc: normalizeRecipientList(bcc, recipientName),
     tags: Array.isArray(tags) ? tags : undefined,
     params: metadata && typeof metadata === 'object' ? metadata : undefined,
   };
+
+  console.log('BREVO PAYLOAD:', JSON.stringify(emailData, null, 2));
+
+  return emailData;
 };
 
 const sendViaBrevoApi = async ({ to, subject, html, text, from, replyTo, cc, bcc, tags, metadata }) => {
@@ -101,13 +110,15 @@ const sendViaBrevoApi = async ({ to, subject, html, text, from, replyTo, cc, bcc
     throw new Error('BREVO_API_KEY is not configured.');
   }
 
+  const emailData = buildBrevoApiRequest({ to, subject, html, text, from, replyTo, cc, bcc, tags, metadata });
+
   const response = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'api-key': apiKey,
     },
-    body: JSON.stringify(buildBrevoApiRequest({ to, subject, html, text, from, replyTo, cc, bcc, tags, metadata })),
+    body: JSON.stringify(emailData),
   });
 
   const body = await response.json().catch(() => ({}));
