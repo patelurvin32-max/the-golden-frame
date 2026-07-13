@@ -704,6 +704,14 @@ const runDailyBusinessReportForBranch = async ({ branchId, settings, now = new D
         html: report.html,
         text: report.text,
         from: activeSettings.dailyReportFromEmail || buildSenderAddress(),
+        messageType: 'daily_business_report',
+        metadata: {
+          branchId: report.branchId,
+          branchName: report.branchName,
+          reportDateKey: report.reportDateKey,
+        },
+        relatedModel: 'DailyReportDelivery',
+        relatedId: delivery._id,
       });
       lastError = null;
       break;

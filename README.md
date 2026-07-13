@@ -23,7 +23,107 @@ A **production-ready, full-stack restaurant and cafe management platform** built
 
 ## Daily Business Report Email
 
-The backend supports an automated daily business report email flow for each branch. Configure the delivery recipient and mail transport with environment variables such as `DAILY_REPORT_RECIPIENT_EMAILS`, `DAILY_REPORT_SCHEDULER_SECRET`, `REPORT_FROM_EMAIL`, and either `RESEND_API_KEY` or SMTP settings.
+The backend supports an automated daily business report email flow for each branch. Email delivery now runs through Brevo by default, with the shared email service also used for invoices, reservations, booking confirmations, payment confirmations, pending reminders, password reset emails, OTP emails, and future system emails.
+
+### Brevo Setup Guide
+
+This project uses Brevo API sending by default, so you do not need a separate SMTP account unless you want the optional SMTP fallback.
+
+#### 1. Create and configure your Brevo account
+1. Sign up or sign in at Brevo.
+2. Open the Brevo dashboard and finish the account verification steps.
+3. Make sure you can access the API Keys and Senders/Domains areas.
+
+#### 2. Verify your sender email or domain
+1. In Brevo, go to the Senders and Domains area.
+2. Add the email address you want to send from, for example `reports@yourdomain.com`.
+3. If possible, verify the full domain instead of only one email address.
+4. Complete the DNS records Brevo asks for, then wait for verification to finish.
+5. Use only a verified sender in the app, otherwise email sending may fail or be limited.
+
+#### 3. Generate the Brevo API key
+1. Open the Brevo API key page in your Brevo account.
+2. Create a new API key for this project.
+3. Copy it once and store it securely.
+4. Do not put the key in the frontend or commit it to Git.
+
+#### 4. Add the required environment variables
+Use the following variables for the backend:
+
+| Variable | Where to set it | Purpose |
+|---|---|---|
+| `EMAIL_PROVIDER=brevo-api` | Local `.env`, Render backend env | Forces Brevo API sending |
+| `BREVO_API_KEY` | Local `.env`, Render backend env | Brevo transactional email key |
+| `BREVO_FROM_EMAIL` | Local `.env`, Render backend env | Verified sender email |
+| `BREVO_FROM_NAME` | Local `.env`, Render backend env | Display name in outgoing mail |
+| `DAILY_REPORT_RECIPIENT_EMAILS` | Local `.env`, Render backend env | Client email list for daily reports |
+| `DAILY_REPORT_SCHEDULER_SECRET` | Local `.env`, Render backend env, GitHub Actions secret | Protects the scheduler endpoint |
+| `REPORT_TIMEZONE=Asia/Kolkata` | Local `.env`, Render backend env | Report time zone |
+| `DAILY_REPORT_BRANCH_IDS` | Local `.env`, Render backend env | Optional branch filter |
+
+Optional SMTP fallback variables, only if you choose SMTP later:
+
+- `BREVO_SMTP_HOST=smtp-relay.brevo.com`
+- `BREVO_SMTP_PORT=587`
+- `BREVO_SMTP_USER`
+- `BREVO_SMTP_PASS`
+- `BREVO_SMTP_SECURE=false`
+
+Where to configure them:
+- Local development: backend `.env` file.
+- Render: the backend service environment variables page.
+- Vercel: usually no Brevo keys are needed there because email sending happens in the backend. Keep only public frontend variables there.
+- GitHub Actions: store the scheduler secret and backend URL as repository secrets.
+
+#### 5. Configure the backend email service
+1. Set `EMAIL_PROVIDER=brevo-api`.
+2. Set `BREVO_API_KEY`.
+3. Set `BREVO_FROM_EMAIL` to a verified Brevo sender.
+4. Set `DAILY_REPORT_RECIPIENT_EMAILS` to the client email address or addresses.
+5. Redeploy the backend after saving the variables.
+
+#### 6. Test email sending with Brevo
+1. Start the backend locally with the `.env` file loaded.
+2. Trigger any existing email flow, such as invoice creation or a daily report endpoint.
+3. Check the backend logs for a successful send and an `EmailLog` record.
+4. If the email fails, confirm the sender is verified and the API key is correct.
+
+#### 7. Verify all email features
+Test the following flows after deployment:
+- Daily business reports
+- Invoices
+- Reservation confirmations
+- Booking confirmations
+- Payment confirmations
+- Pending payment reminders
+- Password reset emails
+- OTP or verification emails, if enabled
+
+Check that each message reaches the inbox, uses the correct sender, and has the correct branding and content.
+
+#### 8. Common issues and fixes
+- Email is not sent: confirm `BREVO_API_KEY` is present in the backend environment.
+- Sender rejected: verify the sender email or domain in Brevo.
+- Wrong recipient: confirm `DAILY_REPORT_RECIPIENT_EMAILS` is set correctly.
+- Scheduler does not run: check `DAILY_REPORT_SCHEDULER_SECRET` in GitHub Actions and backend.
+- Duplicate report: the system prevents duplicate daily report delivery for the same branch and date.
+
+#### 9. Security best practices
+- Never commit API keys to Git.
+- Use verified sender addresses only.
+- Keep Brevo keys only in backend environments.
+- Rotate the API key if it is ever exposed.
+- Use the scheduler secret for every automated report request.
+
+#### 10. Deployment checklist
+- Brevo sender or domain is verified.
+- `BREVO_API_KEY` is set in Render and local dev if needed.
+- `BREVO_FROM_EMAIL` matches the verified sender.
+- `DAILY_REPORT_RECIPIENT_EMAILS` contains the client email.
+- `DAILY_REPORT_SCHEDULER_SECRET` matches in backend and GitHub Actions.
+- The backend is redeployed after env changes.
+- One test email has been sent successfully before enabling the scheduler.
+- `EmailLog` records are being written for send attempts.
 
 ---
 
@@ -74,7 +174,7 @@ thegoldenframe/
 | Excel | ExcelJS |
 | QR Codes | qrcode |
 | Images | Cloudinary + Multer |
-| Email | Nodemailer |
+| Email | Brevo API (primary) + Nodemailer SMTP fallback |
 | Security | Helmet, CORS, express-rate-limit, mongo-sanitize |
 
 ### Frontend

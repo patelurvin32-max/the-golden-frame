@@ -19,7 +19,7 @@ const dailyReportDeliverySchema = new mongoose.Schema(
       default: 'processing',
     },
     recipientEmails: [{ type: String, trim: true, lowercase: true }],
-    provider: { type: String, default: 'resend' },
+    provider: { type: String, default: 'brevo' },
     providerMessageId: { type: String, trim: true },
     subject: { type: String, trim: true },
     summary: { type: mongoose.Schema.Types.Mixed },
