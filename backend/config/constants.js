@@ -30,6 +30,7 @@ const PERMISSIONS = {
     'reports:view',
     'menu:manage',
     'menu:view',
+    'bookings:manage',
   ],
   [ROLES.BRANCH_MANAGER]: [
     'dashboard:view',
@@ -45,6 +46,7 @@ const PERMISSIONS = {
     'reports:view',
     'menu:manage',
     'menu:view',
+    'bookings:manage',
   ],
   [ROLES.STAFF]: [
     'tables:view',
@@ -54,6 +56,7 @@ const PERMISSIONS = {
     'customers:create',
     'customers:manage',
     'menu:view',
+    'bookings:manage',
   ],
   [ROLES.CASHIER]: [
     'tables:view',
