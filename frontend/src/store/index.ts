@@ -83,10 +83,13 @@ interface AppState {
   selectedBranch: string | null;
   isDarkMode: boolean;
   sidebarOpen: boolean;
+  masterMenuOpen: boolean;
   setSelectedBranch: (id: string | null) => void;
   toggleDarkMode: () => void;
   toggleSidebar: () => void;
   setSidebarOpen: (open: boolean) => void;
+  toggleMasterMenu: () => void;
+  setMasterMenuOpen: (open: boolean) => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -95,10 +98,13 @@ export const useAppStore = create<AppState>()(
       selectedBranch: null,
       isDarkMode: true,
       sidebarOpen: true,
+      masterMenuOpen: false,
       setSelectedBranch: (id) => set({ selectedBranch: id }),
       toggleDarkMode: () => set((s) => ({ isDarkMode: !s.isDarkMode })),
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
+      toggleMasterMenu: () => set((s) => ({ masterMenuOpen: !s.masterMenuOpen })),
+      setMasterMenuOpen: (open) => set({ masterMenuOpen: open }),
     }),
     { name: 'thegoldenframe-app', partialize: (s) => ({ selectedBranch: s.selectedBranch, isDarkMode: s.isDarkMode }) }
   )

@@ -75,6 +75,7 @@ const settingsSchema = new mongoose.Schema(
     dailyReportEmails: [{ type: String, trim: true, lowercase: true }],
     dailyReportRecipientEmails: [{ type: String, trim: true, lowercase: true }],
     dailyReportBranchIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Branch' }],
+    receipt: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   { timestamps: true }
 );

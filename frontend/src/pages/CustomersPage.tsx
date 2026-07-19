@@ -96,18 +96,45 @@ export default function CustomersPage() {
   });
   const branches: Branch[] = Array.isArray(branchesData) ? branchesData : [];
 
+  const branchToFetch = form.branch || selectedBranch || '';
+
+  // Preload all menu items for the branch to enable instant selection
+  const { data: allMenuItemsData, isFetching: isFetchingAllMenuItems } = useQuery({
+    queryKey: ['all-menu-items', branchToFetch],
+    queryFn: () => menuService.getAll({ limit: '1000', branch: branchToFetch }).then((r) => r.data),
+    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
+    gcTime: 15 * 60 * 1000, // Keep in cache for 15 minutes
+  });
+
   // Fetch menu items filtered by category and branch
   const menuParams: Record<string, string> = { limit: '1000' };
   if (form.menuCategoryId) menuParams.category = form.menuCategoryId;
-  if (form.branch) menuParams.branch = form.branch as string;
-  else if (selectedBranch) menuParams.branch = selectedBranch;
+  if (branchToFetch) menuParams.branch = branchToFetch;
 
-  const { data: menuItemsData } = useQuery({
-    queryKey: ['menu-items', form.menuCategoryId, form.branch || selectedBranch],
+  const { data: menuItemsData, isFetching: isFetchingMenuItems } = useQuery({
+    queryKey: ['menu-items', form.menuCategoryId, branchToFetch],
     queryFn: () => menuService.getAll(menuParams).then((r) => r.data),
     enabled: !!form.menuCategoryId,
-    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
-    gcTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
+    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
+    gcTime: 15 * 60 * 1000, // Keep in cache for 15 minutes
+    placeholderData: (previousData) => {
+      if (previousData) return previousData;
+      if (!allMenuItemsData?.data?.items) return undefined;
+      const filteredItems = allMenuItemsData.data.items.filter((item: any) => {
+        const catId = typeof item.category === 'object' && item.category !== null
+          ? item.category._id
+          : item.category;
+        return String(catId) === String(form.menuCategoryId);
+      });
+      return {
+        success: true,
+        message: '',
+        data: {
+          items: filteredItems,
+          pagination: { page: 1, limit: 1000, total: filteredItems.length, pages: 1 }
+        }
+      } as any;
+    },
   });
 
   const menuItems: MenuItem[] = Array.isArray((menuItemsData as any)?.data?.items) ? (menuItemsData as any).data.items : [];
@@ -123,6 +150,21 @@ export default function CustomersPage() {
     }, []);
   }, [menuItems]);
 
+  const [showMenuLoading, setShowMenuLoading] = useState(false);
+  const isFetchingMenu = isFetchingAllMenuItems || isFetchingMenuItems;
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (isFetchingMenu) {
+      timer = setTimeout(() => {
+        setShowMenuLoading(true);
+      }, 300);
+    } else {
+      setShowMenuLoading(false);
+    }
+    return () => clearTimeout(timer);
+  }, [isFetchingMenu]);
+
   const customers: Customer[] = Array.isArray((data as any)?.data?.customers) ? (data as any).data.customers : [];
   const total: number = (data as any)?.total || 0;
   const pages: number = (data as any)?.pages || 1;
@@ -132,7 +174,33 @@ export default function CustomersPage() {
     mutationFn: (d: any) => customerService.create(d),
     onSuccess: (response) => {
       const message = response.data.message;
+      const newCustomer = response.data.data?.customer;
       
+      if (newCustomer) {
+        qc.setQueriesData({ queryKey: ['customers'] }, (old: any) => {
+          if (!old || !old.data || !Array.isArray(old.data.customers)) return old;
+          const exists = old.data.customers.some((c: any) => c._id === newCustomer._id);
+          if (exists) {
+            return {
+              ...old,
+              data: {
+                ...old.data,
+                customers: old.data.customers.map((c: any) => c._id === newCustomer._id ? newCustomer : c)
+              }
+            };
+          }
+          return {
+            ...old,
+            total: (old.total || 0) + 1,
+            filtered: (old.filtered || 0) + 1,
+            data: {
+              ...old.data,
+              customers: [newCustomer, ...old.data.customers].slice(0, rowsPerPage)
+            }
+          };
+        });
+      }
+
       if (message && message.includes('Existing customer found')) {
         // Existing customer was loaded
         toast.success(message);
@@ -153,7 +221,22 @@ export default function CustomersPage() {
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) => customerService.update(id, data),
     onSuccess: (response) => {
-      const updatedWalletBalance = response.data.data?.customer?.walletBalance || 0;
+      const updatedCustomer = response.data.data?.customer;
+      const updatedWalletBalance = updatedCustomer?.walletBalance || 0;
+      
+      if (updatedCustomer) {
+        qc.setQueriesData({ queryKey: ['customers'] }, (old: any) => {
+          if (!old || !old.data || !Array.isArray(old.data.customers)) return old;
+          return {
+            ...old,
+            data: {
+              ...old.data,
+              customers: old.data.customers.map((c: any) => c._id === updatedCustomer._id ? updatedCustomer : c)
+            }
+          };
+        });
+      }
+
       qc.invalidateQueries({ queryKey: ['customers'] });
       // Update form with fresh wallet balance from response
       setForm((f) => ({ ...f, walletBalance: updatedWalletBalance }));
@@ -166,7 +249,19 @@ export default function CustomersPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => customerService.delete(id),
-    onSuccess: () => {
+    onSuccess: (response, id) => {
+      qc.setQueriesData({ queryKey: ['customers'] }, (old: any) => {
+        if (!old || !old.data || !Array.isArray(old.data.customers)) return old;
+        return {
+          ...old,
+          total: Math.max(0, (old.total || 0) - 1),
+          filtered: Math.max(0, (old.filtered || 0) - 1),
+          data: {
+            ...old.data,
+            customers: old.data.customers.filter((c: any) => c._id !== id)
+          }
+        };
+      });
       qc.invalidateQueries({ queryKey: ['customers'] });
       toast.success('Customer deleted');
       setDeleteConfirm(null);
@@ -393,23 +488,8 @@ export default function CustomersPage() {
     setModal('create');
   };
 
-  const openEdit = async (c: Customer) => {
+  const openEdit = (c: Customer) => {
     setSelected(c);
-    
-    // Fetch fresh customer data to get latest wallet balance
-    let freshWalletBalance = 0;
-    if (c.phone) {
-      try {
-        const response = await customerService.lookup(c.phone, selectedBranch || undefined);
-        const customer = response.data.data.customer;
-        if (customer) {
-          freshWalletBalance = customer.walletBalance || 0;
-        }
-      } catch (error) {
-        // If lookup fails, use the stale value from order data
-        freshWalletBalance = (c as any).walletBalance || 0;
-      }
-    }
     
     setForm({
       name: c.name,
@@ -433,9 +513,26 @@ export default function CustomersPage() {
       billAmount: String((c as any).billAmount || ''),
       addToWallet: false,
       extraAmount: '',
-      walletBalance: freshWalletBalance,
+      walletBalance: (c as any).walletBalance || 0,
     });
     setModal('edit');
+
+    // Fetch fresh customer data to get latest wallet balance in background
+    if (c.phone) {
+      customerService.lookup(c.phone, selectedBranch || undefined)
+        .then((response) => {
+          const customer = response.data.data.customer;
+          if (customer) {
+            setForm((f) => ({
+              ...f,
+              walletBalance: customer.walletBalance || 0,
+            }));
+          }
+        })
+        .catch((error) => {
+          // If lookup fails, use the stale value already set
+        });
+    }
   };
 
   const handleDelete = () => {
@@ -646,8 +743,11 @@ export default function CustomersPage() {
                     </option>
                   ))}
                 </Select>
-                {form.menuCategoryId && availableMenuItems.length === 0 && (
+                {form.menuCategoryId && availableMenuItems.length === 0 && !showMenuLoading && (
                   <p className="text-xs text-muted-foreground">No available items for this category</p>
+                )}
+                {showMenuLoading && (
+                  <p className="text-xs text-blue-400 animate-pulse">Loading menu items...</p>
                 )}
               </div>
             </div>

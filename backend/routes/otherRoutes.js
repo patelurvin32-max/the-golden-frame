@@ -16,15 +16,6 @@ expenseRouter.post('/', [body('title').notEmpty(), body('amount').isFloat({ min:
 expenseRouter.patch('/:id', expenseController.updateExpense);
 expenseRouter.delete('/:id', expenseController.deleteExpense);
 
-// Bookings
-const bookingController = require('../controllers/bookingController');
-const bookingRouter = express.Router();
-bookingRouter.use(protect, requirePermission('bookings:manage'));
-bookingRouter.get('/', bookingController.getBookings);
-bookingRouter.post('/', [body('branch').isMongoId(), body('table').isMongoId(), body('customer').isMongoId(), body('date').matches(/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?)?$/), body('startTime').notEmpty()], validate, bookingController.createBooking);
-bookingRouter.patch('/:id', bookingController.updateBooking);
-bookingRouter.patch('/:id/cancel', bookingController.cancelBooking);
-
 // Attendance
 const attendanceController = require('../controllers/attendanceController');
 const attendanceRouter = express.Router();
@@ -133,6 +124,15 @@ notifRouter.patch('/:id/read', asyncHandler(async (req, res) => {
   await Notification.findByIdAndUpdate(req.params.id, { isRead: true });
   res.status(200).json({ success: true });
 }));
+notifRouter.patch('/read-all', asyncHandler(async (req, res) => {
+  const filter = { $or: [{ targetUser: req.user._id }, { targetRoles: { $in: [req.user.role] } }], isRead: false };
+  if (req.user.role !== ROLES.SUPER_ADMIN) {
+    const branches = Array.isArray(req.user.branches) ? req.user.branches : [];
+    filter.branch = { $in: branches };
+  }
+  await Notification.updateMany(filter, { isRead: true });
+  res.status(200).json({ success: true });
+}));
 
 // Internal scheduler trigger for automated report dispatch
 const schedulerRouter = express.Router();
@@ -153,4 +153,4 @@ schedulerRouter.post('/daily-business-report', schedulerAuth, asyncHandler(async
   });
 }));
 
-module.exports = { expenseRouter, bookingRouter, attendanceRouter, reportsRouter, settingsRouter, logsRouter, notifRouter, schedulerRouter };
+module.exports = { expenseRouter, attendanceRouter, reportsRouter, settingsRouter, logsRouter, notifRouter, schedulerRouter };

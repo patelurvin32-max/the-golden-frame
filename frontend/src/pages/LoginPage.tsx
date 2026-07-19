@@ -18,9 +18,10 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
     try {
-      const result = await login(form.email, form.password);
-      // Navigate after successful login
-      navigate('/');
+      await login(form.email, form.password);
+      // Navigate after successful login - Staff goes to Customers, others to Dashboard
+      const user = useAuthStore.getState().user;
+      navigate(user?.role === 'staff' ? '/customers' : '/');
     } catch (err: any) {
       const errorMessage = err?.response?.data?.message || 'Login failed';
       setError(errorMessage);

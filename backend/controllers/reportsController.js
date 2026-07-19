@@ -18,6 +18,10 @@ const branchFilter = (req) => {
 
 // GET /api/reports/dashboard?branch=
 exports.getDashboardStats = asyncHandler(async (req, res) => {
+  // Deny Staff access to dashboard
+  if (req.user.role === ROLES.STAFF) {
+    return res.status(403).json({ success: false, message: 'Access denied' });
+  }
   const bf = branchFilter(req);
   const matchBranch = bf ? { branch: bf } : {};
 

@@ -123,6 +123,7 @@ export const reportService = {
 export const notificationService = {
   getAll: () => api.get('/notifications'),
   markRead: (id: string) => api.patch(`/notifications/${id}/read`),
+  markAllRead: () => api.patch('/notifications/read-all'),
 };
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -134,14 +135,6 @@ export const settingsService = {
 // ── Activity Logs ─────────────────────────────────────────────────────────────
 export const logsService = {
   getAll: (params?: Record<string, string>) => api.get('/logs', { params }),
-};
-
-// ── Bookings ──────────────────────────────────────────────────────────────────
-export const bookingService = {
-  getAll: (params?: Record<string, string>) => api.get('/bookings', { params }),
-  create: (data: Record<string, unknown>) => api.post('/bookings', data),
-  update: (id: string, data: Record<string, unknown>) => api.patch(`/bookings/${id}`, data),
-  cancel: (id: string) => api.patch(`/bookings/${id}/cancel`),
 };
 
 // ── Attendance ────────────────────────────────────────────────────────────────

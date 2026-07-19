@@ -231,8 +231,12 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     // Will validate after customer is found
   }
 
-  // Validate stock if menu item is linked to inventory
-  const menuItem = await MenuItem.findById(req.body.menuItemId).populate('inventoryItem');
+  // Validate stock and find customer concurrently
+  const [menuItem, existingCustomer] = await Promise.all([
+    MenuItem.findById(req.body.menuItemId).populate('inventoryItem'),
+    Customer.findOne({ phone: req.body.phone, isActive: true })
+  ]);
+
   if (menuItem && menuItem.inventoryItem) {
     const inventoryItem = await Inventory.findById(menuItem.inventoryItem._id);
     if (inventoryItem && inventoryItem.currentStock < 1) {
@@ -240,11 +244,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     }
   }
   
-  // Check if customer with this phone number already exists (globally)
-  let customer = await Customer.findOne({ 
-    phone: req.body.phone, 
-    isActive: true 
-  });
+  let customer = existingCustomer;
   
   if (!customer) {
     // Create new customer if doesn't exist
@@ -259,14 +259,14 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       favoriteGame: req.body.favoriteGame,
     });
 
-    // Create customer notification for Super Admin and branch manager when created by staff/branch manager
-    await createBranchNotification({
+    // Create customer notification for Super Admin and branch manager in background (no await)
+    createBranchNotification({
       branchId: customer.branch,
       actor: req.user,
       title: 'New Customer Created',
       message: `${req.user.name} created a new customer (${customer.name}) in branch ${customer.branch}.`,
       superAdminOnly: req.user.role === ROLES.SUPER_ADMIN,
-    });
+    }).catch(err => console.error('Error creating branch notification:', err));
   }
   
   // Validate wallet balance if using wallet
@@ -345,8 +345,10 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     createdBy: req.user._id,
   });
   
+  const writePromises = [];
+
   // Create payment history record
-  await PaymentHistory.create({
+  writePromises.push(PaymentHistory.create({
     order: order._id,
     orderId: order.orderId,
     customer: customer._id,
@@ -364,11 +366,10 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     notes: req.body.notes || '',
     createdBy: req.user._id,
     paymentNumber: 1, // First payment for this order
-  });
+  }));
 
   // Handle wallet debit
   if (walletAmount > 0) {
-    const previousBalance = customer.walletBalance;
     customer.walletBalance -= walletAmount;
     
     // Add wallet transaction to customer
@@ -384,7 +385,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     });
     
     // Create separate wallet transaction record
-    await WalletTransaction.create({
+    writePromises.push(WalletTransaction.create({
       customer: customer._id,
       customerName: customer.name,
       customerPhone: customer.phone,
@@ -399,7 +400,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       paymentMethod: req.body.paymentMethod,
       description: `Payment for order ${order.orderId}`,
       createdBy: req.user._id,
-    });
+    }));
   }
 
   // Handle wallet credit (extra amount received)
@@ -407,7 +408,6 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   const extraAmount = amountReceived > billAmount ? amountReceived - billAmount : 0;
   
   if (addToWallet && extraAmount > 0) {
-    const previousBalance = customer.walletBalance;
     customer.walletBalance += extraAmount;
     
     // Add wallet transaction to customer
@@ -423,7 +423,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     });
     
     // Create separate wallet transaction record
-    await WalletTransaction.create({
+    writePromises.push(WalletTransaction.create({
       customer: customer._id,
       customerName: customer.name,
       customerPhone: customer.phone,
@@ -439,7 +439,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       paymentMethod: req.body.paymentMethod,
       description: `Extra payment added to wallet for order ${order.orderId}`,
       createdBy: req.user._id,
-    });
+    }));
   }
 
   // Handle pending payment - update customer outstanding balance
@@ -450,7 +450,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   // Update customer visit count and total spending
   customer.visits += 1;
   customer.totalSpending += billAmount;
-  await customer.save();
+  writePromises.push(customer.save());
 
   // Deduct stock if menu item is linked to inventory
   if (menuItem && menuItem.inventoryItem) {
@@ -458,10 +458,10 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     if (inventoryItem) {
       const previousStock = inventoryItem.currentStock;
       inventoryItem.currentStock -= 1;
-      await inventoryItem.save();
+      writePromises.push(inventoryItem.save());
 
       // Create stock transaction record
-      await StockTransaction.create({
+      writePromises.push(StockTransaction.create({
         inventoryItem: inventoryItem._id,
         customer: customer._id,
         order: order._id,
@@ -472,30 +472,35 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
         branch: inventoryItem.branch,
         notes: `Sold to customer ${customer.name}`,
         createdBy: req.user._id,
-      });
+      }));
 
-      // Check for low stock alert
+      // Check for low stock alert in background (no await)
       if (inventoryItem.currentStock <= inventoryItem.minimumStockAlert) {
         const { Notification } = require('../models/System');
-        await Notification.create({
+        Notification.create({
           branch: inventoryItem.branch,
           type: 'low_inventory',
           title: 'Low Stock Alert',
           message: `${inventoryItem.name} is running low (${inventoryItem.currentStock} ${inventoryItem.unit} remaining).`,
           targetRoles: ['super_admin', 'branch_manager'],
           meta: { inventoryId: inventoryItem._id.toString() },
-        });
+        }).catch(err => console.error('Error creating low stock notification:', err));
       }
     }
   }
 
-  // Populate and return the order with customer details
-  const populatedOrder = await Order.findById(order._id)
-    .populate('customer', 'name phone email customerId')
-    .populate('menuCategoryId', 'name status')
-    .populate('menuItemId', 'name price availability status')
-    .populate('branch', 'name code')
-    .lean();
+  // Await all DB writes concurrently
+  await Promise.all(writePromises);
+
+  // Populate the order directly on the mongoose document to avoid redundant find query
+  const populatedOrderDoc = await order.populate([
+    { path: 'customer', select: 'name phone email customerId' },
+    { path: 'menuCategoryId', select: 'name status' },
+    { path: 'menuItemId', select: 'name price availability status' },
+    { path: 'branch', select: 'name code' }
+  ]);
+  
+  const populatedOrder = populatedOrderDoc.toObject();
 
   // Transform to match expected structure
   // Use the actual customer's current wallet balance (after any wallet credit/debit)
@@ -531,17 +536,23 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
 
   // Handle stock restoration and deduction if menuItemId is changing
   if (req.body.menuItemId && req.body.menuItemId !== existingOrder.menuItemId.toString()) {
-    // Restore stock for previous menu item
-    const previousMenuItem = await MenuItem.findById(existingOrder.menuItemId).populate('inventoryItem');
+    // Fetch both menu items concurrently
+    const [previousMenuItem, newMenuItem] = await Promise.all([
+      MenuItem.findById(existingOrder.menuItemId).populate('inventoryItem'),
+      MenuItem.findById(req.body.menuItemId).populate('inventoryItem')
+    ]);
+
+    const stockPromises = [];
+
     if (previousMenuItem && previousMenuItem.inventoryItem) {
       const previousInventoryItem = await Inventory.findById(previousMenuItem.inventoryItem._id);
       if (previousInventoryItem) {
         const previousStock = previousInventoryItem.currentStock;
         previousInventoryItem.currentStock += 1;
-        await previousInventoryItem.save();
+        stockPromises.push(previousInventoryItem.save());
 
         // Create stock transaction record for refund
-        await StockTransaction.create({
+        stockPromises.push(StockTransaction.create({
           inventoryItem: previousInventoryItem._id,
           customer: existingOrder.customer,
           order: existingOrder._id,
@@ -552,25 +563,23 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
           branch: previousInventoryItem.branch,
           notes: `Restored from order update`,
           createdBy: req.user._id,
-        });
+        }));
       }
     }
 
-    // Validate and deduct stock for new menu item
-    const newMenuItem = await MenuItem.findById(req.body.menuItemId).populate('inventoryItem');
     if (newMenuItem && newMenuItem.inventoryItem) {
       const newInventoryItem = await Inventory.findById(newMenuItem.inventoryItem._id);
-      if (newInventoryItem && newInventoryItem.currentStock < 1) {
-        return next(new AppError(`Insufficient stock. Only ${newInventoryItem.currentStock} items available.`, 400));
-      }
-
       if (newInventoryItem) {
+        if (newInventoryItem.currentStock < 1) {
+          return next(new AppError(`Insufficient stock. Only ${newInventoryItem.currentStock} items available.`, 400));
+        }
+
         const previousStock = newInventoryItem.currentStock;
         newInventoryItem.currentStock -= 1;
-        await newInventoryItem.save();
+        stockPromises.push(newInventoryItem.save());
 
         // Create stock transaction record for sale
-        await StockTransaction.create({
+        stockPromises.push(StockTransaction.create({
           inventoryItem: newInventoryItem._id,
           customer: existingOrder.customer,
           order: existingOrder._id,
@@ -581,22 +590,25 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
           branch: newInventoryItem.branch,
           notes: `Sold to customer (order update)`,
           createdBy: req.user._id,
-        });
+        }));
 
-        // Check for low stock alert
+        // Check for low stock alert in background (no await)
         if (newInventoryItem.currentStock <= newInventoryItem.minimumStockAlert) {
           const { Notification } = require('../models/System');
-          await Notification.create({
+          Notification.create({
             branch: newInventoryItem.branch,
             type: 'low_inventory',
             title: 'Low Stock Alert',
             message: `${newInventoryItem.name} is running low (${newInventoryItem.currentStock} ${newInventoryItem.unit} remaining).`,
             targetRoles: ['super_admin', 'branch_manager'],
             meta: { inventoryId: newInventoryItem._id.toString() },
-          });
+          }).catch(err => console.error(err));
         }
       }
     }
+
+    // Await all stock saves and transactions concurrently
+    await Promise.all(stockPromises);
   }
 
   // Normalize currency values for storage on update
@@ -627,6 +639,8 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
   const newWalletAmount = order.walletAmount || 0;
   const walletDifference = newWalletAmount - oldWalletAmount;
 
+  const writePromises = [];
+
   if (walletDifference !== 0) {
     // If wallet amount increased, debit more from wallet
     if (walletDifference > 0) {
@@ -648,7 +662,7 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
       });
       
       // Create separate wallet transaction record
-      await WalletTransaction.create({
+      writePromises.push(WalletTransaction.create({
         customer: customer._id,
         customerName: customer.name,
         customerPhone: customer.phone,
@@ -663,7 +677,7 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
         paymentMethod: order.paymentMethod,
         description: `Additional wallet payment for order ${order.orderId}`,
         createdBy: req.user._id,
-      });
+      }));
     }
     // If wallet amount decreased, credit back to wallet
     else if (walletDifference < 0) {
@@ -683,7 +697,7 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
       });
       
       // Create separate wallet transaction record
-      await WalletTransaction.create({
+      writePromises.push(WalletTransaction.create({
         customer: customer._id,
         customerName: customer.name,
         customerPhone: customer.phone,
@@ -698,19 +712,25 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
         paymentMethod: order.paymentMethod,
         description: `Wallet refund for order ${order.orderId}`,
         createdBy: req.user._id,
-      });
+      }));
     }
     
-    await customer.save();
+    writePromises.push(customer.save());
   }
 
-  // Populate and return the order with customer details
-  const populatedOrder = await Order.findById(order._id)
-    .populate('customer', 'name phone email customerId')
-    .populate('menuCategoryId', 'name status')
-    .populate('menuItemId', 'name price availability status')
-    .populate('branch', 'name code')
-    .lean();
+  if (writePromises.length > 0) {
+    await Promise.all(writePromises);
+  }
+
+  // Populate the order directly on the mongoose document to avoid redundant find query
+  const populatedOrderDoc = await order.populate([
+    { path: 'customer', select: 'name phone email customerId' },
+    { path: 'menuCategoryId', select: 'name status' },
+    { path: 'menuItemId', select: 'name price availability status' },
+    { path: 'branch', select: 'name code' }
+  ]);
+  
+  const populatedOrder = populatedOrderDoc.toObject();
 
   // Transform to match expected structure
   const responseData = {

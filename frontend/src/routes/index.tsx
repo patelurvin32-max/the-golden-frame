@@ -14,7 +14,7 @@ import ExpensesPage from '@/pages/ExpensesPage';
 import ReportsPage from '@/pages/ReportsPage';
 import {
   BranchesPage, UsersPage,
-  BookingsPage, LogsPage
+  LogsPage
 } from '@/pages/OtherPages';
 import AttendancePage from '@/pages/AttendancePage';
 import SettingsPage from '@/pages/SettingsPage';
@@ -28,6 +28,15 @@ function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?
   if (isLoading) return <LoadingPage />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (roles && user && !roles.includes(user.role)) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
+// ── Dashboard redirect for Staff ────────────────────────────────────────────────
+function DashboardGuard({ children }: { children: React.ReactNode }) {
+  const { user } = useAuthStore();
+  if (user?.role === 'staff') {
+    return <Navigate to="/customers" replace />;
+  }
   return <>{children}</>;
 }
 
@@ -70,7 +79,7 @@ export function AppRoutes() {
 
           {/* Protected app shell */}
           <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
-            <Route index element={<DashboardPage />} />
+            <Route index element={<DashboardGuard><DashboardPage /></DashboardGuard>} />
             <Route path="tables" element={<TablesPage />} />
             <Route path="billing" element={<BillingPage />} />
             <Route path="billing/new" element={<BillingPage />} />
@@ -81,7 +90,6 @@ export function AppRoutes() {
             <Route path="pending-payments" element={<PendingPaymentsPage />} />
             <Route path="expenses" element={<ExpensesPage />} />
             <Route path="attendance" element={<AttendancePage />} />
-            <Route path="bookings" element={<BookingsPage />} />
             <Route path="reservations" element={<ReservationsPage />} />
             <Route path="reports" element={<ProtectedRoute roles={['super_admin', 'admin']}><ReportsPage /></ProtectedRoute>} />
             {/* Super admin only */}

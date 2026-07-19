@@ -168,27 +168,29 @@ export default function ReportsPage() {
       <PageHeader
         title="Reports & Analytics"
         actions={
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => handleExport('revenue')}>📥 Revenue Excel</Button>
-            <Button size="sm" variant="outline" onClick={() => handleExport('expenses')}>📥 Expenses Excel</Button>
-            <Button size="sm" variant="outline" onClick={handleExportOrders}>📥 Order Details Excel</Button>
+          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+            <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={() => handleExport('revenue')}>📥 Revenue Excel</Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={() => handleExport('expenses')}>📥 Expenses Excel</Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={handleExportOrders}>📥 Order Details Excel</Button>
           </div>
         }
       />
 
       {/* Date range + group by */}
-      <div className="flex flex-wrap items-center gap-3">
-        <input type="date" value={inputFrom} onChange={(e) => setInputFrom(e.target.value)}
-          className="h-9 px-3 rounded-xl border border-input bg-background text-sm" />
-        <span className="text-muted-foreground">to</span>
-        <input type="date" value={inputTo} onChange={(e) => setInputTo(e.target.value)}
-          className="h-9 px-3 rounded-xl border border-input bg-background text-sm" />
-        <Button size="sm" onClick={handleSearch}>🔍 Search</Button>
+      <div className="flex flex-col md:flex-row md:items-center gap-3 w-full">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 w-full">
+          <input type="date" value={inputFrom} onChange={(e) => setInputFrom(e.target.value)}
+            className="h-9 px-3 rounded-xl border border-input bg-background text-sm w-full sm:w-auto flex-1" />
+          <span className="text-muted-foreground text-center sm:text-left">to</span>
+          <input type="date" value={inputTo} onChange={(e) => setInputTo(e.target.value)}
+            className="h-9 px-3 rounded-xl border border-input bg-background text-sm w-full sm:w-auto flex-1" />
+          <Button size="sm" onClick={handleSearch} className="w-full sm:w-auto">🔍 Search</Button>
+        </div>
         {tab === 'revenue' && (
-          <div className="flex gap-1">
+          <div className="flex gap-1 w-full md:w-auto justify-start">
             {(['day', 'week', 'month'] as GroupBy[]).map((g) => (
               <button key={g} onClick={() => setGroupBy(g)}
-                className={cn('px-3 py-1.5 rounded-xl border text-xs font-semibold capitalize transition-colors',
+                className={cn('flex-1 md:flex-initial text-center px-3 py-1.5 rounded-xl border text-xs font-semibold capitalize transition-colors',
                   groupBy === g ? 'gradient-brand text-white border-transparent' : 'border-border text-muted-foreground hover:bg-accent'
                 )}
               >{g}</button>
@@ -198,7 +200,7 @@ export default function ReportsPage() {
       </div>
 
       {/* Quick summary */}
-      <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
         {[
           { label: 'Revenue', value: formatCurrency(totalRevenue), color: 'text-blue-400' },
           { label: 'Expenses', value: formatCurrency(totalExpenses), color: 'text-red-400' },
@@ -208,19 +210,19 @@ export default function ReportsPage() {
           { label: 'Total Customers', value: totalCustomers.toString(), color: 'text-orange-400' },
         ].map((s) => (
           <Card key={s.label}>
-            <CardContent className="p-4 text-center">
-              <p className="text-xs text-muted-foreground uppercase tracking-wider">{s.label}</p>
-              <p className={cn('text-2xl font-bold mt-1', s.color)}>{s.value}</p>
+            <CardContent className="p-3 sm:p-4 text-center">
+              <p className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wider truncate" title={s.label}>{s.label}</p>
+              <p className={cn('text-base sm:text-lg md:text-xl lg:text-2xl font-bold mt-1 truncate', s.color)} title={s.value}>{s.value}</p>
             </CardContent>
           </Card>
         ))}
       </div>
 
       {/* Tab nav */}
-      <div className="flex gap-2 border-b border-border pb-0">
+      <div className="flex gap-2 border-b border-border pb-0 overflow-x-auto whitespace-nowrap scrollbar-none">
         {TABS.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id as any)}
-            className={cn('px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px',
+            className={cn('px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px flex-shrink-0',
               tab === t.id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
             )}
           >
@@ -350,7 +352,7 @@ export default function ReportsPage() {
       {shouldFetch && (
         <div className="space-y-6">
           {/* Summary Section */}
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
             {[
               { label: 'Total Orders', value: orderSummaryData?.summary?.totalOrders ?? 0, color: 'text-blue-400' },
               { label: 'Total Revenue', value: formatCurrency(orderSummaryData?.summary?.totalRevenue ?? 0), color: 'text-emerald-400' },
@@ -362,8 +364,8 @@ export default function ReportsPage() {
             ].map((s) => (
               <Card key={s.label}>
                 <CardContent className="p-3 text-center">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">{s.label}</p>
-                  <p className={cn('text-lg font-bold mt-1', s.color)}>{s.value}</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold truncate" title={s.label}>{s.label}</p>
+                  <p className={cn('text-sm sm:text-base md:text-lg font-bold mt-1 truncate', s.color)} title={s.value}>{s.value}</p>
                 </CardContent>
               </Card>
             ))}
@@ -371,14 +373,14 @@ export default function ReportsPage() {
 
           {/* Order Details Section */}
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between pb-2 gap-3">
               <CardTitle>Order Details</CardTitle>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 w-full sm:w-auto">
                 <Input
                   placeholder="Search orders..."
                   value={orderSearch}
                   onChange={(e) => { setOrderSearch(e.target.value); setOrderPage(1); }}
-                  className="w-64 h-8 text-xs rounded-lg"
+                  className="w-full sm:w-64 h-8 text-xs rounded-lg"
                 />
               </div>
             </CardHeader>
@@ -395,29 +397,29 @@ export default function ReportsPage() {
                     <Table2>
                       <TableHeader>
                         <TableRow>
-                          <TableHead className="cursor-pointer select-none" onClick={() => handleSort('orderId')}>
+                          <TableHead className="cursor-pointer select-none whitespace-nowrap" onClick={() => handleSort('orderId')}>
                             Order ID {orderSortBy === 'orderId' ? (orderSortOrder === 'asc' ? '▲' : '▼') : ''}
                           </TableHead>
-                          <TableHead className="cursor-pointer select-none" onClick={() => handleSort('customerName')}>
+                          <TableHead className="cursor-pointer select-none whitespace-nowrap" onClick={() => handleSort('customerName')}>
                             Customer Name {orderSortBy === 'customerName' ? (orderSortOrder === 'asc' ? '▲' : '▼') : ''}
                           </TableHead>
-                          <TableHead>Mobile Number</TableHead>
-                          <TableHead className="cursor-pointer select-none" onClick={() => handleSort('branchName')}>
+                          <TableHead className="whitespace-nowrap">Mobile Number</TableHead>
+                          <TableHead className="cursor-pointer select-none whitespace-nowrap" onClick={() => handleSort('branchName')}>
                             Branch {orderSortBy === 'branchName' ? (orderSortOrder === 'asc' ? '▲' : '▼') : ''}
                           </TableHead>
-                          <TableHead>Category</TableHead>
-                          <TableHead>Item</TableHead>
-                          <TableHead>Qty</TableHead>
-                          <TableHead className="cursor-pointer select-none" onClick={() => handleSort('billAmount')}>
+                          <TableHead className="whitespace-nowrap">Category</TableHead>
+                          <TableHead className="whitespace-nowrap">Item</TableHead>
+                          <TableHead className="whitespace-nowrap">Qty</TableHead>
+                          <TableHead className="cursor-pointer select-none whitespace-nowrap" onClick={() => handleSort('billAmount')}>
                             Bill Amount {orderSortBy === 'billAmount' ? (orderSortOrder === 'asc' ? '▲' : '▼') : ''}
                           </TableHead>
-                          <TableHead>Amount Recd</TableHead>
-                          <TableHead>Wallet Used</TableHead>
-                          <TableHead>Wallet Added</TableHead>
-                          <TableHead>Payment Method</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>Created By</TableHead>
-                          <TableHead className="cursor-pointer select-none" onClick={() => handleSort('createdAt')}>
+                          <TableHead className="whitespace-nowrap">Amount Recd</TableHead>
+                          <TableHead className="whitespace-nowrap">Wallet Used</TableHead>
+                          <TableHead className="whitespace-nowrap">Wallet Added</TableHead>
+                          <TableHead className="whitespace-nowrap">Payment Method</TableHead>
+                          <TableHead className="whitespace-nowrap">Status</TableHead>
+                          <TableHead className="whitespace-nowrap">Created By</TableHead>
+                          <TableHead className="cursor-pointer select-none whitespace-nowrap" onClick={() => handleSort('createdAt')}>
                             Created At {orderSortBy === 'createdAt' ? (orderSortOrder === 'asc' ? '▲' : '▼') : ''}
                           </TableHead>
                         </TableRow>
@@ -425,24 +427,24 @@ export default function ReportsPage() {
                       <TableBody>
                         {orderData.data.orders.map((o: any) => (
                           <TableRow key={o._id}>
-                            <TableCell className="font-mono text-xs">{o.orderId}</TableCell>
-                            <TableCell className="text-sm font-medium">{o.customerName}</TableCell>
-                            <TableCell className="text-sm">{o.mobileNumber || '—'}</TableCell>
-                            <TableCell className="text-sm">{o.branchName}</TableCell>
-                            <TableCell className="text-xs">{o.menuCategory || '—'}</TableCell>
-                            <TableCell className="text-xs">{o.menuItem || '—'}</TableCell>
-                            <TableCell className="text-sm">{o.quantity}</TableCell>
-                            <TableCell className="text-sm font-medium">{formatCurrency(o.billAmount)}</TableCell>
-                            <TableCell className="text-sm">{formatCurrency(o.amountReceived)}</TableCell>
-                            <TableCell className="text-sm">{formatCurrency(o.walletUsed)}</TableCell>
-                            <TableCell className="text-sm">{formatCurrency(o.walletAdded)}</TableCell>
-                            <TableCell className="text-xs capitalize font-medium">{o.paymentMethod}</TableCell>
-                            <TableCell>
+                            <TableCell className="font-mono text-xs whitespace-nowrap">{o.orderId}</TableCell>
+                            <TableCell className="text-sm font-medium whitespace-nowrap">{o.customerName}</TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">{o.mobileNumber || '—'}</TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">{o.branchName}</TableCell>
+                            <TableCell className="text-xs whitespace-nowrap">{o.menuCategory || '—'}</TableCell>
+                            <TableCell className="text-xs whitespace-nowrap">{o.menuItem || '—'}</TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">{o.quantity}</TableCell>
+                            <TableCell className="text-sm font-medium whitespace-nowrap">{formatCurrency(o.billAmount)}</TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">{formatCurrency(o.amountReceived)}</TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">{formatCurrency(o.walletUsed)}</TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">{formatCurrency(o.walletAdded)}</TableCell>
+                            <TableCell className="text-xs capitalize font-medium whitespace-nowrap">{o.paymentMethod}</TableCell>
+                            <TableCell className="whitespace-nowrap">
                               <Badge variant={o.paymentStatus === 'paid' ? 'success' : o.paymentStatus === 'partial' ? 'warning' : 'danger'}>
                                 {o.paymentStatus}
                               </Badge>
                             </TableCell>
-                            <TableCell className="text-sm">{o.createdBy}</TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">{o.createdBy}</TableCell>
                             <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                               {new Date(o.createdAt).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
                             </TableCell>
@@ -460,18 +462,18 @@ export default function ReportsPage() {
                       </span>
                       <div className="flex gap-2">
                         <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={orderPage === 1}
-                          onClick={() => setOrderPage((p) => Math.max(1, p - 1))}
+                           size="sm"
+                           variant="outline"
+                           disabled={orderPage === 1}
+                           onClick={() => setOrderPage((p) => Math.max(1, p - 1))}
                         >
                           Previous
                         </Button>
                         <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={orderPage === orderData.pages}
-                          onClick={() => setOrderPage((p) => Math.min(orderData.pages, p + 1))}
+                           size="sm"
+                           variant="outline"
+                           disabled={orderPage === orderData.pages}
+                           onClick={() => setOrderPage((p) => Math.min(orderData.pages, p + 1))}
                         >
                           Next
                         </Button>
@@ -486,7 +488,7 @@ export default function ReportsPage() {
           {/* Pending Payment Details */}
           {orderSummaryData?.pendingPayments && orderSummaryData.pendingPayments.length > 0 && (
             <Card>
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between pb-2 gap-2">
                 <CardTitle className="text-red-400">⚠️ Pending Payment Details</CardTitle>
                 <div className="text-sm font-semibold text-red-400">
                   Total Pending Amount: {formatCurrency(orderSummaryData?.summary?.totalPendingAmount ?? 0)}
@@ -497,26 +499,26 @@ export default function ReportsPage() {
                   <Table2>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Order ID</TableHead>
-                        <TableHead>Customer Name</TableHead>
-                        <TableHead>Mobile Number</TableHead>
-                        <TableHead>Bill Amount</TableHead>
-                        <TableHead>Amount Paid</TableHead>
-                        <TableHead>Pending Amount</TableHead>
-                        <TableHead>Payment Method</TableHead>
-                        <TableHead>Created At</TableHead>
+                        <TableHead className="whitespace-nowrap">Order ID</TableHead>
+                        <TableHead className="whitespace-nowrap">Customer Name</TableHead>
+                        <TableHead className="whitespace-nowrap">Mobile Number</TableHead>
+                        <TableHead className="whitespace-nowrap">Bill Amount</TableHead>
+                        <TableHead className="whitespace-nowrap">Amount Paid</TableHead>
+                        <TableHead className="whitespace-nowrap">Pending Amount</TableHead>
+                        <TableHead className="whitespace-nowrap">Payment Method</TableHead>
+                        <TableHead className="whitespace-nowrap">Created At</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {orderSummaryData.pendingPayments.map((p: any) => (
                         <TableRow key={p._id}>
-                          <TableCell className="font-mono text-xs">{p.orderId}</TableCell>
-                          <TableCell className="text-sm font-medium">{p.customerName}</TableCell>
-                          <TableCell className="text-sm">{p.mobileNumber || '—'}</TableCell>
-                          <TableCell className="text-sm font-medium">{formatCurrency(p.billAmount)}</TableCell>
-                          <TableCell className="text-sm">{formatCurrency(p.amountPaid)}</TableCell>
-                          <TableCell className="text-sm font-bold text-red-400">{formatCurrency(p.pendingAmount)}</TableCell>
-                          <TableCell className="text-xs capitalize">{p.paymentMethod}</TableCell>
+                          <TableCell className="font-mono text-xs whitespace-nowrap">{p.orderId}</TableCell>
+                          <TableCell className="text-sm font-medium whitespace-nowrap">{p.customerName}</TableCell>
+                          <TableCell className="text-sm whitespace-nowrap">{p.mobileNumber || '—'}</TableCell>
+                          <TableCell className="text-sm font-medium whitespace-nowrap">{formatCurrency(p.billAmount)}</TableCell>
+                          <TableCell className="text-sm whitespace-nowrap">{formatCurrency(p.amountPaid)}</TableCell>
+                          <TableCell className="text-sm font-bold text-red-400 whitespace-nowrap">{formatCurrency(p.pendingAmount)}</TableCell>
+                          <TableCell className="text-xs capitalize whitespace-nowrap">{p.paymentMethod}</TableCell>
                           <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                             {new Date(p.createdAt).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
                           </TableCell>
@@ -540,28 +542,28 @@ export default function ReportsPage() {
                   <Table2>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Order ID</TableHead>
-                        <TableHead>Customer Name</TableHead>
-                        <TableHead>Mobile Number</TableHead>
-                        <TableHead>Wallet Credit</TableHead>
-                        <TableHead>Wallet Debit</TableHead>
-                        <TableHead>Remaining Balance</TableHead>
-                        <TableHead>Transaction Time</TableHead>
+                        <TableHead className="whitespace-nowrap">Order ID</TableHead>
+                        <TableHead className="whitespace-nowrap">Customer Name</TableHead>
+                        <TableHead className="whitespace-nowrap">Mobile Number</TableHead>
+                        <TableHead className="whitespace-nowrap">Wallet Credit</TableHead>
+                        <TableHead className="whitespace-nowrap">Wallet Debit</TableHead>
+                        <TableHead className="whitespace-nowrap">Remaining Balance</TableHead>
+                        <TableHead className="whitespace-nowrap">Transaction Time</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {orderSummaryData.walletTransactions.map((tx: any, idx: number) => (
                         <TableRow key={idx}>
-                          <TableCell className="font-mono text-xs">{tx.orderId}</TableCell>
-                          <TableCell className="text-sm font-medium">{tx.customerName}</TableCell>
-                          <TableCell className="text-sm">{tx.mobileNumber || '—'}</TableCell>
-                          <TableCell className="text-sm font-semibold text-emerald-400">
+                          <TableCell className="font-mono text-xs whitespace-nowrap">{tx.orderId}</TableCell>
+                          <TableCell className="text-sm font-medium whitespace-nowrap">{tx.customerName}</TableCell>
+                          <TableCell className="text-sm whitespace-nowrap">{tx.mobileNumber || '—'}</TableCell>
+                          <TableCell className="text-sm font-semibold text-emerald-400 whitespace-nowrap">
                             {tx.walletCredit > 0 ? `+${formatCurrency(tx.walletCredit)}` : '—'}
                           </TableCell>
-                          <TableCell className="text-sm font-semibold text-red-400">
+                          <TableCell className="text-sm font-semibold text-red-400 whitespace-nowrap">
                             {tx.walletDebit > 0 ? `-${formatCurrency(tx.walletDebit)}` : '—'}
                           </TableCell>
-                          <TableCell className="text-sm font-bold text-blue-400">{formatCurrency(tx.remainingBalance)}</TableCell>
+                          <TableCell className="text-sm font-bold text-blue-400 whitespace-nowrap">{formatCurrency(tx.remainingBalance)}</TableCell>
                           <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                             {new Date(tx.createdAt).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
                           </TableCell>
@@ -585,8 +587,8 @@ export default function ReportsPage() {
                   {orderSummaryData.topSellingItems.map((item: any, idx: number) => (
                     <Card key={idx} className="bg-muted/30">
                       <CardContent className="p-4 text-center">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">{item.category}</p>
-                        <p className="text-base font-bold mt-1 text-foreground truncate">{item.name}</p>
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold truncate" title={item.category}>{item.category}</p>
+                        <p className="text-base font-bold mt-1 text-foreground truncate" title={item.name}>{item.name}</p>
                         <div className="inline-flex items-center gap-1.5 mt-2 bg-amber-500/10 text-amber-400 px-2.5 py-0.5 rounded-full text-xs font-bold border border-amber-500/25">
                           {item.quantitySold} sold
                         </div>

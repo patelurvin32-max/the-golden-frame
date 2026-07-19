@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { branchService, userService, attendanceService, bookingService, logsService, settingsService } from '@/services';
+import { branchService, userService, attendanceService, logsService, settingsService } from '@/services';
 import {
   Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select,
   PageHeader, Skeleton, EmptyState, Table2, TableHeader, TableBody,
@@ -579,60 +579,6 @@ export function AttendancePage() {
                     </TableRow>
                   );
                 })}
-              </TableBody>
-            </Table2>
-          )}
-      </Card>
-    </div>
-  );
-}
-
-// ── Bookings ───────────────────────────────────────────────────────────────────
-export function BookingsPage() {
-  const { selectedBranch } = useAppStore();
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const params: Record<string, string> = { date };
-  if (selectedBranch) params.branch = selectedBranch;
-
-  const { data, isLoading } = useQuery({
-    queryKey: ['bookings', selectedBranch, date],
-    queryFn: () => bookingService.getAll(params).then((r) => (r.data as any).data?.bookings || []),
-  });
-
-  const bookings = data || [];
-  const statusColors: Record<string, string> = { pending: 'warning', confirmed: 'info', completed: 'success', cancelled: 'danger' };
-
-  return (
-    <div className="space-y-5 animate-fade-in">
-      <PageHeader title="Bookings"  />
-      <div className="flex items-center gap-3">
-        <Label>Date</Label>
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-9 px-3 rounded-xl border border-input bg-background text-sm" />
-      </div>
-      <Card>
-        {isLoading ? <div className="p-4 space-y-3">{[...Array(3)].map((_, i) => <Skeleton key={i} className="h-14" />)}</div>
-          : bookings.length === 0 ? <EmptyState icon="📅" title="No bookings" description={`No reservations for ${formatDate(date)}`} />
-          : (
-            <Table2>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Table</TableHead>
-                  <TableHead>Time</TableHead>
-                  <TableHead>Duration</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {bookings.map((b: any) => (
-                  <TableRow key={b._id}>
-                    <TableCell className="font-semibold">{b.customer?.name}</TableCell>
-                    <TableCell className="capitalize">{b.table?.name} ({b.table?.type})</TableCell>
-                    <TableCell>{b.startTime}</TableCell>
-                    <TableCell>{b.durationMinutes} min</TableCell>
-                    <TableCell><Badge variant={statusColors[b.status] as any} className="capitalize">{b.status}</Badge></TableCell>
-                  </TableRow>
-                ))}
               </TableBody>
             </Table2>
           )}

@@ -62,18 +62,8 @@ router.patch(
 
     const body = req.body || {};
 
-    if (body.receipt) {
-      const receipt = body.receipt;
-      settings.receipt = settings.receipt || {};
-      settings.receipt.header = settings.receipt.header || {};
-      settings.receipt.orderDetails = settings.receipt.orderDetails || {};
-      settings.receipt.footer = settings.receipt.footer || {};
-
-      if (receipt.templateName !== undefined) settings.receipt.templateName = receipt.templateName;
-      if (receipt.fontStyle !== undefined) settings.receipt.fontStyle = receipt.fontStyle;
-      if (receipt.header) Object.assign(settings.receipt.header, receipt.header);
-      if (receipt.orderDetails) Object.assign(settings.receipt.orderDetails, receipt.orderDetails);
-      if (receipt.footer) Object.assign(settings.receipt.footer, receipt.footer);
+    if (body.receipt !== undefined) {
+      settings.receipt = body.receipt;
     }
 
     const allowed = [
@@ -82,6 +72,7 @@ router.patch(
       'currency',
       'currencySymbol',
       'taxPercent',
+      'gstNumber',
       'timezone',
       'backupEnabled',
       'dailyReportEnabled',

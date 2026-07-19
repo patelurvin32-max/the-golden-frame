@@ -13,6 +13,7 @@ type SettingsState = {
   currency: string;
   currencySymbol: string;
   taxPercent: number;
+  gstNumber: string;
   timezone: string;
   backupEnabled: boolean;
   dailyReportEnabled: boolean;
@@ -36,13 +37,37 @@ type SettingsState = {
       showWebsite: boolean;
     };
     orderDetails: {
-      showTableName: boolean;
-      showDuration: boolean;
-      showStaffName: boolean;
+      showInvoiceNumber: boolean;
       showCustomer: boolean;
+      showAdditionalPlayers: boolean;
+      showCategory: boolean;
+      showTableName: boolean;
+      showStartTime: boolean;
+      showEndTime: boolean;
+      showDuration: boolean;
+      showDateTime: boolean;
+      showStaffName: boolean;
       showItemizedList: boolean;
       showTax: boolean;
       showDiscount: boolean;
+    };
+    itemsSection: {
+      showItemName: boolean;
+      showQty: boolean;
+      showRate: boolean;
+      showAmount: boolean;
+      showTotalItems: boolean;
+    };
+    paymentSection: {
+      showDiscount: boolean;
+      showWalletUsed: boolean;
+      showCashPaid: boolean;
+      showUPIPaid: boolean;
+      showPaymentBreakdown: boolean;
+      showTotalPaid: boolean;
+      showPendingAmount: boolean;
+      showPaymentStatus: boolean;
+      showGrandTotal: boolean;
     };
     footer: {
       showThankYou: boolean;
@@ -72,6 +97,7 @@ const createDefaultSettings = (): SettingsState => ({
   currencySymbol: '₹',
   taxPercent: 0,
   timezone: 'Asia/Kolkata',
+  gstNumber: '',
   backupEnabled: true,
   dailyReportEnabled: true,
   dailyReportFromEmail: '',
@@ -94,13 +120,37 @@ const createDefaultSettings = (): SettingsState => ({
       showWebsite: false,
     },
     orderDetails: {
-      showTableName: true,
-      showDuration: true,
-      showStaffName: false,
+      showInvoiceNumber: true,
       showCustomer: true,
+      showAdditionalPlayers: true,
+      showCategory: true,
+      showTableName: true,
+      showStartTime: true,
+      showEndTime: true,
+      showDuration: true,
+      showDateTime: true,
+      showStaffName: true,
       showItemizedList: true,
       showTax: true,
       showDiscount: true,
+    },
+    itemsSection: {
+      showItemName: true,
+      showQty: true,
+      showRate: true,
+      showAmount: true,
+      showTotalItems: true,
+    },
+    paymentSection: {
+      showDiscount: true,
+      showWalletUsed: true,
+      showCashPaid: true,
+      showUPIPaid: true,
+      showPaymentBreakdown: true,
+      showTotalPaid: true,
+      showPendingAmount: true,
+      showPaymentStatus: true,
+      showGrandTotal: true,
     },
     footer: {
       showThankYou: true,
@@ -254,6 +304,9 @@ function ReceiptPreview({ settings }: { settings: SettingsState }) {
   const receipt = settings.receipt;
   const header = receipt.header;
   const footer = receipt.footer;
+  const orderDetails = receipt.orderDetails;
+  const itemsSection = receipt.itemsSection || { showItemName: true, showQty: true, showRate: true, showAmount: true, showTotalItems: true };
+  const paymentSection = receipt.paymentSection || { showDiscount: true, showWalletUsed: true, showCashPaid: true, showUPIPaid: true, showPaymentBreakdown: true, showTotalPaid: true, showPendingAmount: true, showPaymentStatus: true, showGrandTotal: true };
   const currency = settings.currencySymbol || '₹';
   const fontFamily =
     receipt.fontStyle === 'Courier'
@@ -263,149 +316,270 @@ function ReceiptPreview({ settings }: { settings: SettingsState }) {
         : 'Arial, sans-serif';
   const businessName = header.businessName || settings.businessName || 'The Golden Frame';
 
+  // Math totals (No separate GST displays, prices are inclusive)
+  const subtotal = 610.00;
+  const discount = paymentSection.showDiscount ? 50.00 : 0.00;
+  const walletUsed = paymentSection.showWalletUsed ? 40.00 : 0.00;
+  const grandTotal = subtotal - discount - walletUsed;
+
+  const cashPaid = paymentSection.showCashPaid ? 200.00 : 0.00;
+  const upiPaid = paymentSection.showUPIPaid ? (grandTotal - cashPaid) : 0.00;
+  const totalPaid = cashPaid + upiPaid;
+  const pendingAmount = grandTotal - totalPaid;
+
   return (
     <div
-      className="mx-auto overflow-hidden rounded-xl bg-white text-gray-800 shadow-2xl"
-      style={{ width: 320, fontFamily, fontSize: 12 }}
+      className="mx-auto overflow-hidden rounded bg-white text-black p-4 shadow-2xl border border-gray-300 select-none"
+      style={{ width: 320, fontFamily, fontSize: 11, lineHeight: '1.4' }}
     >
-      <div className="space-y-1 bg-gray-900 p-4 text-center text-white">
-        {header.showLogo && settings.logoUrl ? (
-          <img src={settings.logoUrl} alt="Logo" className="mx-auto mb-2 h-12 w-12 rounded-lg object-contain" />
-        ) : null}
-        {header.showLogo && !settings.logoUrl ? (
-          <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-xl bg-sky-600 text-xl">
-            CM
-          </div>
-        ) : null}
-        <p className="text-base font-bold">{businessName}</p>
-        {header.showAddress && header.addressLine1 ? <p className="text-xs text-gray-300">{header.addressLine1}</p> : null}
-        {header.showAddress && header.addressLine2 ? <p className="text-xs text-gray-300">{header.addressLine2}</p> : null}
-        {header.showPhone && header.phone ? <p className="text-xs text-gray-300">Phone: {header.phone}</p> : null}
-        {header.showEmail && header.email ? <p className="text-xs text-gray-300">Email: {header.email}</p> : null}
-        {header.showWebsite && header.website ? <p className="text-xs text-gray-300">Web: {header.website}</p> : null}
-      </div>
-
-      <div className="mx-4 my-2 border-t-2 border-dashed border-gray-300" />
-
-      <div className="space-y-1 px-4 py-2 text-xs">
-        <div className="flex justify-between">
-          <span className="text-gray-500">Invoice #</span>
-          <span className="font-mono font-bold">INV-20240704-0001</span>
+      {/* Logo */}
+      {header.showLogo && settings.logoUrl ? (
+        <div className="flex justify-center mb-2">
+          <img src={settings.logoUrl} alt="Logo" className="h-12 w-12 object-contain" />
         </div>
-        <div className="flex justify-between">
-          <span className="text-gray-500">Date</span>
-          <span>04 Jul 2024, 12:40 PM</span>
-        </div>
-        {receipt.orderDetails.showCustomer ? (
-          <div className="flex justify-between">
-            <span className="text-gray-500">Customer</span>
-            <span>Walk-in</span>
-          </div>
-        ) : null}
-        {receipt.orderDetails.showTableName ? (
-          <div className="flex justify-between">
-            <span className="text-gray-500">Table</span>
-            <span>Pool 1</span>
-          </div>
-        ) : null}
-        {receipt.orderDetails.showDuration ? (
-          <div className="flex justify-between">
-            <span className="text-gray-500">Duration</span>
-            <span>1h 15m</span>
-          </div>
-        ) : null}
-        {receipt.orderDetails.showStaffName ? (
-          <div className="flex justify-between">
-            <span className="text-gray-500">Staff</span>
-            <span>Ravi</span>
-          </div>
-        ) : null}
-      </div>
-
-      <div className="mx-4 my-2 border-t border-dashed border-gray-300" />
-
-      {receipt.orderDetails.showItemizedList ? (
-        <div className="space-y-1 px-4 py-2 text-xs">
-          <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-gray-600">Items</p>
-          <div className="flex justify-between">
-            <span>Pool Table (75 min)</span>
-            <span className="font-semibold">{currency}375.00</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Cold Drink x2</span>
-            <span className="font-semibold">{currency}80.00</span>
+      ) : header.showLogo ? (
+        <div className="flex justify-center mb-2">
+          <div className="flex h-12 w-12 items-center justify-center rounded border border-dashed border-black text-xs font-bold font-mono">
+            LOGO
           </div>
         </div>
       ) : null}
 
-      <div className="mx-4 my-2 border-t border-dashed border-gray-300" />
+      {/* Business Header */}
+      <div className="text-center font-mono">
+        <p className="text-sm font-bold uppercase tracking-wider">{businessName}</p>
+        <p className="text-xs">Indiranagar Branch</p>
+        {header.showAddress && (
+          <p className="text-[10px] text-gray-700 leading-tight mt-0.5">
+            {header.addressLine1 || 'G-5, Welcome point'}
+            {header.addressLine2 ? `, ${header.addressLine2}` : ', Varkund, Daman, 396210'}
+          </p>
+        )}
+        {header.showPhone && (
+          <p className="text-[10px] text-gray-700 mt-0.5">
+            Ph: {header.phone || '+91 96876 60072'}
+          </p>
+        )}
+        {header.showEmail && header.email && (
+          <p className="text-[10px] text-gray-700">Email: {header.email}</p>
+        )}
+        {header.showWebsite && header.website && (
+          <p className="text-[10px] text-gray-700">Web: {header.website}</p>
+        )}
+        {settings.gstNumber && (
+          <p className="text-[10px] text-gray-700">GSTIN: {settings.gstNumber}</p>
+        )}
+      </div>
 
-      <div className="space-y-1 px-4 py-2 text-xs">
+      {(orderDetails.showInvoiceNumber || orderDetails.showDateTime || orderDetails.showCategory) && (
+        <>
+          <div className="border-t border-dashed border-black my-2" />
+          <div className="text-center font-bold font-mono my-1 text-xs">
+            TAX INVOICE
+          </div>
+          <div className="border-t border-dashed border-black my-2" />
+
+          {/* Invoice Meta */}
+          <div className="grid grid-cols-2 gap-x-2 text-[10px] font-mono">
+            {orderDetails.showInvoiceNumber && (
+              <div>Bill No: <span className="font-bold">INV-20260716-0003</span></div>
+            )}
+            {orderDetails.showCategory && (
+              <div className="text-right">Table Session</div>
+            )}
+            {orderDetails.showDateTime && (
+              <>
+                <div>Date: 16/07/2026</div>
+                <div className="text-right">Time: 12:07 PM</div>
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {(orderDetails.showCustomer || orderDetails.showAdditionalPlayers) && (
+        <>
+          <div className="border-t border-dashed border-black my-2" />
+          {/* Customer Info */}
+          <div className="text-[10px] font-mono mb-1">
+            {orderDetails.showCustomer && (
+              <>
+                <div>Customer: Rahul Sharma</div>
+                <div>Mobile: +91 98765 43210</div>
+              </>
+            )}
+            {orderDetails.showAdditionalPlayers && (
+              <div className="truncate">Add. Players: Amit Patel, Rohit Singh</div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Session Details */}
+      {(orderDetails.showTableName || orderDetails.showStartTime || orderDetails.showEndTime || orderDetails.showDuration) && (
+        <div className="text-[10px] font-mono mb-2 bg-gray-50 p-1 border border-gray-200 rounded mt-1">
+          {orderDetails.showCategory && (
+            <div>Table/Game Category: SNOOKER</div>
+          )}
+          {orderDetails.showTableName && (
+            <div>Table/Menu Item: Snooker Table 2</div>
+          )}
+          {orderDetails.showStartTime && (
+            <div>Start Time: 10:30 AM</div>
+          )}
+          {orderDetails.showEndTime && (
+            <div>End Time: 11:45 AM</div>
+          )}
+          {orderDetails.showDuration && (
+            <div>Duration: 1h 15m</div>
+          )}
+          {orderDetails.showStaffName && (
+            <div>Billed By: Ravi Kumar</div>
+          )}
+        </div>
+      )}
+
+      <div className="border-t border-dashed border-black my-2" />
+
+      {/* Itemized Table */}
+      {orderDetails.showItemizedList && (
+        <div className="font-mono text-[10px] my-2">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-black">
+                {itemsSection.showItemName && <th className="text-left font-bold pb-1">ITEM</th>}
+                {itemsSection.showQty && <th className="text-right font-bold pb-1 w-10">QTY</th>}
+                {itemsSection.showRate && <th className="text-right font-bold pb-1 w-14">RATE</th>}
+                {itemsSection.showAmount && <th className="text-right font-bold pb-1 w-16">AMT</th>}
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b border-dotted border-gray-300">
+                {itemsSection.showItemName && <td className="py-1 leading-tight">Snooker Table (75m)</td>}
+                {itemsSection.showQty && <td className="text-right py-1">1</td>}
+                {itemsSection.showRate && <td className="text-right py-1">300.00</td>}
+                {itemsSection.showAmount && <td className="text-right py-1">300.00</td>}
+              </tr>
+              <tr className="border-b border-dotted border-gray-300">
+                {itemsSection.showItemName && <td className="py-1 leading-tight">Red Bull</td>}
+                {itemsSection.showQty && <td className="text-right py-1">2</td>}
+                {itemsSection.showRate && <td className="text-right py-1">110.00</td>}
+                {itemsSection.showAmount && <td className="text-right py-1">220.00</td>}
+              </tr>
+              <tr className="border-b border-dotted border-gray-300">
+                {itemsSection.showItemName && <td className="py-1 leading-tight">French Fries</td>}
+                {itemsSection.showQty && <td className="text-right py-1">1</td>}
+                {itemsSection.showRate && <td className="text-right py-1">90.00</td>}
+                {itemsSection.showAmount && <td className="text-right py-1">90.00</td>}
+              </tr>
+            </tbody>
+          </table>
+          {itemsSection.showTotalItems && (
+            <p className="text-[9px] text-gray-600 mt-1">Total Items: 3</p>
+          )}
+        </div>
+      )}
+
+      <div className="border-t border-dashed border-black my-2" />
+
+      {/* Summary Section */}
+      <div className="space-y-1 font-mono text-[10px] pl-16">
         <div className="flex justify-between">
-          <span className="text-gray-500">Subtotal</span>
-          <span>{currency}455.00</span>
+          <span>Subtotal:</span>
+          <span>{currency}{subtotal.toFixed(2)}</span>
         </div>
-        {receipt.orderDetails.showDiscount ? (
-          <div className="flex justify-between text-red-500">
-            <span>Discount</span>
-            <span>-{currency}50.00</span>
+        {paymentSection.showDiscount && (
+          <div className="flex justify-between text-red-600 font-semibold">
+            <span>Discount:</span>
+            <span>-{currency}{discount.toFixed(2)}</span>
           </div>
-        ) : null}
-        {receipt.orderDetails.showTax ? (
+        )}
+        {paymentSection.showWalletUsed && (
           <div className="flex justify-between">
-            <span className="text-gray-500">Tax (0%)</span>
-            <span>{currency}0.00</span>
+            <span>Wallet Used:</span>
+            <span>-{currency}{walletUsed.toFixed(2)}</span>
           </div>
-        ) : null}
-        <div className="flex justify-between border-t border-gray-200 pt-1 text-sm font-bold">
-          <span>TOTAL</span>
-          <span className="text-green-600">{currency}405.00</span>
-        </div>
-        <div className="flex justify-between pt-1 text-xs text-gray-500">
-          <span>Payment</span>
-          <span>Cash</span>
+        )}
+        
+        {/* Grand Total */}
+        {paymentSection.showGrandTotal && (
+          <div className="flex justify-between border-y border-black py-1 font-bold text-xs mt-1">
+            <span>GRAND TOTAL:</span>
+            <span>{currency}{grandTotal.toFixed(2)}</span>
+          </div>
+        )}
+
+        {/* Payment Methods */}
+        <div className="pt-1 space-y-0.5 text-gray-700">
+          <div className="flex justify-between">
+            <span>Payment Method:</span>
+            <span className="font-semibold text-black">MIXED</span>
+          </div>
+          {paymentSection.showPaymentBreakdown && (
+            <>
+              {paymentSection.showCashPaid && (
+                <div className="flex justify-between">
+                  <span>Cash Paid:</span>
+                  <span>{currency}{cashPaid.toFixed(2)}</span>
+                </div>
+              )}
+              {paymentSection.showUPIPaid && (
+                <div className="flex justify-between">
+                  <span>UPI Paid:</span>
+                  <span>{currency}{upiPaid.toFixed(2)}</span>
+                </div>
+              )}
+            </>
+          )}
+          {paymentSection.showWalletUsed && (
+            <div className="flex justify-between">
+              <span>Wallet Paid:</span>
+              <span>{currency}{walletUsed.toFixed(2)}</span>
+            </div>
+          )}
+          {paymentSection.showTotalPaid && (
+            <div className="flex justify-between font-semibold text-black">
+              <span>Total Paid:</span>
+              <span>{currency}{totalPaid.toFixed(2)}</span>
+            </div>
+          )}
+          {paymentSection.showPendingAmount && pendingAmount > 0 && (
+            <div className="flex justify-between text-red-600 font-bold">
+              <span>Pending Amount:</span>
+              <span>{currency}{pendingAmount.toFixed(2)}</span>
+            </div>
+          )}
+          {paymentSection.showPaymentStatus && (
+            <div className="flex justify-between">
+              <span>Payment Status:</span>
+              <span className="font-semibold text-emerald-600 uppercase text-[9px]">
+                {pendingAmount === 0 ? 'PAID' : 'PARTIAL'}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="mx-4 my-2 border-t-2 border-dashed border-gray-300" />
+      <div className="border-t border-dashed border-black my-3" />
 
-      <div className="space-y-2 px-4 pb-4 text-center text-xs text-gray-500">
-        {footer.showThankYou && footer.thankYouMessage ? <p className="font-medium text-gray-700">{footer.thankYouMessage}</p> : null}
-        {footer.showTerms && footer.termsText ? (
-          <div className="text-left">
-            <p className="mb-0.5 text-[10px] font-semibold uppercase text-gray-600">Terms</p>
-            <p>{footer.termsText}</p>
-          </div>
-        ) : null}
-        {footer.showNotes && footer.notesText ? (
-          <div className="text-left">
-            <p className="mb-0.5 text-[10px] font-semibold uppercase text-gray-600">Notes</p>
-            <p>{footer.notesText}</p>
-          </div>
-        ) : null}
-        {footer.showPaymentInstructions && footer.paymentInstructions ? <p className="text-left">{footer.paymentInstructions}</p> : null}
-        {footer.showBankDetails ? (
-          <div className="rounded-lg border border-gray-200 p-2 text-left">
-            <p className="mb-1 text-[10px] font-semibold uppercase text-gray-600">Bank Details</p>
-            {footer.bankName ? <p>Bank: {footer.bankName}</p> : null}
-            {footer.accountNumber ? <p>A/C: {footer.accountNumber}</p> : null}
-            {footer.ifscCode ? <p>IFSC: {footer.ifscCode}</p> : null}
-            {footer.upiId ? <p>UPI: {footer.upiId}</p> : null}
-          </div>
-        ) : null}
-        {footer.showQRCode ? (
-          <div className="flex justify-center pt-2">
-            <div className="flex h-16 w-16 items-center justify-center rounded bg-gray-200 text-[10px] text-gray-400">
-              QR Code
+      {/* Footer */}
+      <div className="text-center font-mono text-[9px] space-y-1.5 leading-tight">
+        {footer.showThankYou && (
+          <p className="font-bold text-[10px]">{footer.thankYouMessage || 'Thank you for visiting! See you again.'}</p>
+        )}
+        {footer.showTerms && footer.termsText && (
+          <p className="text-[8px] text-gray-700">Terms: {footer.termsText}</p>
+        )}
+        {footer.showNotes && (
+          <p className="text-[8px] text-gray-700">{footer.notesText || 'This is a computer-generated invoice. No signature is required.'}</p>
+        )}
+        {footer.showQRCode && (
+          <div className="flex justify-center pt-1">
+            <div className="flex h-12 w-12 items-center justify-center border border-black rounded text-[8px] font-bold">
+              QR CODE
             </div>
           </div>
-        ) : null}
-        {footer.showSignature ? (
-          <div className="pt-4">
-            <div className="mx-auto mb-1 h-8 w-32 border-b border-gray-400" />
-            <p className="text-[10px]">{footer.signatureLabel || 'Authorized Signature'}</p>
-          </div>
-        ) : null}
+        )}
       </div>
     </div>
   );
@@ -433,6 +607,7 @@ export default function SettingsPage() {
           setSettings((current) => ({
             ...current,
             ...data,
+            gstNumber: data.gstNumber || '',
             dailyReportFromEmail: data.dailyReportFromEmail || current.dailyReportFromEmail,
             dailyReportBranchIds: (data.dailyReportBranchIds || []).map((branch: any) => (typeof branch === 'string' ? branch : branch._id)),
             dailyReportEmails: Array.isArray(data.dailyReportEmails)
@@ -450,6 +625,14 @@ export default function SettingsPage() {
               orderDetails: {
                 ...current.receipt.orderDetails,
                 ...(data.receipt?.orderDetails || {}),
+              },
+              itemsSection: {
+                ...current.receipt.itemsSection,
+                ...(data.receipt?.itemsSection || {}),
+              },
+              paymentSection: {
+                ...current.receipt.paymentSection,
+                ...(data.receipt?.paymentSection || {}),
               },
               footer: {
                 ...current.receipt.footer,
@@ -505,6 +688,32 @@ export default function SettingsPage() {
         ...current.receipt,
         orderDetails: {
           ...current.receipt.orderDetails,
+          [key]: value,
+        },
+      },
+    }));
+  };
+
+  const setItemsSection = (key: keyof SettingsState['receipt']['itemsSection'], value: boolean) => {
+    setSettings((current) => ({
+      ...current,
+      receipt: {
+        ...current.receipt,
+        itemsSection: {
+          ...current.receipt.itemsSection,
+          [key]: value,
+        },
+      },
+    }));
+  };
+
+  const setPaymentSection = (key: keyof SettingsState['receipt']['paymentSection'], value: boolean) => {
+    setSettings((current) => ({
+      ...current,
+      receipt: {
+        ...current.receipt,
+        paymentSection: {
+          ...current.receipt.paymentSection,
           [key]: value,
         },
       },
@@ -672,6 +881,14 @@ export default function SettingsPage() {
                       onChange={(e) => setTop('taxPercent', Number(e.target.value))}
                     />
                   </div>
+                  <div className="space-y-1.5 md:col-span-2">
+                    <Label>GST Number</Label>
+                    <Input
+                      value={settings.gstNumber || ''}
+                      onChange={(e) => setTop('gstNumber', e.target.value)}
+                      placeholder="e.g. 24AAAAA1111A1Z1"
+                    />
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -784,14 +1001,39 @@ export default function SettingsPage() {
 
               <Section title="Order Details">
                 <ToggleRow
-                  label="Customer Name"
+                  label="Invoice Number"
+                  checked={settings.receipt.orderDetails.showInvoiceNumber}
+                  onChange={(value) => setOrderDetails('showInvoiceNumber', value)}
+                />
+                <ToggleRow
+                  label="Customer Information"
                   checked={settings.receipt.orderDetails.showCustomer}
                   onChange={(value) => setOrderDetails('showCustomer', value)}
                 />
                 <ToggleRow
-                  label="Table Name"
+                  label="Additional Players"
+                  checked={settings.receipt.orderDetails.showAdditionalPlayers}
+                  onChange={(value) => setOrderDetails('showAdditionalPlayers', value)}
+                />
+                <ToggleRow
+                  label="Category"
+                  checked={settings.receipt.orderDetails.showCategory}
+                  onChange={(value) => setOrderDetails('showCategory', value)}
+                />
+                <ToggleRow
+                  label="Table/Menu Details"
                   checked={settings.receipt.orderDetails.showTableName}
                   onChange={(value) => setOrderDetails('showTableName', value)}
+                />
+                <ToggleRow
+                  label="Start Time"
+                  checked={settings.receipt.orderDetails.showStartTime}
+                  onChange={(value) => setOrderDetails('showStartTime', value)}
+                />
+                <ToggleRow
+                  label="End Time"
+                  checked={settings.receipt.orderDetails.showEndTime}
+                  onChange={(value) => setOrderDetails('showEndTime', value)}
                 />
                 <ToggleRow
                   label="Duration"
@@ -799,24 +1041,90 @@ export default function SettingsPage() {
                   onChange={(value) => setOrderDetails('showDuration', value)}
                 />
                 <ToggleRow
+                  label="Date & Time"
+                  checked={settings.receipt.orderDetails.showDateTime}
+                  onChange={(value) => setOrderDetails('showDateTime', value)}
+                />
+                <ToggleRow
                   label="Staff Name"
                   checked={settings.receipt.orderDetails.showStaffName}
                   onChange={(value) => setOrderDetails('showStaffName', value)}
                 />
+              </Section>
+
+              <Section title="Items Section">
                 <ToggleRow
-                  label="Itemized List"
-                  checked={settings.receipt.orderDetails.showItemizedList}
-                  onChange={(value) => setOrderDetails('showItemizedList', value)}
+                  label="Item Name"
+                  checked={settings.receipt.itemsSection.showItemName}
+                  onChange={(value) => setItemsSection('showItemName', value)}
                 />
+                <ToggleRow
+                  label="Quantity"
+                  checked={settings.receipt.itemsSection.showQty}
+                  onChange={(value) => setItemsSection('showQty', value)}
+                />
+                <ToggleRow
+                  label="Rate"
+                  checked={settings.receipt.itemsSection.showRate}
+                  onChange={(value) => setItemsSection('showRate', value)}
+                />
+                <ToggleRow
+                  label="Amount"
+                  checked={settings.receipt.itemsSection.showAmount}
+                  onChange={(value) => setItemsSection('showAmount', value)}
+                />
+                <ToggleRow
+                  label="Total Items"
+                  checked={settings.receipt.itemsSection.showTotalItems}
+                  onChange={(value) => setItemsSection('showTotalItems', value)}
+                />
+              </Section>
+
+              <Section title="Payment Section">
                 <ToggleRow
                   label="Discount"
-                  checked={settings.receipt.orderDetails.showDiscount}
-                  onChange={(value) => setOrderDetails('showDiscount', value)}
+                  checked={settings.receipt.paymentSection.showDiscount}
+                  onChange={(value) => setPaymentSection('showDiscount', value)}
                 />
                 <ToggleRow
-                  label="Tax"
-                  checked={settings.receipt.orderDetails.showTax}
-                  onChange={(value) => setOrderDetails('showTax', value)}
+                  label="Wallet Used"
+                  checked={settings.receipt.paymentSection.showWalletUsed}
+                  onChange={(value) => setPaymentSection('showWalletUsed', value)}
+                />
+                <ToggleRow
+                  label="Cash Paid"
+                  checked={settings.receipt.paymentSection.showCashPaid}
+                  onChange={(value) => setPaymentSection('showCashPaid', value)}
+                />
+                <ToggleRow
+                  label="UPI Paid"
+                  checked={settings.receipt.paymentSection.showUPIPaid}
+                  onChange={(value) => setPaymentSection('showUPIPaid', value)}
+                />
+                <ToggleRow
+                  label="Mixed Payment Breakdown"
+                  checked={settings.receipt.paymentSection.showPaymentBreakdown}
+                  onChange={(value) => setPaymentSection('showPaymentBreakdown', value)}
+                />
+                <ToggleRow
+                  label="Total Paid"
+                  checked={settings.receipt.paymentSection.showTotalPaid}
+                  onChange={(value) => setPaymentSection('showTotalPaid', value)}
+                />
+                <ToggleRow
+                  label="Pending Amount"
+                  checked={settings.receipt.paymentSection.showPendingAmount}
+                  onChange={(value) => setPaymentSection('showPendingAmount', value)}
+                />
+                <ToggleRow
+                  label="Payment Status"
+                  checked={settings.receipt.paymentSection.showPaymentStatus}
+                  onChange={(value) => setPaymentSection('showPaymentStatus', value)}
+                />
+                <ToggleRow
+                  label="Grand Total"
+                  checked={settings.receipt.paymentSection.showGrandTotal}
+                  onChange={(value) => setPaymentSection('showGrandTotal', value)}
                 />
               </Section>
 

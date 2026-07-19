@@ -20,7 +20,7 @@ const menuRoutes = require('./routes/menuRoutes');
 const reservationRoutes = require('./routes/reservationRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const {
-  expenseRouter, bookingRouter, attendanceRouter, reportsRouter,
+  expenseRouter, attendanceRouter, reportsRouter,
   logsRouter, notifRouter, schedulerRouter,
 } = require('./routes/otherRoutes');
 const settingsRouter = require('./routes/settingsRoute');
@@ -117,7 +117,6 @@ app.use('/api/menu', menuRoutes);
 app.use('/api/reservations', reservationRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/expenses', expenseRouter);
-app.use('/api/bookings', bookingRouter);
 app.use('/api/attendance', attendanceRouter);
 app.use('/api/reports', reportsRouter);
 app.use('/api/settings', settingsRouter);

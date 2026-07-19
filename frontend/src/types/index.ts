@@ -8,7 +8,6 @@ export type TableStatus = 'available' | 'running' | 'reserved' | 'maintenance';
 export type SessionStatus = 'running' | 'paused' | 'completed' | 'cancelled';
 export type PaymentMethod = 'cash' | 'upi' | 'mixed' | 'wallet';
 export type PaymentStatus = 'unpaid' | 'paid' | 'partial';
-export type BookingStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled';
 export type MembershipTier = 'silver' | 'gold' | 'platinum';
 export type ExpenseCategory = 'rent' | 'electricity' | 'salary' | 'internet' | 'maintenance' | 'suppliers' | 'others';
 export type InventoryCategoryType = 'cue_stick' | 'cue_tips' | 'balls' | 'chalk' | 'gloves' | 'food' | 'cold_drinks' | 'snacks' | 'other';
@@ -191,19 +190,6 @@ export interface MenuItem {
   status: 'Active' | 'Inactive';
   createdAt?: string;
   updatedAt?: string;
-}
-
-export interface Booking {
-  _id: string;
-  branch: Branch;
-  table: Table;
-  customer: Customer;
-  date: string;
-  startTime: string;
-  durationMinutes: number;
-  status: BookingStatus;
-  notes?: string;
-  createdAt: string;
 }
 
 export interface Notification {

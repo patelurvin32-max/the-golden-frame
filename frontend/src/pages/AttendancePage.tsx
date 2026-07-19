@@ -121,7 +121,7 @@ function AttendanceHistoryModal({
   return (
     <Modal open={open} onClose={onClose} title={employee ? `${employee.name} Attendance History` : 'Attendance History'} size="xl">
       <div className="space-y-4">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
             { label: 'Last 30 Days', value: stats?.totalDays ?? 0 },
             { label: 'Monthly %', value: stats ? `${stats.monthlyAttendancePercentage}%` : '0%' },
@@ -151,34 +151,36 @@ function AttendanceHistoryModal({
                 {[...Array(6)].map((_, index) => <Skeleton key={index} className="h-12" />)}
               </div>
             ) : history?.records.length ? (
-              <Table2>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Date</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Check In</TableHead>
-                    <TableHead>Check Out</TableHead>
-                    <TableHead>Working Hours</TableHead>
-                    <TableHead>Notes</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {history.records.map((record) => (
-                    <TableRow key={record._id}>
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(record.date)}</TableCell>
-                      <TableCell>
-                        <Badge variant={STATUS_BADGES[record.status]} className="capitalize">
-                          {STATUS_LABELS[record.status]}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-sm">{formatTimeValue(record.checkIn)}</TableCell>
-                      <TableCell className="text-sm">{formatTimeValue(record.checkOut)}</TableCell>
-                      <TableCell className="text-sm">{record.workingHours ? formatDuration(record.workingHours) : '—'}</TableCell>
-                      <TableCell className="max-w-[240px] min-w-0 truncate text-sm text-muted-foreground">{record.notes || '—'}</TableCell>
+              <div className="overflow-x-auto border border-border rounded-xl">
+                <Table2 className="min-w-full">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="whitespace-nowrap">Date</TableHead>
+                      <TableHead className="whitespace-nowrap">Status</TableHead>
+                      <TableHead className="whitespace-nowrap">Check In</TableHead>
+                      <TableHead className="whitespace-nowrap">Check Out</TableHead>
+                      <TableHead className="whitespace-nowrap">Working Hours</TableHead>
+                      <TableHead className="whitespace-nowrap">Notes</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table2>
+                  </TableHeader>
+                  <TableBody>
+                    {history.records.map((record) => (
+                      <TableRow key={record._id}>
+                        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(record.date)}</TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          <Badge variant={STATUS_BADGES[record.status]} className="capitalize">
+                            {STATUS_LABELS[record.status]}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-sm">{formatTimeValue(record.checkIn)}</TableCell>
+                        <TableCell className="whitespace-nowrap text-sm">{formatTimeValue(record.checkOut)}</TableCell>
+                        <TableCell className="whitespace-nowrap text-sm">{record.workingHours ? formatDuration(record.workingHours) : '—'}</TableCell>
+                        <TableCell className="max-w-[240px] min-w-0 truncate text-sm text-muted-foreground whitespace-nowrap">{record.notes || '—'}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table2>
+              </div>
             ) : (
               <EmptyState icon="📅" title="No history found" description="No attendance records are available for the selected range." />
             )}
@@ -539,16 +541,16 @@ export default function AttendancePage() {
       <PageHeader
         title="Attendance"
         actions={
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" onClick={() => handleQuickReport('daily')}>Daily Report</Button>
-            <Button size="sm" variant="outline" onClick={() => handleQuickReport('weekly')}>Weekly Report</Button>
-            <Button size="sm" variant="outline" onClick={() => handleQuickReport('monthly')}>Monthly Report</Button>
-            <Button size="sm" variant="outline" onClick={() => handleQuickReport('employee')}>Employee Report</Button>
+          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+            <Button size="sm" variant="outline" className="flex-1 min-w-[120px] sm:flex-none text-center justify-center" onClick={() => handleQuickReport('daily')}>Daily Report</Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[120px] sm:flex-none text-center justify-center" onClick={() => handleQuickReport('weekly')}>Weekly Report</Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[120px] sm:flex-none text-center justify-center" onClick={() => handleQuickReport('monthly')}>Monthly Report</Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[120px] sm:flex-none text-center justify-center" onClick={() => handleQuickReport('employee')}>Employee Report</Button>
           </div>
         }
       />
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <SummaryCard label="Total Staff" value={summary.totalStaff} />
         <SummaryCard label="Present" value={summary.present} />
         <SummaryCard label="Absent" value={summary.absent} />
@@ -557,53 +559,53 @@ export default function AttendancePage() {
 
       <Card>
         <CardContent className="space-y-4 p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
-            <div className="space-y-1.5 w-full sm:w-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-12 gap-3 items-end">
+            <div className="space-y-1.5 md:col-span-2">
               <Label>Date</Label>
-              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-[150px]" />
+              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full" />
             </div>
-            <div className="space-y-1.5 flex-1 min-w-0 w-full">
+            <div className="space-y-1.5 md:col-span-3">
               <Label>Search Employee</Label>
-              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name or email" />
+              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name or email" className="w-full" />
             </div>
-            <div className="space-y-1.5 w-full sm:w-auto min-w-0">
+            <div className="space-y-1.5 md:col-span-2">
               <Label>Role Filter</Label>
-              <Select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
+              <Select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} className="w-full">
                 <option value="">All Roles</option>
                 <option value="branch_manager">Branch Manager</option>
                 <option value="staff">Staff</option>
                 <option value="cashier">Cashier</option>
               </Select>
             </div>
-            <div className="space-y-1.5 w-full sm:w-auto min-w-0">
+            <div className="space-y-1.5 md:col-span-2">
               <Label>Status Filter</Label>
-              <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full">
                 <option value="">All Status</option>
                 {STATUS_OPTIONS.map((status) => (
                   <option key={status} value={status}>{STATUS_LABELS[status]}</option>
                 ))}
               </Select>
             </div>
-            <div className="space-y-1.5 w-full sm:w-auto">
+            <div className="space-y-1.5 md:col-span-3">
               <Label>Export Attendance</Label>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Button size="sm" className="w-full sm:w-auto" variant="outline" onClick={() => exportMutation.mutate({ format: 'pdf', params: reportRange })}>Export PDF</Button>
-                <Button size="sm" className="w-full sm:w-auto" variant="outline" onClick={() => exportMutation.mutate({ format: 'excel', params: reportRange })}>Export Excel</Button>
+              <div className="flex gap-2">
+                <Button size="sm" className="flex-1" variant="outline" onClick={() => exportMutation.mutate({ format: 'pdf', params: reportRange })}>Export PDF</Button>
+                <Button size="sm" className="flex-1" variant="outline" onClick={() => exportMutation.mutate({ format: 'excel', params: reportRange })}>Export Excel</Button>
               </div>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border px-3 py-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="outline" onClick={() => toggleSelectAll(!allVisibleSelected)}>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-border p-3">
+            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+              <Button size="sm" className="flex-1 sm:flex-none min-w-[130px]" variant="outline" onClick={() => toggleSelectAll(!allVisibleSelected)}>
                 {allFilteredSelected ? 'Clear Select All' : 'Select All'}
               </Button>
-              <Button size="sm" variant="outline" onClick={() => handleBulkStatus('present')}>Mark Selected Present</Button>
-              <Button size="sm" variant="outline" onClick={() => handleBulkStatus('absent')}>Mark Selected Absent</Button>
-              <Button size="sm" variant="outline" onClick={() => handleBulkStatus('leave')}>Mark Selected Leave</Button>
-              <Button size="sm" variant="outline" onClick={() => handleExportSelected('excel')}>Export Selected</Button>
+              <Button size="sm" className="flex-1 sm:flex-none min-w-[130px]" variant="outline" onClick={() => handleBulkStatus('present')}>Mark Selected Present</Button>
+              <Button size="sm" className="flex-1 sm:flex-none min-w-[130px]" variant="outline" onClick={() => handleBulkStatus('absent')}>Mark Selected Absent</Button>
+              <Button size="sm" className="flex-1 sm:flex-none min-w-[130px]" variant="outline" onClick={() => handleBulkStatus('leave')}>Mark Selected Leave</Button>
+              <Button size="sm" className="flex-1 sm:flex-none min-w-[130px]" variant="outline" onClick={() => handleExportSelected('excel')}>Export Selected</Button>
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground text-center sm:text-right flex-shrink-0">
               {selectedIds.length} selected
             </p>
           </div>
@@ -759,24 +761,24 @@ export default function AttendancePage() {
                             className="mt-1 rounded border-border"
                           />
                         </div>
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="grid grid-cols-2 gap-3">
                           <div className="space-y-1">
                             <Label className="text-xs">Check In</Label>
-                            <Input type="time" value={draft.checkIn ?? record?.checkIn ?? ''} onChange={(e) => updateDraft(user, { checkIn: e.target.value })} />
+                            <Input type="time" value={draft.checkIn ?? record?.checkIn ?? ''} onChange={(e) => updateDraft(user, { checkIn: e.target.value })} className="text-xs px-2" />
                           </div>
                           <div className="space-y-1">
                             <Label className="text-xs">Check Out</Label>
-                            <Input type="time" value={draft.checkOut ?? record?.checkOut ?? ''} onChange={(e) => updateDraft(user, { checkOut: e.target.value })} />
+                            <Input type="time" value={draft.checkOut ?? record?.checkOut ?? ''} onChange={(e) => updateDraft(user, { checkOut: e.target.value })} className="text-xs px-2" />
                           </div>
                         </div>
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="grid grid-cols-2 gap-3">
                           <div className="space-y-1">
                             <Label className="text-xs">Working Hours</Label>
-                            <Input value={workingMinutes !== null ? formatDuration(workingMinutes) : '—'} readOnly />
+                            <Input value={workingMinutes !== null ? formatDuration(workingMinutes) : '—'} readOnly className="text-xs px-2 bg-muted/20" />
                           </div>
                           <div className="space-y-1">
                             <Label className="text-xs">Status</Label>
-                            <Select value={employeeStatus} onChange={(e) => updateDraft(user, { status: e.target.value as AttendanceStatus }, true)}>
+                            <Select value={employeeStatus} onChange={(e) => updateDraft(user, { status: e.target.value as AttendanceStatus }, true)} className="text-xs px-2">
                               <option value="">Select</option>
                               {STATUS_OPTIONS.map((status) => (
                                 <option key={status} value={status}>{STATUS_LABELS[status]}</option>
@@ -805,7 +807,7 @@ export default function AttendancePage() {
           )}
 
           {filteredStaff.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-border px-4 py-3">
               <p className="text-sm text-muted-foreground">
                 Showing {(page - 1) * pageSize + 1} to {Math.min(page * pageSize, filteredStaff.length)} of {filteredStaff.length}
               </p>

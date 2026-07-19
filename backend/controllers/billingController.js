@@ -168,7 +168,7 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
 exports.downloadPDF = asyncHandler(async (req, res, next) => {
   const bill = await Bill.findById(req.params.id)
     .populate('customer', 'name phone walletBalance')
-    .populate('order', 'paymentMethod cashAmount onlineAmount')
+    .populate('order', 'paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid additionalPlayers')
     .populate('branch', 'name address phone')
     .populate('session')
     .populate('createdBy', 'name');

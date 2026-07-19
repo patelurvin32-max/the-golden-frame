@@ -28,7 +28,6 @@ const PERMISSIONS = {
     'expenses:manage',
     'attendance:manage',
     'reports:view',
-    'bookings:manage',
     'menu:manage',
     'menu:view',
   ],
@@ -44,7 +43,6 @@ const PERMISSIONS = {
     'expenses:manage',
     'attendance:manage',
     'reports:view',
-    'bookings:manage',
     'menu:manage',
     'menu:view',
   ],
@@ -55,9 +53,7 @@ const PERMISSIONS = {
     'customers:view',
     'customers:create',
     'customers:manage',
-    'bookings:manage',
     'menu:view',
-    'reports:view',
   ],
   [ROLES.CASHIER]: [
     'tables:view',
@@ -70,8 +66,6 @@ const PERMISSIONS = {
 const TABLE_TYPES = ['pool', 'snooker', 'ps5'];
 
 const TABLE_STATUS = ['available', 'running', 'reserved', 'maintenance'];
-
-const BOOKING_STATUS = ['pending', 'confirmed', 'completed', 'cancelled'];
 
 const PAYMENT_METHODS = ['cash', 'upi', 'mixed', 'wallet'];
 
@@ -111,7 +105,6 @@ module.exports = {
   PERMISSIONS,
   TABLE_TYPES,
   TABLE_STATUS,
-  BOOKING_STATUS,
   PAYMENT_METHODS,
   MEMBERSHIP_TIERS,
   EXPENSE_CATEGORIES,
