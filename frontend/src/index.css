@@ -76,11 +76,29 @@ input[type="date"] {
   border-bottom-right-radius: 0.25rem !important;
 }
 
+/* Ensure calendar picker icon is visible in dark theme */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 1;
+  cursor: pointer;
+}
+
 /* Fix time input clock icon alignment */
 input[type="time"] {
   padding-right: 3rem !important;
   border-top-right-radius: 0.25rem !important;
   border-bottom-right-radius: 0.25rem !important;
+}
+
+/* Remove number input spinner (up/down arrows) */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
 }
 
 @keyframes slideUp {

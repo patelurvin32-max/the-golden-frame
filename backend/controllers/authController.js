@@ -37,9 +37,13 @@ const issueTokens = async (user, res) => {
   const refreshToken = user.generateRefreshToken();
 
   const hashed = crypto.createHash('sha256').update(refreshToken).digest('hex');
-  user.refreshTokens = [...(user.refreshTokens || []), hashed].slice(-5);
-  user.lastLogin = new Date();
-  await user.save({ validateBeforeSave: false });
+  await User.updateOne(
+    { _id: user._id },
+    {
+      $set: { lastLogin: new Date() },
+      $push: { refreshTokens: { $each: [hashed], $slice: -5 } },
+    }
+  );
 
   res.cookie('accessToken', accessToken, cookieOptions(15 * 60 * 1000));
   res.cookie('refreshToken', refreshToken, cookieOptions(30 * 24 * 60 * 60 * 1000));
@@ -52,33 +56,33 @@ exports.login = asyncHandler(async (req, res, next) => {
   const { email, password } = req.body;
   if (!email || !password) return next(new AppError('Email and password are required.', 400));
 
-  const user = await User.findOne({ email: email.toLowerCase() }).select('+password +refreshTokens').populate('branches');
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const user = await User.findOne({ email: normalizedEmail }).select('+password +refreshTokens');
 
   if (!user) {
-    return next(new AppError('Incorrect email or password.', 401));
+    return next(new AppError('Incorrect email or password', 401));
   }
 
   const passwordMatch = await user.comparePassword(password);
   if (!passwordMatch) {
-    return next(new AppError('Incorrect email or password.', 401));
+    return next(new AppError('Incorrect email or password', 401));
   }
 
   if (!user.isActive) return next(new AppError('Your account has been deactivated.', 403));
 
   const { accessToken, refreshToken } = await issueTokens(user, res);
+  res.status(200).json({
+    success: true,
+    data: { user: user.toSafeObject(), accessToken, refreshToken },
+  });
 
-  await logActivity({
+  void logActivity({
     userId: user._id,
     action: 'auth.login',
     entity: 'User',
     entityId: user._id,
     description: `${user.name} logged in`,
     ipAddress: req.ip,
-  });
-
-  res.status(200).json({
-    success: true,
-    data: { user: user.toSafeObject(), accessToken, refreshToken },
   });
 });
 
@@ -100,7 +104,7 @@ exports.refresh = asyncHandler(async (req, res, next) => {
     return next(new AppError('Refresh token not recognized. Please log in again.', 401));
   }
 
-  user.refreshTokens = user.refreshTokens.filter((t) => t !== hashed);
+  await User.updateOne({ _id: user._id }, { $pull: { refreshTokens: hashed } });
   const { accessToken, refreshToken } = await issueTokens(user, res);
 
   res.status(200).json({ success: true, data: { accessToken, refreshToken } });

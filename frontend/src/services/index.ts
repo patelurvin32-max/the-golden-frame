@@ -1,9 +1,13 @@
 import api from './api';
-import type { ApiResponse, AttendanceHistoryStats, AttendanceRecord, AttendanceStats, Bill, Branch, Customer, DashboardStats, Expense, InventoryCategoryDoc, InventoryItem, InventoryReportItem, InventoryReportSummary, MenuItem, Session, Table, User } from '@/types';
+import type { ApiResponse, AttendanceHistoryStats, AttendanceRecord, AttendanceStats, Bill, Branch, Customer, DashboardStats, Expense, InventoryCategoryDoc, InventoryItem, InventoryReportItem, InventoryReportSummary, MenuItem, MyAttendanceResponse, Session, Table, User } from '@/types';
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 export const authService = {
-  login: (email: string, password: string) => api.post<ApiResponse<{ user: User; accessToken: string }>>('/auth/login', { email, password }),
+  login: (email: string, password: string) =>
+    api.post<ApiResponse<{ user: User; accessToken: string }>>('/auth/login', { email, password }, {
+      // Login failures are expected user input, so resolve 4xx responses instead of throwing.
+      validateStatus: (status) => status < 500,
+    }),
   logout: () => api.post('/auth/logout'),
   getMe: () => api.get<ApiResponse<{ user: User }>>('/auth/me'),
   changePassword: (currentPassword: string, newPassword: string) =>
@@ -147,6 +151,12 @@ export const attendanceService = {
     api.get<ApiResponse<{ employee: User | null; records: AttendanceRecord[]; stats: AttendanceHistoryStats }>>(`/attendance/history/${employeeId}`, { params }),
   exportExcel: (params?: Record<string, string>) => api.get('/attendance/export/excel', { params, responseType: 'blob' }),
   exportPDF: (params?: Record<string, string>) => api.get('/attendance/export/pdf', { params, responseType: 'blob' }),
+  getMyAttendance: (params?: Record<string, string>) =>
+    api.get<ApiResponse<MyAttendanceResponse>>('/attendance/my', { params }),
+  checkInMyAttendance: (data?: { latitude: number; longitude: number }) =>
+    api.post<ApiResponse<{ record: AttendanceRecord }>>('/attendance/my/check-in', data),
+  checkOutMyAttendance: (data?: { latitude: number; longitude: number }) =>
+    api.post<ApiResponse<{ record: AttendanceRecord }>>('/attendance/my/check-out', data),
 };
 
 // Reservations

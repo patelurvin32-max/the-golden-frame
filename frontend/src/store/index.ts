@@ -8,7 +8,7 @@ interface AuthState {
   accessToken: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<{ user: User; accessToken: string }>;
   logout: () => Promise<void>;
   silentLogout: () => void;
   setUser: (user: User) => void;
@@ -16,24 +16,42 @@ interface AuthState {
   fetchMe: () => Promise<void>;
 }
 
+let pendingLogin: Promise<{ user: User; accessToken: string }> | null = null;
+
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       user: null,
       accessToken: null,
       isAuthenticated: false,
       isLoading: false,
 
       login: async (email, password) => {
+        if (pendingLogin) return pendingLogin;
+
         set({ isLoading: true });
-        try {
+        pendingLogin = (async () => {
           const res = await authService.login(email, password);
+          if (res.status !== 200 || !res.data?.success) {
+            const message = res.data?.message || 'Incorrect email or password';
+            const error = Object.assign(new Error(message), {
+              response: {
+                status: res.status,
+                data: { message },
+              },
+            });
+            throw error;
+          }
           const { user, accessToken } = res.data.data;
           localStorage.setItem('accessToken', accessToken);
           set({ user, accessToken, isAuthenticated: true });
-        } catch (error: any) {
-          throw error;
+          return { user, accessToken };
+        })();
+
+        try {
+          return await pendingLogin;
         } finally {
+          pendingLogin = null;
           set({ isLoading: false });
         }
       },

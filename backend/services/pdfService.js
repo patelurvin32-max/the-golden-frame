@@ -22,6 +22,7 @@ const generateInvoicePDF = (bill, settings = {}) => {
     const fontBold = fontStyle === 'Courier' ? 'Courier-Bold' : fontStyle === 'Times-Roman' ? 'Times-Bold' : 'Helvetica-Bold';
 
     const symbol = settings.currencySymbol || '₹';
+    const templateName = settings.receipt?.templateName || 'TAX INVOICE';
     const bizName = settings.receipt?.header?.businessName || settings.businessName || 'The Golden Frame';
     const branchName = bill.branch?.name || '';
     const branchAddress = bill.branch?.address || '';
@@ -74,6 +75,10 @@ const generateInvoicePDF = (bill, settings = {}) => {
     const showPhone = receiptHeader.showPhone !== false;
     const showEmail = receiptHeader.showEmail === true;
     const showWebsite = receiptHeader.showWebsite === true;
+    const headerAddress = [receiptHeader.addressLine1, receiptHeader.addressLine2].filter(Boolean).join(', ') || branchAddress;
+    const headerPhone = receiptHeader.phone || branchPhone;
+    const headerEmail = receiptHeader.email || '';
+    const headerWebsite = receiptHeader.website || '';
 
     // Helper function for formatting dates
     const formatDate = (date) => {
@@ -134,27 +139,29 @@ const generateInvoicePDF = (bill, settings = {}) => {
     doc.fontSize(14).font(fontBold).fillColor('#000000').text(bizName.toUpperCase(), 297, y, { align: 'center' });
     y += 18;
     
-    doc.fontSize(9).font(fontRegular).fillColor('#000000').text(branchName, 297, y, { align: 'center' });
-    y += 14;
+    if (branchName) {
+      doc.fontSize(9).font(fontRegular).fillColor('#000000').text(branchName, 297, y, { align: 'center' });
+      y += 14;
+    }
     
-    if (showAddress && branchAddress) {
-      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(branchAddress, 50, y, { width: 495, align: 'center' });
-      const addressLines = Math.ceil(doc.widthOfString(branchAddress, { width: 495 }) / 495);
+    if (showAddress && headerAddress) {
+      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(headerAddress, 50, y, { width: 495, align: 'center' });
+      const addressLines = Math.ceil(doc.widthOfString(headerAddress, { width: 495 }) / 495);
       y += Math.max(12, addressLines * 10);
     }
     
-    if (showPhone && branchPhone) {
-      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`Ph: ${branchPhone}`, 297, y, { align: 'center' });
+    if (showPhone && headerPhone) {
+      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`Ph: ${headerPhone}`, 297, y, { align: 'center' });
       y += 12;
     }
 
-    if (showEmail && receiptHeader.email) {
-      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`Email: ${receiptHeader.email}`, 297, y, { align: 'center' });
+    if (showEmail && headerEmail) {
+      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`Email: ${headerEmail}`, 297, y, { align: 'center' });
       y += 12;
     }
 
-    if (showWebsite && receiptHeader.website) {
-      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`Web: ${receiptHeader.website}`, 297, y, { align: 'center' });
+    if (showWebsite && headerWebsite) {
+      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`Web: ${headerWebsite}`, 297, y, { align: 'center' });
       y += 12;
     }
     
@@ -169,7 +176,7 @@ const generateInvoicePDF = (bill, settings = {}) => {
       y += 6;
       drawDashedDivider(y);
       y += 8;
-      doc.fontSize(12).font(fontBold).fillColor('#000000').text('TAX INVOICE', 297, y, { align: 'center' });
+      doc.fontSize(12).font(fontBold).fillColor('#000000').text(templateName.toUpperCase(), 297, y, { align: 'center' });
       y += 14;
       drawDashedDivider(y);
       y += 10;
@@ -326,6 +333,10 @@ const generateInvoicePDF = (bill, settings = {}) => {
         addSummaryRow('Membership Discount:', `-${symbol}${bill.membershipDiscount.toFixed(2)}`);
       }
     }
+
+    if (receiptOrderDetails.showTax && bill.tax > 0) {
+      addSummaryRow('Tax / GST:', `${symbol}${bill.tax.toFixed(2)}`);
+    }
     
     if (receiptPaymentSection.showWalletUsed && bill.walletUsed > 0) {
       addSummaryRow('Wallet Used:', `-${symbol}${bill.walletUsed.toFixed(2)}`);
@@ -409,7 +420,7 @@ const generateInvoicePDF = (bill, settings = {}) => {
 
     // ── Footer Section ───────────────────────────────────────────────────────
     const showThankYou = receiptFooter.showThankYou !== false;
-    const thankYouMessage = receiptFooter.thankYouMessage || 'Thank you for visiting! See you again.';
+    const thankYouMessage = receiptFooter.thankYouMessage || settings.receiptFooterNote || 'Thank you for visiting! See you again.';
     
     if (showThankYou && thankYouMessage) {
       doc.fontSize(9).font(fontBold).fillColor('#000000')
@@ -432,10 +443,37 @@ const generateInvoicePDF = (bill, settings = {}) => {
       y += doc.heightOfString(notesText, { width: 495, align: 'center' }) + 4;
     }
 
+    if (receiptFooter.showPaymentInstructions && receiptFooter.paymentInstructions) {
+      doc.fontSize(7).font(fontRegular).fillColor('#666666')
+        .text(receiptFooter.paymentInstructions, 50, y, { width: 495, align: 'center' });
+      y += doc.heightOfString(receiptFooter.paymentInstructions, { width: 495, align: 'center' }) + 4;
+    }
+
+    if (receiptFooter.showBankDetails) {
+      const bankLines = [
+        receiptFooter.bankName ? `Bank: ${receiptFooter.bankName}` : '',
+        receiptFooter.accountNumber ? `A/C No: ${receiptFooter.accountNumber}` : '',
+        receiptFooter.ifscCode ? `IFSC: ${receiptFooter.ifscCode}` : '',
+        receiptFooter.upiId ? `UPI: ${receiptFooter.upiId}` : '',
+      ].filter(Boolean);
+      if (bankLines.length > 0) {
+        doc.fontSize(7).font(fontRegular).fillColor('#666666')
+          .text(bankLines.join(' | '), 50, y, { width: 495, align: 'center' });
+        y += doc.heightOfString(bankLines.join(' | '), { width: 495, align: 'center' }) + 4;
+      }
+    }
+
     if (receiptFooter.showQRCode) {
       // Draw elegant dummy POS QR Code box at the bottom
       doc.rect(272, y, 50, 50).strokeColor('#000000').lineWidth(0.8).stroke();
       doc.fontSize(6).font(fontBold).fillColor('#000000').text('QR CODE', 272, y + 22, { width: 50, align: 'center' });
+      y += 56;
+    }
+
+    if (receiptFooter.showSignature) {
+      y += 8;
+      doc.fontSize(7).font(fontRegular).fillColor('#666666')
+        .text(receiptFooter.signatureLabel || 'Authorized Signature', 400, y, { width: 145, align: 'center' });
     }
 
     doc.end();

@@ -145,6 +145,7 @@ exports.getAvailableTables = asyncHandler(async (req, res, next) => {
   if (!branch || !date || !time) return next(new AppError('branch, date and time are required.', 400));
 
   const resDate = new Date(date);
+  resDate.setHours(0, 0, 0, 0);
   const duration = parseInt(durationMinutes, 10);
 
   const [reqH, reqM] = time.split(':').map(Number);
@@ -154,24 +155,26 @@ exports.getAvailableTables = asyncHandler(async (req, res, next) => {
   const nextDay = new Date(resDate);
   nextDay.setDate(resDate.getDate() + 1);
 
-  const overlapping = await Reservation.find({
-    branch,
-    reservationDate: { $gte: resDate, $lt: nextDay },
-    status: { $nin: ['cancelled', 'no_show', 'completed'] },
-    ...(excludeId ? { _id: { $ne: excludeId } } : {}),
-  }).select('table reservationTime durationMinutes');
+  const [overlapping, allTables] = await Promise.all([
+    Reservation.find({
+      branch,
+      reservationDate: { $gte: resDate, $lt: nextDay },
+      status: { $nin: ['cancelled', 'no_show', 'completed'] },
+      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+    }).select('table reservationTime durationMinutes').lean(),
+    Table.find({ branch, isActive: true }).select('name type hourlyRate status').lean(),
+  ]);
 
   const blockedTableIds = new Set();
-  overlapping.forEach((r) => {
+  for (const r of overlapping) {
     const [h, m] = r.reservationTime.split(':').map(Number);
     const start = h * 60 + m;
     const end = start + (r.durationMinutes || 60);
     if (reqStart < end && start < reqEnd) {
       blockedTableIds.add(r.table.toString());
     }
-  });
+  }
 
-  const allTables = await Table.find({ branch, isActive: true }).select('name type hourlyRate status');
   const available = allTables.filter((t) => !blockedTableIds.has(t._id.toString()));
 
   res.status(200).json({ success: true, data: { available, blocked: allTables.length - available.length } });
@@ -225,14 +228,16 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     .populate('menuCategoryId', 'name')
     .populate('menuItemId', 'name price');
 
-  await createBranchNotification({
+  res.status(201).json({ success: true, data: { reservation: populated } });
+
+  void createBranchNotification({
     branchId: finalBranch,
     actor: req.user,
     title: 'New Reservation Created',
     message: `${req.user.name} created a new reservation (${reservation.reservationId}) for ${customerName}.`,
-  });
+  }).catch((err) => console.error('Failed to create reservation notification:', err.message));
 
-  await logActivity({
+  void logActivity({
     userId: req.user._id,
     branchId: finalBranch,
     action: 'reservation.create',
@@ -241,8 +246,6 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     description: `${req.user.name} created reservation ${reservation.reservationId} for ${customerName}`,
     ipAddress: req.ip,
   });
-
-  res.status(201).json({ success: true, data: { reservation: populated } });
 });
 
 exports.updateReservation = asyncHandler(async (req, res, next) => {
@@ -291,7 +294,9 @@ exports.updateReservation = asyncHandler(async (req, res, next) => {
     .populate('menuCategoryId', 'name')
     .populate('menuItemId', 'name price');
 
-  await logActivity({
+  res.status(200).json({ success: true, data: { reservation: populated } });
+
+  void logActivity({
     userId: req.user._id,
     branchId: reservation.branch,
     action: 'reservation.update',
@@ -300,8 +305,6 @@ exports.updateReservation = asyncHandler(async (req, res, next) => {
     description: `${req.user.name} updated reservation ${reservation.reservationId}`,
     ipAddress: req.ip,
   });
-
-  res.status(200).json({ success: true, data: { reservation: populated } });
 });
 
 exports.changeStatus = asyncHandler(async (req, res, next) => {
@@ -316,7 +319,9 @@ exports.changeStatus = asyncHandler(async (req, res, next) => {
   reservation.status = status;
   await reservation.save();
 
-  await logActivity({
+  res.status(200).json({ success: true, data: { reservation } });
+
+  void logActivity({
     userId: req.user._id,
     branchId: reservation.branch,
     action: `reservation.${status}`,
@@ -325,8 +330,6 @@ exports.changeStatus = asyncHandler(async (req, res, next) => {
     description: `${req.user.name} marked reservation ${reservation.reservationId} as ${status}`,
     ipAddress: req.ip,
   });
-
-  res.status(200).json({ success: true, data: { reservation } });
 });
 
 exports.deleteReservation = asyncHandler(async (req, res, next) => {
@@ -338,7 +341,9 @@ exports.deleteReservation = asyncHandler(async (req, res, next) => {
 
   await reservation.deleteOne();
 
-  await logActivity({
+  res.status(200).json({ success: true, message: 'Reservation deleted.' });
+
+  void logActivity({
     userId: req.user._id,
     branchId: reservation.branch,
     action: 'reservation.delete',
@@ -347,8 +352,6 @@ exports.deleteReservation = asyncHandler(async (req, res, next) => {
     description: `${req.user.name} deleted reservation ${reservation.reservationId}`,
     ipAddress: req.ip,
   });
-
-  res.status(200).json({ success: true, message: 'Reservation deleted.' });
 });
 
 async function checkDoubleBooking({ branch, table, reservationDate, reservationTime, durationMinutes = 60, excludeId }) {

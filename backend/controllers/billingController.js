@@ -245,12 +245,25 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
       .populate('customer', 'name phone branch walletBalance')
       .populate('branch', 'name');
   } else if (customerId) {
-    order = await Order.findOne({ customer: customerId, isActive: true })
+    // The customer list page currently passes the row _id, which is an order id.
+    // Support that first, then fall back to the latest order for a real customer id.
+    order = await Order.findById(customerId)
       .populate('menuCategoryId', 'name')
       .populate('menuItemId', 'name price')
       .populate('customer', 'name phone branch walletBalance')
-      .populate('branch', 'name')
-      .sort('-createdAt');
+      .populate('branch', 'name');
+
+    if (!order) {
+      const customer = await Customer.findById(customerId).select('_id');
+      if (customer) {
+        order = await Order.findOne({ customer: customer._id })
+          .populate('menuCategoryId', 'name')
+          .populate('menuItemId', 'name price')
+          .populate('customer', 'name phone branch walletBalance')
+          .populate('branch', 'name')
+          .sort('-createdAt');
+      }
+    }
   }
   
   if (!order) return next(new AppError('Order not found.', 404));

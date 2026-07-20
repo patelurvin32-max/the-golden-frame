@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff } from 'lucide-react';
@@ -9,6 +10,7 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const { login, isLoading } = useAuthStore();
   const toast = useToast();
+  const submitLock = useRef(false);
   const [form, setForm] = useState({ email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
@@ -16,16 +18,21 @@ export default function LoginPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitLock.current) return;
+    submitLock.current = true;
     setError('');
     try {
-      await login(form.email, form.password);
+      const { user } = await login(form.email, form.password);
       // Navigate after successful login - Staff goes to Customers, others to Dashboard
-      const user = useAuthStore.getState().user;
       navigate(user?.role === 'staff' ? '/customers' : '/');
     } catch (err: any) {
-      const errorMessage = err?.response?.data?.message || 'Login failed';
+      const status = err?.response?.status;
+      const errorMessage =
+        status === 401 ? 'Incorrect email or password' : (err?.response?.data?.message || 'Login failed');
       setError(errorMessage);
       toast.error(errorMessage);
+    } finally {
+      submitLock.current = false;
     }
   };
 

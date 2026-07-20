@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { customerService, menuService, billingService, branchService } from '@/services';
 import { useAppStore, useAuthStore } from '@/store';
@@ -9,7 +8,7 @@ import {
   Table2, TableHeader, TableBody, TableRow, TableHead, TableCell,
   Badge, Modal, useToast, ConfirmDialog
 } from '@/components/ui';
-import { formatCurrency, formatDate, parseCurrencyValue, cn } from '@/utils';
+import { formatCurrency, formatDate, parseCurrencyValue, cn, downloadBlob } from '@/utils';
 
 const TIERS: Record<string, { color: string; icon: string }> = {
   silver: { color: 'bg-slate-500/10 text-slate-300 border-slate-500/20', icon: '🥈' },
@@ -48,7 +47,6 @@ const PAYMENT_METHODS = ['cash', 'upi', 'mixed', 'wallet'] as const;
 export default function CustomersPage() {
   const qc = useQueryClient();
   const toast = useToast();
-  const navigate = useNavigate();
   const { selectedBranch } = useAppStore();
   const { user } = useAuthStore();
   const [search, setSearch] = useState('');
@@ -270,11 +268,15 @@ export default function CustomersPage() {
   });
 
   const generateInvoiceMutation = useMutation({
-    mutationFn: (customerId: string) => billingService.createFromCustomer(customerId),
-    onSuccess: (response) => {
-      const billId = response.data.data.bill._id;
+    mutationFn: async (customerId: string) => {
+      const created = await billingService.createFromCustomer(customerId);
+      const bill = created.data.data.bill;
+      const pdf = await billingService.downloadPDF(bill._id);
+      downloadBlob(pdf.data as Blob, `${bill.invoiceNumber}.pdf`);
+      return bill;
+    },
+    onSuccess: () => {
       toast.success('Invoice generated successfully!');
-      navigate(`/billing/${billId}`);
     },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to generate invoice'),
   });

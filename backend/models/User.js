@@ -6,7 +6,7 @@ const { ROLE_LIST, ROLES } = require('../config/constants');
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
-    email: { type: String, required: true, trim: true, lowercase: true, unique: true },
+    email: { type: String, required: true, trim: true, lowercase: true, unique: true, index: true },
     phone: { type: String, trim: true },
     address: { type: String, trim: true },
     salary: { type: Number, min: 0 },
@@ -34,6 +34,8 @@ userSchema.pre('save', async function hashPassword(next) {
   if (!this.isNew) this.passwordChangedAt = new Date(Date.now() - 1000);
   next();
 });
+
+userSchema.index({ email: 1 }, { unique: true });
 
 userSchema.methods.comparePassword = function comparePassword(candidate) {
   return bcrypt.compare(candidate, this.password);

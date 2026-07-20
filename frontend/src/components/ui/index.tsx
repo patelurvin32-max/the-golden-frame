@@ -84,6 +84,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
         type === 'datetime-local' && 'pr-20 rounded-r-none overflow-visible',
         className
       )}
+      style={type === 'date' ? { colorScheme: 'light' } : undefined}
       {...props}
     />
   )

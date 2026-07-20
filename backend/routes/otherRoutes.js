@@ -2,10 +2,11 @@
 const express = require('express');
 const asyncHandler = require('../utils/asyncHandler');
 const { body } = require('express-validator');
-const { protect, requirePermission } = require('../middleware/auth');
+const { protect, requirePermission, restrictTo } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 const schedulerAuth = require('../middleware/schedulerAuth');
 const { runDailyBusinessReport } = require('../services/dailyBusinessReportService');
+const { ROLES } = require('../config/constants');
 
 // Expenses
 const expenseController = require('../controllers/expenseController');
@@ -19,6 +20,10 @@ expenseRouter.delete('/:id', expenseController.deleteExpense);
 // Attendance
 const attendanceController = require('../controllers/attendanceController');
 const attendanceRouter = express.Router();
+attendanceRouter.get('/my', protect, restrictTo(ROLES.STAFF), attendanceController.getMyAttendance);
+attendanceRouter.post('/my/check-in', protect, restrictTo(ROLES.STAFF), attendanceController.checkInMyAttendance);
+attendanceRouter.post('/my/check-out', protect, restrictTo(ROLES.STAFF), attendanceController.checkOutMyAttendance);
+
 attendanceRouter.use(protect, requirePermission('attendance:manage'));
 attendanceRouter.get('/', attendanceController.getAttendance);
 attendanceRouter.post('/', [body('employee').isMongoId(), body('date').matches(/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?)?$/), body('branch').optional({ checkFalsy: true }).isMongoId()], validate, attendanceController.markAttendance);
@@ -42,7 +47,6 @@ reportsRouter.get('/export/excel', reportsController.exportExcel);
 
 // Settings
 const { Settings } = require('../models/System');
-const { ROLES } = require('../config/constants');
 const settingsRouter = express.Router();
 settingsRouter.use(protect);
 settingsRouter.get('/', asyncHandler(async (req, res) => {

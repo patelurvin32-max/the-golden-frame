@@ -17,5 +17,7 @@ const tableSchema = new mongoose.Schema(
 );
 
 tableSchema.index({ branch: 1, name: 1 }, { unique: true });
+tableSchema.index({ branch: 1, isActive: 1, name: 1 });
+tableSchema.index({ branch: 1, isActive: 1, status: 1 });
 
 module.exports = mongoose.model('Table', tableSchema);

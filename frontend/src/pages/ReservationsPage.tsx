@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { reservationService, branchService, tableService, menuService } from '@/services';
 import { useAppStore, useAuthStore } from '@/store';
@@ -33,6 +33,22 @@ const EMPTY_FORM = {
   specialRequests: '', notes: '', status: 'pending',
   menuCategoryId: '', menuItemId: '',
 };
+
+function useDelayedFlag(active: boolean, delayMs = 300) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (!active) {
+      setVisible(false);
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => setVisible(true), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [active, delayMs]);
+
+  return visible;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // StatusBadge
@@ -138,16 +154,28 @@ function ReservationForm({
   delete initialForm.table;
   const [form, setForm] = useState(initialForm);
   const [phoneError, setPhoneError] = useState('');
+  const qc = useQueryClient();
   const { user } = useAuthStore();
 
-  const { data: branches } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
+  const { data: branches } = useQuery({
+    queryKey: ['branches'],
+    queryFn: () => branchService.getAll().then((r) => r.data.data.branches),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
+  });
 
   // Fetch menu categories
   const { data: categoriesData } = useQuery({
-    queryKey: ['menu-categories'],
-    queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data),
+    queryKey: ['menu-categories', 'active'],
+    queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data.data.categories),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
   });
-  const categories: any[] = (categoriesData as any)?.data?.categories || [];
+  const categories: any[] = categoriesData || [];
   const reservationCategories = categories.filter((cat: any) => cat.name?.trim().toLowerCase() !== 'beverage');
 
   // Fetch menu items filtered by category and branch
@@ -155,12 +183,17 @@ function ReservationForm({
   if (form.menuCategoryId) menuParams.category = form.menuCategoryId;
   if (form.branch) menuParams.branch = form.branch;
 
-  const { data: menuItemsData } = useQuery({
-    queryKey: ['menu-items', form.menuCategoryId, form.branch],
-    queryFn: () => menuService.getAll(menuParams).then((r) => r.data),
+  const { data: menuItemsData, isFetching: isFetchingMenuItems } = useQuery({
+    queryKey: ['reservation-menu-items', form.menuCategoryId, form.branch],
+    queryFn: () => menuService.getAll(menuParams).then((r) => r.data.data.items),
     enabled: !!form.menuCategoryId,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
   });
-  const menuItems: any[] = (menuItemsData as any)?.data?.items || [];
+  const menuItems: any[] = menuItemsData || [];
+  const showMenuItemsLoading = useDelayedFlag(isFetchingMenuItems && !!form.menuCategoryId, 300);
 
   // Determine if user can select branch (Super Admin can, Branch Manager and Staff cannot)
   const canSelectBranch = user?.role === 'super_admin';
@@ -171,6 +204,16 @@ function ReservationForm({
       setForm((prev: any) => ({ ...prev, branch: user.branches[0]._id || user.branches[0] }));
     }
   }, [canSelectBranch, user, initial._id]);
+
+  useEffect(() => {
+    if (form.menuCategoryId && form.branch) {
+      void qc.prefetchQuery({
+        queryKey: ['reservation-menu-items', form.menuCategoryId, form.branch],
+        queryFn: () => menuService.getAll({ limit: '1000', category: form.menuCategoryId, branch: form.branch }).then((r) => r.data.data.items),
+        staleTime: 5 * 60 * 1000,
+      });
+    }
+  }, [qc, form.menuCategoryId, form.branch]);
 
   const set = (k: string, v: any) => setForm((p: any) => ({ ...p, [k]: v }));
 
@@ -220,11 +263,11 @@ function ReservationForm({
       {/* Date / Time / Duration / Guests */}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <Label>Reservation Date *</Label>
+          <Label>Bookings  Date *</Label>
           <Input type="date" value={form.reservationDate} min={new Date().toISOString().slice(0,10)} onChange={(e) => set('reservationDate', e.target.value)} />
         </div>
         <div className="space-y-1.5">
-          <Label>Reservation Time *</Label>
+          <Label>Bookings  Time *</Label>
           <Input type="time" value={form.reservationTime} onChange={(e) => set('reservationTime', e.target.value)} />
         </div>
         <div className="space-y-1.5">
@@ -267,7 +310,10 @@ function ReservationForm({
               </option>
             ))}
           </Select>
-          {form.menuCategoryId && menuItems.length === 0 && (
+          {showMenuItemsLoading && (
+            <p className="text-xs text-muted-foreground">Loading available items...</p>
+          )}
+          {form.menuCategoryId && !showMenuItemsLoading && menuItems.length === 0 && (
             <p className="text-xs text-muted-foreground">No available items for this category</p>
           )}
         </div>
@@ -306,7 +352,7 @@ function ReservationForm({
             onSubmit(form);
           }}
         >
-          {initial._id ? '💾 Update' : '+ Create Reservation'}
+          {initial._id ? '💾 Update' : '+ Create Bookings '}
         </Button>
       </div>
     </div>
@@ -431,6 +477,9 @@ export default function ReservationsPage() {
   useEffect(() => { setPage(1); }, [search, status, dateFrom, dateTo, branchFlt, menuCategoryFlt, sortBy, sortOrder]);
 
   const branch = branchFlt || selectedBranch || '';
+  const reservationsQueryKey = ['reservations', page, pageSize, sortBy, sortOrder, branch, search, status, dateFrom, dateTo, tableFlt, menuCategoryFlt] as const;
+  const reservationStatsKey = ['reservation-stats', branch] as const;
+  const reservationCategoriesKey = ['menu-categories', 'active'] as const;
 
   const queryParams: Record<string, string> = {
     page: String(page), pageSize: String(pageSize),
@@ -446,28 +495,49 @@ export default function ReservationsPage() {
 
   // ── Queries ───────────────────────────────────────────────────────────────
   const { data: listData, isLoading } = useQuery({
-    queryKey: ['reservations', queryParams],
+    queryKey: reservationsQueryKey,
     queryFn: () => reservationService.getAll(queryParams).then((r) => r.data),
-    placeholderData: (prev) => prev,
+    placeholderData: keepPreviousData,
+    staleTime: 15 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
   const { data: statsData } = useQuery({
-    queryKey: ['reservation-stats', branch],
+    queryKey: reservationStatsKey,
     queryFn: () => reservationService.getStats(branch ? { branch } : {}).then((r) => (r.data as any).data),
     refetchInterval: 300000,
+    staleTime: 30 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
-  const { data: branchList } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
+  const { data: branchList } = useQuery({
+    queryKey: ['branches'],
+    queryFn: () => branchService.getAll().then((r) => r.data.data.branches),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
+  });
   
   const { data: tableList }  = useQuery({
-    queryKey: ['tables-filter', branch], enabled: !!branch,
+    queryKey: ['reservation-tables', branch], enabled: !!branch,
     queryFn: () => tableService.getAll({ branch }).then((r) => r.data.data.tables),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
   });
   const { data: categoriesData } = useQuery({
-    queryKey: ['menu-categories'],
-    queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data),
+    queryKey: reservationCategoriesKey,
+    queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data.data.categories),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
   });
-  const categories: any[] = (categoriesData as any)?.data?.categories || [];
+  const categories: any[] = categoriesData || [];
   const reservationCategories = categories.filter((cat: any) => cat.name?.trim().toLowerCase() !== 'beverage');
 
   const reservations: any[] = (listData as any)?.data || [];
@@ -476,38 +546,116 @@ export default function ReservationsPage() {
   const stats = statsData || {};
 
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ['reservations'] });
-    qc.invalidateQueries({ queryKey: ['reservation-stats'] });
+    qc.invalidateQueries({ queryKey: reservationStatsKey });
+    qc.invalidateQueries({ queryKey: ['reservation-tables'] });
   };
+
+  const syncReservationCaches = useCallback((mode: 'create' | 'update' | 'delete', reservation: any) => {
+    qc.setQueriesData({ queryKey: ['reservations'] }, (old: any) => {
+      if (!old || !Array.isArray(old.data)) return old;
+
+      const pageLimit = old.pageSize || pageSize;
+      let next = old.data.slice();
+
+      if (mode === 'create') {
+        next = [reservation, ...next.filter((item: any) => item._id !== reservation._id)];
+        if (next.length > pageLimit) next = next.slice(0, pageLimit);
+        return {
+          ...old,
+          data: next,
+          totalRecords: (old.totalRecords || 0) + 1,
+        };
+      }
+
+      if (mode === 'update') {
+        return {
+          ...old,
+          data: next.map((item: any) => (item._id === reservation._id ? reservation : item)),
+        };
+      }
+
+      return {
+        ...old,
+        data: next.filter((item: any) => item._id !== reservation._id),
+        totalRecords: Math.max((old.totalRecords || 1) - 1, 0),
+      };
+    });
+  }, [qc, pageSize]);
+
+  const prefetchReservationFormData = useCallback((reservation?: any) => {
+    void qc.prefetchQuery({
+      queryKey: reservationCategoriesKey,
+      queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data.data.categories),
+      staleTime: 10 * 60 * 1000,
+    });
+
+    const branchId = reservation?.branch?._id || reservation?.branch || branch;
+    if (branchId) {
+      void qc.prefetchQuery({
+        queryKey: ['reservation-tables', branchId],
+        queryFn: () => tableService.getAll({ branch: branchId }).then((r) => r.data.data.tables),
+        staleTime: 5 * 60 * 1000,
+      });
+    }
+
+    const categoryId = reservation?.menuCategoryId?._id || reservation?.menuCategoryId;
+    if (branchId && categoryId) {
+      void qc.prefetchQuery({
+        queryKey: ['reservation-menu-items', categoryId, branchId],
+        queryFn: () => menuService.getAll({ limit: '1000', branch: branchId, category: categoryId }).then((r) => r.data.data.items),
+        staleTime: 5 * 60 * 1000,
+      });
+    }
+  }, [branch, qc, reservationCategoriesKey]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────
   const createMutation = useMutation({
     mutationFn: (d: any) => reservationService.create(d),
-    onSuccess: () => { invalidate(); toast.success('Reservation created!'); setModal(null); },
+    onSuccess: (res) => {
+      syncReservationCaches('create', (res as any).data.data.reservation);
+      invalidate();
+      toast.success('Bookings  created!');
+      setModal(null);
+    },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to create'),
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) => reservationService.update(id, data),
-    onSuccess: () => { invalidate(); toast.success('Reservation updated!'); setModal(null); },
+    onSuccess: (res) => {
+      syncReservationCaches('update', (res as any).data.data.reservation);
+      invalidate();
+      toast.success('Bookings  updated!');
+      setModal(null);
+    },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to update'),
   });
 
   const statusMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => reservationService.changeStatus(id, status),
-    onSuccess: () => { invalidate(); toast.success('Status updated!'); setModal(null); },
+    onSuccess: (res) => {
+      syncReservationCaches('update', (res as any).data.data.reservation);
+      invalidate();
+      toast.success('Status updated!');
+      setModal(null);
+    },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed'),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => reservationService.delete(id),
-    onSuccess: () => { invalidate(); toast.success('Reservation deleted'); },
+    onSuccess: (_res, id) => {
+      syncReservationCaches('delete', { _id: id });
+      invalidate();
+      toast.success('Bookings  deleted');
+    },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Cannot delete'),
   });
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const openView   = (r: any) => { setSelected(r); setModal('view'); };
   const openEdit   = (r: any) => {
+    prefetchReservationFormData(r);
     setSelected({
       ...r,
       branch: r.branch?._id || r.branch,
@@ -518,7 +666,11 @@ export default function ReservationsPage() {
     });
     setModal('edit');
   };
-  const openCreate = () => { setSelected(null); setModal('create'); };
+  const openCreate = () => {
+    prefetchReservationFormData();
+    setSelected(null);
+    setModal('create');
+  };
 
   const handleSort = (col: string) => {
     if (sortBy === col) setSortOrder((o) => o === 'asc' ? 'desc' : 'asc');
@@ -543,8 +695,8 @@ export default function ReservationsPage() {
     <div className="space-y-5 animate-fade-in">
       {/* Page header */}
       <PageHeader
-        title="Reservations"
-        actions={<Button size="sm" onClick={openCreate}>+ Add Reservation</Button>}
+        title="Bookings"
+        actions={<Button size="sm" onClick={openCreate}>+ Add Bookings </Button>}
       />
 
       {/* Stats row */}
@@ -625,7 +777,7 @@ export default function ReservationsPage() {
             icon="📅"
             title="No reservations found"
             description={search || status ? 'Try adjusting your search or filters' : 'Create your first reservation to get started'}
-            action={<Button size="sm" onClick={openCreate}>+ Add Reservation</Button>}
+            action={<Button size="sm" onClick={openCreate}>+ Add Bookings </Button>}
           />
         ) : (
           <>
@@ -719,7 +871,7 @@ export default function ReservationsPage() {
       </Card>
 
       {/* ── Create modal ──────────────────────────────────────────────────── */}
-      <Modal open={modal === 'create'} onClose={() => setModal(null)} title="New Reservation" size="lg">
+      <Modal open={modal === 'create'} onClose={() => setModal(null)} title="New Bookings " size="lg">
         <ReservationForm
           initial={{ ...EMPTY_FORM, branch: selectedBranch || '' }}
           onSubmit={(d) => createMutation.mutate(d)}
@@ -729,7 +881,7 @@ export default function ReservationsPage() {
       </Modal>
 
       {/* ── Edit modal ────────────────────────────────────────────────────── */}
-      <Modal open={modal === 'edit'} onClose={() => setModal(null)} title="Edit Reservation" size="lg">
+      <Modal open={modal === 'edit'} onClose={() => setModal(null)} title="Edit Bookings " size="lg">
         {selected && (
           <ReservationForm
             initial={selected}
@@ -741,7 +893,7 @@ export default function ReservationsPage() {
       </Modal>
 
       {/* ── View modal ────────────────────────────────────────────────────── */}
-      <Modal open={modal === 'view'} onClose={() => setModal(null)} title="Reservation Details" size="lg">
+      <Modal open={modal === 'view'} onClose={() => setModal(null)} title="Bookings  Details" size="lg">
         {selected && (
           <ViewModal
             res={selected}

@@ -10,16 +10,15 @@ exports.getUsers = asyncHandler(async (req, res) => {
   if (req.query.role) filter.role = req.query.role;
   
   // Branch filtering logic
-  if (req.query.branch) {
-    filter.branches = req.query.branch;
-  } else if (req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
-    // For Branch Manager and Staff, auto-filter by their assigned branch
-    if (req.user.role === ROLES.BRANCH_MANAGER || req.user.role === ROLES.STAFF) {
-      filter.branches = { $in: [req.user.branches[0]] };
-    } else {
-      // For other non-super-admin roles, filter by all their assigned branches
-      filter.branches = { $in: req.user.branches };
+  if (req.user.role === ROLES.SUPER_ADMIN || req.user.role === ROLES.ADMIN) {
+    if (req.query.branch) {
+      filter.branches = req.query.branch;
     }
+  } else if (req.user.branches && req.user.branches.length > 0) {
+    const branchId = req.user.branches[0]._id || req.user.branches[0];
+    filter.branches = { $in: [branchId] };
+  } else {
+    filter.branches = { $in: [] };
   }
 
   const users = await User.find(filter).populate('branches', 'name code').sort('-createdAt');
@@ -30,10 +29,19 @@ exports.getUsers = asyncHandler(async (req, res) => {
 exports.getUser = asyncHandler(async (req, res, next) => {
   const user = await User.findById(req.params.id).populate('branches', 'name code');
   if (!user) return next(new AppError('User not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchId = (req.user.branches?.[0]?._id || req.user.branches?.[0])?.toString();
+    const targetBranchIds = (user.branches || []).map((b) => (b._id || b).toString());
+    if (!userBranchId || !targetBranchIds.includes(userBranchId)) {
+      return next(new AppError('You do not have permission to view staff outside your branch.', 403));
+    }
+  }
+
   res.status(200).json({ success: true, data: { user } });
 });
 
-// POST /api/users (super admin only - creates managers/staff)
+// POST /api/users
 exports.createUser = asyncHandler(async (req, res, next) => {
   const {
     name,
@@ -50,6 +58,16 @@ exports.createUser = asyncHandler(async (req, res, next) => {
     isActive,
   } = req.body;
 
+  let assignedBranches = branches;
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchId = req.user.branches?.[0]?._id || req.user.branches?.[0];
+    if (!userBranchId) {
+      return next(new AppError('You do not have an assigned branch to create staff.', 400));
+    }
+    assignedBranches = [userBranchId];
+  }
+
   const user = await User.create({
     name,
     email,
@@ -61,7 +79,7 @@ exports.createUser = asyncHandler(async (req, res, next) => {
     notes,
     password,
     role,
-    branches,
+    branches: assignedBranches,
     isActive,
   });
 
@@ -106,6 +124,15 @@ exports.updateUser = asyncHandler(async (req, res, next) => {
   const user = await User.findById(req.params.id).populate('branches');
   if (!user) return next(new AppError('User not found.', 404));
 
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchId = (req.user.branches?.[0]?._id || req.user.branches?.[0])?.toString();
+    const targetBranchIds = (user.branches || []).map((b) => (b._id || b).toString());
+    if (!userBranchId || !targetBranchIds.includes(userBranchId)) {
+      return next(new AppError('You do not have permission to edit staff outside your branch.', 403));
+    }
+    delete updateData.branches;
+  }
+
   Object.assign(user, updateData);
   if (req.body.password) {
     user.password = req.body.password;
@@ -126,8 +153,19 @@ exports.updateUser = asyncHandler(async (req, res, next) => {
 
 // DELETE /api/users/:id (soft delete -> deactivate)
 exports.deactivateUser = asyncHandler(async (req, res, next) => {
-  const user = await User.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
+  const user = await User.findById(req.params.id);
   if (!user) return next(new AppError('User not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchId = (req.user.branches?.[0]?._id || req.user.branches?.[0])?.toString();
+    const targetBranchIds = (user.branches || []).map((b) => (b._id || b).toString());
+    if (!userBranchId || !targetBranchIds.includes(userBranchId)) {
+      return next(new AppError('You do not have permission to deactivate staff outside your branch.', 403));
+    }
+  }
+
+  user.isActive = false;
+  await user.save();
 
   await logActivity({
     userId: req.user._id,

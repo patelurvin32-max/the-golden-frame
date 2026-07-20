@@ -40,6 +40,9 @@ const reservationSchema = new mongoose.Schema(
 reservationSchema.index({ branch: 1, reservationDate: 1 });
 reservationSchema.index({ branch: 1, status: 1 });
 reservationSchema.index({ table: 1, reservationDate: 1, status: 1 });
+reservationSchema.index({ branch: 1, reservationDate: 1, reservationTime: 1 });
+reservationSchema.index({ branch: 1, table: 1, reservationDate: 1, reservationTime: 1 });
+reservationSchema.index({ branch: 1, status: 1, reservationDate: 1, reservationTime: 1 });
 reservationSchema.index({ reservationDate: 1, reservationTime: 1 });
 reservationSchema.index({ customerName: 'text', phoneNumber: 'text', reservationId: 'text' });
 reservationSchema.index({ status: 1 });

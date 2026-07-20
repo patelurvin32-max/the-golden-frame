@@ -12,10 +12,10 @@ router.use(protect);
 // GET /api/users - Allow Branch Managers to view users from their branch
 router.get('/', userController.getUsers);
 
-// POST /api/users - Restricted to Super Admin only
+// POST /api/users - Super Admin, Admin, and Branch Manager
 router.post(
   '/',
-  restrictTo(ROLES.SUPER_ADMIN),
+  restrictTo(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_MANAGER),
   [
     body('name').notEmpty(),
     body('email').isEmail(),
@@ -29,10 +29,10 @@ router.post(
 // GET /api/users/:id - Allow Branch Managers to view user details
 router.get('/:id', userController.getUser);
 
-// PATCH /api/users/:id - Restricted to Super Admin only
-router.patch('/:id', restrictTo(ROLES.SUPER_ADMIN), userController.updateUser);
+// PATCH /api/users/:id - Super Admin, Admin, and Branch Manager
+router.patch('/:id', restrictTo(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_MANAGER), userController.updateUser);
 
-// DELETE /api/users/:id - Restricted to Super Admin only
-router.delete('/:id', restrictTo(ROLES.SUPER_ADMIN), userController.deactivateUser);
+// DELETE /api/users/:id - Super Admin, Admin, and Branch Manager
+router.delete('/:id', restrictTo(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_MANAGER), userController.deactivateUser);
 
 module.exports = router;

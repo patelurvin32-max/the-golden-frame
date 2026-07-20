@@ -9,7 +9,7 @@ import {
   Table2, TableHeader, TableBody, TableRow, TableHead, TableCell,
   Badge, Modal, useToast
 } from '@/components/ui';
-import { formatCurrency, formatDate, cn } from '@/utils';
+import { formatCurrency, formatDate, cn, downloadBlob } from '@/utils';
 
 const PAYMENT_METHODS = ['cash', 'upi', 'mixed', 'wallet'] as const;
 const OVERDUE_DAYS = 7;
@@ -96,11 +96,15 @@ export default function PendingPaymentsPage() {
   });
 
   const generateInvoiceMutation = useMutation({
-    mutationFn: (customerId: string) => billingService.createFromCustomer(customerId),
-    onSuccess: (response) => {
-      const billId = response.data.data.bill._id;
+    mutationFn: async (customerId: string) => {
+      const created = await billingService.createFromCustomer(customerId);
+      const bill = created.data.data.bill;
+      const pdf = await billingService.downloadPDF(bill._id);
+      downloadBlob(pdf.data as Blob, `${bill.invoiceNumber}.pdf`);
+      return bill;
+    },
+    onSuccess: () => {
       toast.success('Invoice generated successfully!');
-      navigate(`/billing/${billId}`);
     },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to generate invoice'),
   });

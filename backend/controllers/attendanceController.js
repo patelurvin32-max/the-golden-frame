@@ -1,14 +1,18 @@
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 const { Attendance } = require('../models/System');
+const Branch = require('../models/Branch');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ROLES, ATTENDANCE_STATUS } = require('../config/constants');
+const { calculateDistance } = require('../utils/geolocation');
 
 const STATUS_SET = new Set(ATTENDANCE_STATUS);
 const DEFAULT_PAGE_SIZE = 25;
 const EXPORT_PAGE_SIZE = 1000;
 const STANDARD_DAY_MINUTES = 8 * 60;
+const SELF_ATTENDANCE_TIME_ZONE = process.env.APP_TIME_ZONE || 'Asia/Kolkata';
+const SELF_ATTENDANCE_PAGE_SIZE = 10;
 
 const toDateOnly = (value) => {
   if (!value) return null;
@@ -135,6 +139,106 @@ const buildAttendancePayload = (reqBody, reqUser) => {
   }
 
   return payload;
+};
+
+const formatSelfDateOnly = (date = new Date()) =>
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: SELF_ATTENDANCE_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+
+const formatSelfTimeOnly = (date = new Date()) =>
+  new Intl.DateTimeFormat('en-GB', {
+    timeZone: SELF_ATTENDANCE_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+
+const resolvePrimaryBranchId = (user) => {
+  const branch = user?.branches?.[0];
+  if (!branch) return null;
+  if (typeof branch === 'string') return branch;
+  if (branch?._id) return branch._id.toString();
+  return branch.toString();
+};
+
+const buildSelfAttendanceRange = (query) => {
+  const today = formatSelfDateOnly(new Date());
+  const range = String(query?.range || 'today').toLowerCase();
+
+  if (range === 'today') {
+    return { from: today, to: today };
+  }
+
+  if (range === 'week') {
+    const current = new Date();
+    const dayIndex = current.getDay();
+    const offset = dayIndex === 0 ? 6 : dayIndex - 1;
+    current.setDate(current.getDate() - offset);
+    return { from: formatSelfDateOnly(current), to: today };
+  }
+
+  if (range === 'month') {
+    const current = new Date();
+    const firstDay = new Date(current.getFullYear(), current.getMonth(), 1);
+    return { from: formatSelfDateOnly(firstDay), to: today };
+  }
+
+  if (range === 'custom') {
+    if (!query?.from || !query?.to) return null;
+    const from = toDateOnly(query.from);
+    const to = toDateOnly(query.to);
+    if (!from || !to) return null;
+    return {
+      from: formatSelfDateOnly(from),
+      to: formatSelfDateOnly(to),
+    };
+  }
+
+  return null;
+};
+
+const buildSelfAttendancePagination = (query) => {
+  const page = Math.max(1, Number(query?.page) || 1);
+  const pageSize = Math.max(1, Math.min(100, Number(query?.limit) || SELF_ATTENDANCE_PAGE_SIZE));
+  return { page, pageSize };
+};
+
+const buildHistoryStats = (records) => {
+  const stats = {
+    totalDays: records.length,
+    present: 0,
+    absent: 0,
+    leave: 0,
+    halfDay: 0,
+    weeklyOff: 0,
+    holiday: 0,
+    lateArrivals: 0,
+    overtimeMinutes: 0,
+    workingMinutes: 0,
+  };
+
+  for (const record of records) {
+    if (record.status === 'present') stats.present += 1;
+    if (record.status === 'absent') stats.absent += 1;
+    if (record.status === 'leave') stats.leave += 1;
+    if (record.status === 'half_day') stats.halfDay += 1;
+    if (record.status === 'weekly_off') stats.weeklyOff += 1;
+    if (record.status === 'holiday') stats.holiday += 1;
+    if ((record.lateMinutes || 0) > 0) stats.lateArrivals += 1;
+    stats.overtimeMinutes += record.overtimeHours || 0;
+    stats.workingMinutes += record.workingHours || 0;
+  }
+
+  return {
+    ...stats,
+    monthlyAttendancePercentage: stats.totalDays
+      ? Math.round(((stats.present + stats.halfDay * 0.5) / stats.totalDays) * 100)
+      : 0,
+  };
 };
 
 const populateAttendance = (query) =>
@@ -383,44 +487,210 @@ exports.getAttendanceHistory = asyncHandler(async (req, res, next) => {
     Attendance.find(filter).sort({ date: -1, createdAt: -1 })
   );
 
-  const stats = {
-    totalDays: records.length,
-    present: 0,
-    absent: 0,
-    leave: 0,
-    halfDay: 0,
-    weeklyOff: 0,
-    holiday: 0,
-    lateArrivals: 0,
-    overtimeMinutes: 0,
-    workingMinutes: 0,
-  };
-
-  for (const record of records) {
-    if (record.status === 'present') stats.present += 1;
-    if (record.status === 'absent') stats.absent += 1;
-    if (record.status === 'leave') stats.leave += 1;
-    if (record.status === 'half_day') stats.halfDay += 1;
-    if (record.status === 'weekly_off') stats.weeklyOff += 1;
-    if (record.status === 'holiday') stats.holiday += 1;
-    if ((record.lateMinutes || 0) > 0) stats.lateArrivals += 1;
-    stats.overtimeMinutes += record.overtimeHours || 0;
-    stats.workingMinutes += record.workingHours || 0;
-  }
-
   res.status(200).json({
     success: true,
     data: {
       employee: records[0]?.employee || null,
       records,
-      stats: {
-        ...stats,
-        monthlyAttendancePercentage: stats.totalDays
-          ? Math.round(((stats.present + stats.halfDay * 0.5) / stats.totalDays) * 100)
-          : 0,
-      },
+      stats: buildHistoryStats(records),
     },
   });
+});
+
+exports.getMyAttendance = asyncHandler(async (req, res, next) => {
+  const range = buildSelfAttendanceRange(req.query);
+  if (!range) return next(new AppError('Invalid date range.', 400));
+  const { page, pageSize } = buildSelfAttendancePagination(req.query);
+
+  const filter = {
+    employee: req.user._id,
+    date: {
+      $gte: toDateOnly(range.from),
+      $lte: toDateOnly(range.to),
+    },
+  };
+
+  const totalRecords = await Attendance.countDocuments(filter);
+  const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const skip = (currentPage - 1) * pageSize;
+
+  const records = await populateAttendance(
+    Attendance.find(filter).sort({ date: -1, createdAt: -1 }).skip(skip).limit(pageSize)
+  );
+  const today = formatSelfDateOnly(new Date());
+  const todayAttendance = await Attendance.findOne({
+    employee: req.user._id,
+    date: toDateOnly(today),
+  })
+    .populate('employee', 'name role email phone branches')
+    .populate('branch', 'name code')
+    .populate('markedBy', 'name role');
+
+  res.status(200).json({
+    success: true,
+    results: records.length,
+    total: totalRecords,
+    page: currentPage,
+    pages: totalPages,
+    data: {
+      employee: req.user.toSafeObject(),
+      todayAttendance,
+      records,
+      totalRecords,
+      currentPage,
+      totalPages,
+      pageSize,
+      range,
+    },
+  });
+});
+
+exports.checkInMyAttendance = asyncHandler(async (req, res, next) => {
+  const branchId = resolvePrimaryBranchId(req.user);
+  if (!branchId) return next(new AppError('Branch is required.', 400));
+
+  // ── Location validation for staff ──────────────────────────────────────
+  let checkInLocation;
+  if (req.user.role === ROLES.STAFF) {
+    const { latitude, longitude } = req.body || {};
+    if (latitude == null || longitude == null) {
+      return next(new AppError('Location is required to mark attendance.', 400));
+    }
+    const branch = await Branch.findById(branchId).select('latitude longitude attendanceRadius name');
+    if (!branch || branch.latitude == null || branch.longitude == null) {
+      return next(new AppError('Branch location is not configured. Please contact your manager.', 400));
+    }
+    const distance = calculateDistance(branch.latitude, branch.longitude, latitude, longitude);
+    const radius = branch.attendanceRadius || 100;
+    if (distance > radius) {
+      return res.status(200).json({
+        success: false,
+        message: `\u274C You are outside the allowed attendance area. Please come within ${radius} meters of ${branch.name || 'the branch'} to mark your attendance.`,
+      });
+    }
+    checkInLocation = { lat: latitude, lng: longitude };
+  }
+  // ────────────────────────────────────────────────────────────────────────
+
+  const date = formatSelfDateOnly(new Date());
+  const currentTime = formatSelfTimeOnly(new Date());
+  const normalizedDate = toDateOnly(date);
+
+  const existing = await Attendance.findOne({ employee: req.user._id, date: normalizedDate });
+  if (existing?.checkOut) {
+    return next(new AppError('You have already checked out today.', 409));
+  }
+  if (existing?.checkIn) {
+    return next(new AppError('You have already checked in today.', 409));
+  }
+
+  const payload = buildAttendancePayload({ status: 'present', checkIn: currentTime }, req.user);
+
+  const $set = {
+    status: payload.status || 'present',
+    checkIn: currentTime,
+    checkOut: undefined,
+    workingHours: undefined,
+    overtimeHours: undefined,
+    lateMinutes: 0,
+    earlyExitMinutes: 0,
+    notes: existing?.notes || undefined,
+    shift: existing?.shift || 'full_day',
+    markedBy: payload.markedBy,
+    markedAt: payload.markedAt,
+  };
+  if (checkInLocation) $set.checkInLocation = checkInLocation;
+
+  const record = await Attendance.findOneAndUpdate(
+    { employee: req.user._id, date: normalizedDate },
+    {
+      $set,
+      $setOnInsert: {
+        employee: req.user._id,
+        branch: branchId,
+        date: normalizedDate,
+      },
+    },
+    { upsert: true, new: true, runValidators: true }
+  )
+    .populate('employee', 'name role email phone branches')
+    .populate('branch', 'name code')
+    .populate('markedBy', 'name role');
+
+  res.status(200).json({ success: true, data: { record } });
+});
+
+exports.checkOutMyAttendance = asyncHandler(async (req, res, next) => {
+  const date = formatSelfDateOnly(new Date());
+  const normalizedDate = toDateOnly(date);
+  const currentTime = formatSelfTimeOnly(new Date());
+
+  const existing = await Attendance.findOne({ employee: req.user._id, date: normalizedDate });
+  if (!existing) return next(new AppError('Please check in first.', 400));
+  if (!existing.checkIn) return next(new AppError('Please check in first.', 400));
+  if (existing.checkOut) return next(new AppError('You have already checked out today.', 409));
+
+  // ── Location validation for staff ──────────────────────────────────────
+  let checkOutLocation;
+  if (req.user.role === ROLES.STAFF) {
+    const { latitude, longitude } = req.body || {};
+    if (latitude == null || longitude == null) {
+      return next(new AppError('Location is required to mark attendance.', 400));
+    }
+    const branchId = resolvePrimaryBranchId(req.user);
+    const branch = await Branch.findById(branchId).select('latitude longitude attendanceRadius name');
+    if (!branch || branch.latitude == null || branch.longitude == null) {
+      return next(new AppError('Branch location is not configured. Please contact your manager.', 400));
+    }
+    const distance = calculateDistance(branch.latitude, branch.longitude, latitude, longitude);
+    const radius = branch.attendanceRadius || 100;
+    if (distance > radius) {
+      return res.status(200).json({
+        success: false,
+        message: `\u274C You are outside the allowed attendance area. Please come within ${radius} meters of ${branch.name || 'the branch'} to mark your attendance.`,
+      });
+    }
+    checkOutLocation = { lat: latitude, lng: longitude };
+  }
+  // ────────────────────────────────────────────────────────────────────────
+
+  const workingHours = calculateWorkingMinutes(existing.checkIn, currentTime);
+  const status = workingHours !== null && workingHours < 4 * 60 ? 'half_day' : 'present';
+  const payload = buildAttendancePayload(
+    {
+      checkIn: existing.checkIn,
+      checkOut: currentTime,
+      workingHours,
+      status,
+      notes: existing.notes,
+      shift: existing.shift,
+    },
+    req.user
+  );
+
+  const $set = {
+    status: payload.status || status,
+    checkOut: currentTime,
+    workingHours: payload.workingHours,
+    overtimeHours: payload.overtimeHours,
+    lateMinutes: existing.lateMinutes || 0,
+    earlyExitMinutes: existing.earlyExitMinutes || 0,
+    markedBy: payload.markedBy,
+    markedAt: payload.markedAt,
+  };
+  if (checkOutLocation) $set.checkOutLocation = checkOutLocation;
+
+  const record = await Attendance.findByIdAndUpdate(
+    existing._id,
+    { $set },
+    { new: true, runValidators: true }
+  )
+    .populate('employee', 'name role email phone branches')
+    .populate('branch', 'name code')
+    .populate('markedBy', 'name role');
+
+  res.status(200).json({ success: true, data: { record } });
 });
 
 exports.markAttendance = asyncHandler(async (req, res, next) => {

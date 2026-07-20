@@ -11,14 +11,10 @@ exports.getBranches = asyncHandler(async (req, res) => {
     filter = { _id: { $in: req.user.branches } };
   }
   
-  console.log('🏢 Fetching branches with filter:', filter);
-  console.log('🏢 User role:', req.user.role);
-  console.log('🏢 User branches:', req.user.branches);
-  
-  const branches = await Branch.find(filter).sort('name');
-  
-  console.log('🏢 Branches found:', branches.length);
-  branches.forEach(b => console.log('🏢 Branch:', b.name, b.code, 'Active:', b.isActive));
+  const branches = await Branch.find(filter)
+    .select('name code address phone isActive openingTime closingTime createdAt updatedAt')
+    .sort('name')
+    .lean();
   
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.status(200).json({ success: true, results: branches.length, data: { branches } });
@@ -26,19 +22,18 @@ exports.getBranches = asyncHandler(async (req, res) => {
 
 // GET /api/branches/:id
 exports.getBranch = asyncHandler(async (req, res, next) => {
-  const branch = await Branch.findById(req.params.id);
+  const branch = await Branch.findById(req.params.id)
+    .select('name code address phone isActive openingTime closingTime createdAt updatedAt')
+    .lean();
   if (!branch) return next(new AppError('Branch not found.', 404));
   res.status(200).json({ success: true, data: { branch } });
 });
 
 // POST /api/branches (super admin only)
 exports.createBranch = asyncHandler(async (req, res, next) => {
-  console.log('🏢 Creating branch with data:', req.body);
-  
   // Validate required fields
   const { name, code } = req.body;
   if (!name || !code) {
-    console.log('❌ Missing required fields:', { name: !!name, code: !!code });
     return next(new AppError('Branch name and code are required.', 400));
   }
 
@@ -48,7 +43,6 @@ exports.createBranch = asyncHandler(async (req, res, next) => {
   });
   
   if (existingBranch) {
-    console.log('❌ Branch already exists:', existingBranch.name, existingBranch.code);
     return next(new AppError('Branch with this name or code already exists.', 400));
   }
 
@@ -58,9 +52,6 @@ exports.createBranch = asyncHandler(async (req, res, next) => {
       code: code.toUpperCase(),
       createdBy: req.user._id 
     });
-    
-    console.log('✅ Branch created successfully:', branch.name, branch.code);
-
     await logActivity({
       userId: req.user._id,
       action: 'branch.create',
@@ -72,9 +63,6 @@ exports.createBranch = asyncHandler(async (req, res, next) => {
 
     res.status(201).json({ success: true, data: { branch } });
   } catch (error) {
-    console.error('❌ Branch creation error:', error.message);
-    console.error('❌ Validation errors:', error.errors);
-    
     if (error.code === 11000) {
       return next(new AppError('Branch with this name or code already exists.', 400));
     }

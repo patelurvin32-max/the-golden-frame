@@ -257,6 +257,21 @@ export interface AttendanceHistoryStats {
   monthlyAttendancePercentage: number;
 }
 
+export interface MyAttendanceResponse {
+  employee: User;
+  todayAttendance: AttendanceRecord | null;
+  records: AttendanceRecord[];
+  stats?: AttendanceHistoryStats;
+  totalRecords: number;
+  currentPage: number;
+  totalPages: number;
+  pageSize: number;
+  range: {
+    from: string;
+    to: string;
+  };
+}
+
 export interface StockTransaction {
   _id: string;
   inventoryItem: string;

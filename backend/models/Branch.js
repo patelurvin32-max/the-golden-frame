@@ -9,6 +9,9 @@ const branchSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true },
     openingTime: { type: String, default: '10:00' }, // HH:mm
     closingTime: { type: String, default: '23:00' },
+    latitude: { type: Number },
+    longitude: { type: Number },
+    attendanceRadius: { type: Number, default: 100 }, // meters
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

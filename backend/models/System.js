@@ -17,6 +17,14 @@ const attendanceSchema = new mongoose.Schema(
     shift: { type: String, enum: ['morning', 'evening', 'night', 'full_day'], default: 'full_day' },
     markedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     markedAt: { type: Date, default: Date.now },
+    checkInLocation: {
+      lat: { type: Number },
+      lng: { type: Number },
+    },
+    checkOutLocation: {
+      lat: { type: Number },
+      lng: { type: Number },
+    },
   },
   { timestamps: true }
 );

@@ -9,9 +9,10 @@ import {
   PageHeader, Skeleton, EmptyState, Table2, TableHeader, TableBody,
   TableRow, TableHead, TableCell, Badge, Modal, useToast
 } from '@/components/ui';
+import { Eye, EyeOff, Calendar } from 'lucide-react';
 import { formatDate, formatDateTime, cn } from '@/utils';
 import type { Branch, User } from '@/types';
-import { useAppStore } from '@/store';
+import { useAppStore, useAuthStore } from '@/store';
 
 type LogsResponse = {
   logs: any[];
@@ -250,9 +251,15 @@ const PencilIcon = () => (
 export function UsersPage() {
   const qc = useQueryClient();
   const toast = useToast();
+  const { user: currentUser } = useAuthStore();
+  const isSuperAdminOrAdmin = currentUser?.role === 'super_admin' || currentUser?.role === 'admin';
+  const managerBranch = currentUser?.branches?.[0];
+  const managerBranchId = managerBranch ? (typeof managerBranch === 'string' ? managerBranch : managerBranch._id) : '';
+
   const [modalMode, setModalMode] = useState<'create' | 'edit' | null>(null);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [form, setForm] = useState<StaffFormState>(createEmptyStaffForm());
+  const [showPassword, setShowPassword] = useState(false);
 
   const { data: branchesData } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
   const { data, isLoading } = useQuery({ queryKey: ['users'], queryFn: () => userService.getAll().then((r) => r.data.data.users) });
@@ -292,13 +299,21 @@ export function UsersPage() {
 
   const openCreateModal = () => {
     setSelectedUser(null);
-    setForm(createEmptyStaffForm());
+    const initialForm = createEmptyStaffForm();
+    if (!isSuperAdminOrAdmin && managerBranchId) {
+      initialForm.branches = [managerBranchId];
+    }
+    setForm(initialForm);
     setModalMode('create');
   };
 
   const openEditModal = (user: User) => {
     setSelectedUser(user);
-    setForm(staffFormFromUser(user));
+    const initialForm = staffFormFromUser(user);
+    if (!isSuperAdminOrAdmin && managerBranchId) {
+      initialForm.branches = [managerBranchId];
+    }
+    setForm(initialForm);
     setModalMode('edit');
   };
 
@@ -306,6 +321,7 @@ export function UsersPage() {
     setModalMode(null);
     setSelectedUser(null);
     setForm(createEmptyStaffForm());
+    setShowPassword(false);
   };
 
   const buildPayload = () => {
@@ -319,7 +335,7 @@ export function UsersPage() {
       employmentStatus: form.employmentStatus.trim() || undefined,
       notes: form.notes.trim() || undefined,
       role: form.role,
-      branches: form.branches,
+      branches: !isSuperAdminOrAdmin && managerBranchId ? [managerBranchId] : form.branches,
       isActive: form.isActive,
     };
 
@@ -418,12 +434,23 @@ export function UsersPage() {
             </div>
             <div className="space-y-1.5">
               <Label>{modalMode === 'edit' ? 'Password (leave blank to keep current)' : 'Password *'}</Label>
-              <Input
-                type="password"
-                value={form.password}
-                onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                required={modalMode === 'create'}
-              />
+              <div className="relative">
+                <Input
+                  type={showPassword ? 'text' : 'password'}
+                  value={form.password}
+                  onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                  required={modalMode === 'create'}
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
             <div className="space-y-1.5">
             <Label>Role *</Label>
@@ -472,22 +499,33 @@ export function UsersPage() {
 
           <div className="space-y-1.5">
             <Label>Assign Branches</Label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {branches.map((b) => (
-                <label key={b._id} className="flex items-center gap-2 text-sm cursor-pointer rounded-xl border border-border px-3 py-2">
-                  <input
-                    type="checkbox"
-                    className="rounded"
-                    checked={form.branches.includes(b._id)}
-                    onChange={(e) => setForm((f) => ({
-                      ...f,
-                      branches: e.target.checked ? [...f.branches, b._id] : f.branches.filter((id) => id !== b._id),
-                    }))}
-                  />
-                  {b.name}
-                </label>
-              ))}
-            </div>
+            {isSuperAdminOrAdmin ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {branches.map((b) => (
+                  <label key={b._id} className="flex items-center gap-2 text-sm cursor-pointer rounded-xl border border-border px-3 py-2">
+                    <input
+                      type="checkbox"
+                      className="rounded"
+                      checked={form.branches.includes(b._id)}
+                      onChange={(e) => setForm((f) => ({
+                        ...f,
+                        branches: e.target.checked ? [...f.branches, b._id] : f.branches.filter((id) => id !== b._id),
+                      }))}
+                    />
+                    {b.name}
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <Input
+                value={
+                  branches.find((b) => form.branches.includes(b._id))?.name ||
+                  (typeof managerBranch === 'object' && managerBranch?.name ? managerBranch.name : 'Assigned Branch')
+                }
+                disabled
+                readOnly
+              />
+            )}
           </div>
 
           <div className="flex flex-col sm:flex-row gap-2 pt-2">
