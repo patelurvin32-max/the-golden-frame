@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type Role = 'super_admin' | 'admin' | 'branch_manager' | 'staff' | 'cashier';
-export type TableType = 'pool' | 'snooker' | 'ps5';
+export type TableType = string;
 export type TableStatus = 'available' | 'running' | 'reserved' | 'maintenance';
 export type SessionStatus = 'running' | 'paused' | 'completed' | 'cancelled';
 export type PaymentMethod = 'cash' | 'upi' | 'mixed' | 'wallet';

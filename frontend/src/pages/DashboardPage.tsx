@@ -183,7 +183,7 @@ export default function DashboardPage() {
               {(tableUsage?.usage || []).slice(0, 5).map((t: any) => (
                 <div key={t._id.tableId} className="flex items-center justify-between gap-4">
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <div className={`h-8 w-8 rounded-lg flex items-center justify-center text-xs font-bold text-white ${t._id.type === 'pool' ? 'bg-blue-500' : t._id.type === 'snooker' ? 'bg-emerald-500' : 'bg-purple-500'}`}>
+                    <div className={`h-8 w-8 rounded-lg flex items-center justify-center text-xs font-bold text-white ${t._id.type?.toLowerCase() === 'pool' ? 'bg-blue-500' : t._id.type?.toLowerCase() === 'snooker' ? 'bg-emerald-500' : 'bg-purple-500'}`}>
                       {t._id.type?.[0]?.toUpperCase()}
                     </div>
                     <div>

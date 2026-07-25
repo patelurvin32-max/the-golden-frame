@@ -11,9 +11,9 @@ const emitTableUpdate = async (req, table) => {
   req.app.get('io')?.to(`branch:${table.branch}`).emit('table:updated', populated);
 };
 
-// POST /api/sessions/start  { tableId, customerId? }
+// POST /api/sessions/start  { tableId, customerId?, customerName?, phoneNumber?, extraPlayers? }
 exports.startSession = asyncHandler(async (req, res, next) => {
-  const { tableId, customerId } = req.body;
+  const { tableId, customerId, customerName, phoneNumber, extraPlayers } = req.body;
 
   const table = await Table.findById(tableId);
   if (!table) return next(new AppError('Table not found.', 404));
@@ -25,6 +25,9 @@ exports.startSession = asyncHandler(async (req, res, next) => {
     table: table._id,
     branch: table.branch,
     customer: customerId || undefined,
+    customerName,
+    phoneNumber,
+    extraPlayers: extraPlayers || [],
     startedBy: req.user._id,
     hourlyRate: table.hourlyRate,
     startTime: new Date(),
@@ -158,8 +161,20 @@ exports.stopSession = asyncHandler(async (req, res, next) => {
   res.status(200).json({ success: true, data: { session } });
 });
 
+// GET /api/sessions/:id
+exports.getSession = asyncHandler(async (req, res, next) => {
+  const session = await Session.findById(req.params.id)
+    .populate('table', 'name type hourlyRate')
+    .populate('customer', 'name phone')
+    .populate('startedBy', 'name');
+  if (!session) return next(new AppError('Session not found.', 404));
+  res.status(200).json({ success: true, data: { session } });
+});
+
 // GET /api/sessions/live?branch=...
 exports.getLiveSessions = asyncHandler(async (req, res) => {
+  await syncTablesWithMenuItems();
+
   const filter = { status: { $in: ['running', 'paused'] } };
   if (req.query.branch) filter.branch = req.query.branch;
   else if (req.user.role !== 'super_admin') filter.branch = { $in: req.user.branches };

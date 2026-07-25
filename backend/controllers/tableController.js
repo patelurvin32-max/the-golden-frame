@@ -4,16 +4,19 @@ const asyncHandler = require('../utils/asyncHandler');
 const { generateTableQRCode } = require('../services/qrCodeService');
 const { logActivity } = require('../services/activityLogService');
 const { ROLES } = require('../config/constants');
+const { syncTablesWithMenuItems } = require('../utils/tableSync');
 
 // GET /api/tables?branch=...&type=...&status=...
 exports.getTables = asyncHandler(async (req, res) => {
+  await syncTablesWithMenuItems();
+
   const filter = { isActive: true };
 
   if (req.user.role !== ROLES.SUPER_ADMIN) {
     filter.branch = { $in: req.user.branches };
   }
   if (req.query.branch) filter.branch = req.query.branch;
-  if (req.query.type) filter.type = req.query.type;
+  if (req.query.type) filter.type = { $regex: new RegExp(`^${req.query.type}$`, 'i') };
   if (req.query.status) filter.status = req.query.status;
 
   const tables = await Table.find(filter)
@@ -26,6 +29,8 @@ exports.getTables = asyncHandler(async (req, res) => {
 
 // GET /api/tables/:id
 exports.getTable = asyncHandler(async (req, res, next) => {
+  await syncTablesWithMenuItems();
+
   const table = await Table.findById(req.params.id).populate('branch').populate('currentSession');
   if (!table) return next(new AppError('Table not found.', 404));
   res.status(200).json({ success: true, data: { table } });

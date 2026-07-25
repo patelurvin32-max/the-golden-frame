@@ -22,6 +22,9 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     discountValue = 0,
     couponCode,
     branch,
+    manualAmount,          // Manual bill amount for sessions
+    paymentStatus,         // Payment status for sessions
+    paymentMethod,         // Payment method for sessions
   } = req.body;
 
   const targetBranch = branchId || branch;
@@ -36,15 +39,18 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     if (!session) return next(new AppError('Session not found.', 404));
     if (session.status !== 'completed') return next(new AppError('Session must be stopped before billing.', 400));
 
+    // Use manual amount if provided, otherwise use calculated session amount
+    const sessionAmount = manualAmount !== undefined ? Number(manualAmount) : session.amount;
+
     const tableItem = {
       description: `${session.table?.type?.toUpperCase()} - ${session.table?.name} (${session.billableMinutes} min)`,
       quantity: 1,
-      unitPrice: session.amount,
-      total: session.amount,
+      unitPrice: sessionAmount,
+      total: sessionAmount,
       type: 'table_time',
     };
     items.push(tableItem);
-    subtotal += session.amount;
+    subtotal += sessionAmount;
   }
 
   // 2. Inventory / food items sold
@@ -110,7 +116,7 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     membershipDiscount,
     tax,
     total,
-    paymentStatus: 'unpaid',
+    paymentStatus: paymentStatus || 'unpaid',
     createdBy: req.user._id,
   });
 
@@ -143,7 +149,13 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
   const { method, amount, breakdown = [], transactionRef } = req.body;
   const bill = await Bill.findById(req.params.id);
   if (!bill) return next(new AppError('Bill not found.', 404));
-  if (bill.paymentStatus === 'paid') return next(new AppError('Bill is already fully paid.', 400));
+
+  // Check if bill is already fully paid based on recorded payments
+  const existingPayments = await Payment.find({ bill: bill._id });
+  const existingPaid = existingPayments.reduce((sum, p) => sum + p.amount, 0);
+  if (bill.paymentStatus === 'paid' && existingPayments.length > 0 && existingPaid >= bill.total) {
+    return next(new AppError('Bill is already fully paid.', 400));
+  }
 
   const payment = await Payment.create({
     bill: bill._id,
@@ -190,7 +202,7 @@ exports.downloadPDF = asyncHandler(async (req, res, next) => {
   res.end(pdfBuffer);
 });
 
-// GET /api/bills?branch=&page=&limit=
+// GET /api/bills?branch=&page=&limit=&search=&sort=
 exports.getBills = asyncHandler(async (req, res) => {
   const { ROLES } = require('../config/constants');
   const filter = {};
@@ -198,26 +210,56 @@ exports.getBills = asyncHandler(async (req, res) => {
   if (req.query.branch) filter.branch = req.query.branch;
   if (req.query.status) filter.paymentStatus = req.query.status;
 
+  // Search functionality - search by invoice number or customer name
+  if (req.query.search) {
+    const searchRegex = new RegExp(req.query.search, 'i');
+    const customerIds = await Customer.find({ name: searchRegex }).select('_id').lean();
+    const customerIdsList = customerIds.map((c) => c._id);
+    
+    const sessionIds = await Session.find({ customerName: searchRegex }).select('_id').lean();
+    const sessionIdsList = sessionIds.map((s) => s._id);
+
+    filter.$or = [
+      { invoiceNumber: searchRegex },
+      { customer: { $in: customerIdsList } },
+      { session: { $in: sessionIdsList } },
+    ];
+  }
+
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 20;
+
+  // Sorting
+  let sortOption = { createdAt: -1 }; // Default sort by createdAt descending
+  if (req.query.sort) {
+    const sortField = req.query.sort.startsWith('-') ? req.query.sort.substring(1) : req.query.sort;
+    const sortOrder = req.query.sort.startsWith('-') ? -1 : 1;
+    sortOption = { [sortField]: sortOrder };
+  }
 
   const [bills, total] = await Promise.all([
     Bill.find(filter)
       .populate('customer', 'name phone')
       .populate('branch', 'name')
       .populate('createdBy', 'name')
-      .sort('-createdAt')
+      .populate('session', 'customerName phoneNumber customer')
+      .sort(sortOption)
       .skip((page - 1) * limit)
       .limit(limit),
     Bill.countDocuments(filter),
   ]);
+
+  const calculatedTotalPages = Math.ceil(total / limit);
 
   res.status(200).json({
     success: true,
     results: bills.length,
     total,
     page,
-    pages: Math.ceil(total / limit),
+    limit,
+    totalPages: calculatedTotalPages,
+    hasNextPage: page < calculatedTotalPages,
+    hasPreviousPage: page > 1,
     data: { bills },
   });
 });

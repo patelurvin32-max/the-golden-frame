@@ -31,6 +31,7 @@ export default function MenuPage() {
 
   // Determine if user can select branch (Super Admin can, Branch Manager and Staff cannot)
   const canSelectBranch = user?.role === 'super_admin';
+  const isSuperAdmin = user?.role === 'super_admin';
 
   const [activeTab, setActiveTab] = useState<'items' | 'categories'>('items');
 
@@ -513,7 +514,8 @@ export default function MenuPage() {
               <Label>Category *</Label>
               <Select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}>
                 <option value="">Select category</option>
-                {(activeCategories || []).map((c: any) => <option key={c._id} value={c._id}>{c.name}</option>)}
+                {(activeCategories || [])
+                  .map((c: any) => <option key={c._id} value={c._id}>{c.name}</option>)}
               </Select>
             </div>
           </div>

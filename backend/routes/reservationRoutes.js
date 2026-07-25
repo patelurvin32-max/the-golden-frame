@@ -9,6 +9,7 @@ router.use(protect);
 
 const canView = requirePermission('tables:view');
 const canManage = requirePermission('bookings:manage');
+const canDelete = requirePermission('bookings:delete');
 
 router.get('/stats', canView, rc.getStats);
 router.get('/available-tables', canView, rc.getAvailableTables);
@@ -52,6 +53,6 @@ router.patch(
   rc.changeStatus
 );
 
-router.delete('/:id', canManage, rc.deleteReservation);
+router.delete('/:id', canDelete, rc.deleteReservation);
 
 module.exports = router;

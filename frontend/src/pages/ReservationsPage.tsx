@@ -288,7 +288,14 @@ function ReservationForm({
           <Label>Menu Category *</Label>
           <Select
             value={form.menuCategoryId}
-            onChange={(e) => set('menuCategoryId', e.target.value)}
+            onChange={(e) => {
+              const val = e.target.value;
+              setForm((prev: any) => ({
+                ...prev,
+                menuCategoryId: val,
+                menuItemId: prev.menuCategoryId === val ? prev.menuItemId : '',
+              }));
+            }}
           >
             <option value="">Select category</option>
             {reservationCategories.map((cat: any) => (
@@ -389,12 +396,14 @@ function ViewModal({ res, onClose, onEdit, onStatusChange }: {
       <div className="grid grid-cols-2 gap-3">
         {[
           { label: 'Branch',   value: res.branch?.name },
-          { label: 'Table',    value: `${res.table?.name} (${res.table?.type})` },
+          { label: 'Category', value: typeof res.menuCategoryId === 'object' ? res.menuCategoryId?.name : res.table?.type },
+          { label: 'Item',     value: typeof res.menuItemId === 'object' ? res.menuItemId?.name : res.table?.name },
+          { label: 'Table',    value: res.table?.name ? `${res.table.name} (${res.table.type || ''})` : null },
           { label: 'Date',     value: formatDate(res.reservationDate) },
           { label: 'Time',     value: res.reservationTime },
           { label: 'Duration', value: `${res.durationMinutes} min` },
           { label: 'Guests',   value: res.numberOfGuests },
-        ].map((f) => (
+        ].filter((f) => f.value).map((f) => (
           <div key={f.label} className="rounded-xl bg-muted/30 p-3">
             <p className="text-xs text-muted-foreground">{f.label}</p>
             <p className="font-semibold text-sm mt-0.5">{f.value}</p>
@@ -466,8 +475,8 @@ export default function ReservationsPage() {
   const [branchFlt, setBranchFlt] = useState('');
   const [tableFlt,  setTableFlt]  = useState('');
   const [menuCategoryFlt, setMenuCategoryFlt] = useState('');
-  const [sortBy,    setSortBy]    = useState('reservationDate');
-  const [sortOrder, setSortOrder] = useState<'asc'|'desc'>('asc');
+  const [sortBy,    setSortBy]    = useState('createdAt');
+  const [sortOrder, setSortOrder] = useState<'asc'|'desc'>('desc');
 
   // ── Modal state ───────────────────────────────────────────────────────────
   const [modal,    setModal]    = useState<'create'|'edit'|'view'|null>(null);
@@ -745,7 +754,6 @@ export default function ReservationsPage() {
 
           {/* Second filter row */}
           <div className="flex flex-wrap items-center gap-3 mt-3">
-            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-40" placeholder="To date" />
             <div className="flex gap-1">
               {['reservationDate','customerName','createdAt'].map((col) => (
                 <button key={col} onClick={() => handleSort(col)}
@@ -791,7 +799,7 @@ export default function ReservationsPage() {
                     <TableHead className="cursor-pointer" onClick={() => handleSort('customerName')}>
                       Customer <SortIcon col="customerName" />
                     </TableHead>
-                    <TableHead>Branch / Table</TableHead>
+                    <TableHead>Category/Item</TableHead>
                     <TableHead>Time</TableHead>
                     <TableHead>Guests</TableHead>
                     <TableHead>Status</TableHead>
@@ -818,8 +826,19 @@ export default function ReservationsPage() {
                       </TableCell>
                       <TableCell>
                         <div>
-                          <p className="text-sm font-medium">{r.branch?.name}</p>
-                          <p className="text-xs text-muted-foreground capitalize">{r.table?.name} · {r.table?.type}</p>
+                          {canSelectBranch && r.branch?.name ? (
+                            <p className="text-xs text-muted-foreground font-medium mb-0.5">{r.branch?.name}</p>
+                          ) : null}
+                          <p className="text-sm font-semibold text-foreground">
+                            {typeof r.menuCategoryId === 'object' && r.menuCategoryId?.name
+                              ? r.menuCategoryId.name
+                              : r.table?.type || '—'}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {typeof r.menuItemId === 'object' && r.menuItemId?.name
+                              ? r.menuItemId.name
+                              : r.table?.name || '—'}
+                          </p>
                         </div>
                       </TableCell>
                       <TableCell>
@@ -851,9 +870,11 @@ export default function ReservationsPage() {
                             <button onClick={() => { if (window.confirm('Cancel this reservation?')) statusMutation.mutate({ id: r._id, status: 'cancelled' }); }}
                               title="Cancel" className="h-7 w-7 rounded-lg hover:bg-red-500/20 text-red-400 flex items-center justify-center text-sm transition-colors">❌</button>
                           )}
-                          <button
-                            onClick={() => { if (window.confirm('Delete permanently?')) deleteMutation.mutate(r._id); }}
-                            title="Delete" className="h-7 w-7 rounded-lg hover:bg-red-500/20 text-red-400 flex items-center justify-center text-sm transition-colors">🗑</button>
+                          {canSelectBranch && (
+                            <button
+                              onClick={() => { if (window.confirm('Delete permanently?')) deleteMutation.mutate(r._id); }}
+                              title="Delete" className="h-7 w-7 rounded-lg hover:bg-red-500/20 text-red-400 flex items-center justify-center text-sm transition-colors">🗑</button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>

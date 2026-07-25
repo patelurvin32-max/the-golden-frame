@@ -681,7 +681,7 @@ export default function AttendancePage() {
                               type="time"
                               value={draft.checkIn ?? record?.checkIn ?? ''}
                               onChange={(e) => updateDraft(user, { checkIn: e.target.value })}
-                              className="w-24"
+                              className="w-28 text-xs px-2"
                             />
                           </TableCell>
                           <TableCell>
@@ -689,7 +689,7 @@ export default function AttendancePage() {
                               type="time"
                               value={draft.checkOut ?? record?.checkOut ?? ''}
                               onChange={(e) => updateDraft(user, { checkOut: e.target.value })}
-                              className="w-24"
+                              className="w-28 text-xs px-2"
                             />
                           </TableCell>
                           <TableCell className="text-sm">

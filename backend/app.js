@@ -64,6 +64,9 @@ if (process.env.NODE_ENV !== 'production') {
 const allowedOrigins = process.env.CLIENT_URL 
   ? process.env.CLIENT_URL.split(',').map(o => o.trim())
   : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:4173'];
+if (!allowedOrigins.includes('http://localhost:5174')) {
+  allowedOrigins.push('http://localhost:5174');
+}
 
 console.log('🌐 CORS allowed origins:', allowedOrigins);
 console.log('🌐 NODE_ENV:', process.env.NODE_ENV);

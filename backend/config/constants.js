@@ -31,6 +31,7 @@ const PERMISSIONS = {
     'menu:manage',
     'menu:view',
     'bookings:manage',
+    'bookings:delete',
   ],
   [ROLES.BRANCH_MANAGER]: [
     'dashboard:view',
@@ -66,7 +67,7 @@ const PERMISSIONS = {
   ],
 };
 
-const TABLE_TYPES = ['pool', 'snooker', 'ps5'];
+const TABLE_TYPES = [];
 
 const TABLE_STATUS = ['available', 'running', 'reserved', 'maintenance'];
 

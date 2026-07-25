@@ -277,7 +277,7 @@ export default function ReportsPage() {
                     <div className="flex items-center justify-between text-sm">
                       <div className="flex items-center gap-2">
                         <div className={cn('h-6 w-6 rounded-lg flex items-center justify-center text-white text-xs font-bold',
-                          t._id.type === 'pool' ? 'bg-blue-500' : t._id.type === 'snooker' ? 'bg-emerald-500' : 'bg-purple-500'
+                          t._id.type?.toLowerCase() === 'pool' ? 'bg-blue-500' : t._id.type?.toLowerCase() === 'snooker' ? 'bg-emerald-500' : 'bg-purple-500'
                         )}>
                           {t._id.type?.[0]?.toUpperCase()}
                         </div>

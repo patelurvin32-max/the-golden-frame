@@ -36,7 +36,8 @@ export const tableService = {
 // ── Sessions ──────────────────────────────────────────────────────────────────
 export const sessionService = {
   getLive: (branch?: string) => api.get<ApiResponse<{ sessions: Session[] }>>('/sessions/live', { params: branch ? { branch } : {} }),
-  start: (tableId: string, customerId?: string) => api.post<ApiResponse<{ session: Session }>>('/sessions/start', { tableId, customerId }),
+  start: (tableId: string, customerId?: string, customerName?: string, phoneNumber?: string, extraPlayers?: string[]) => 
+    api.post<ApiResponse<{ session: Session }>>('/sessions/start', { tableId, customerId, customerName, phoneNumber, extraPlayers }),
   pause: (id: string) => api.patch<ApiResponse<{ session: Session }>>(`/sessions/${id}/pause`),
   resume: (id: string) => api.patch<ApiResponse<{ session: Session }>>(`/sessions/${id}/resume`),
   extend: (id: string, minutes: number) => api.patch<ApiResponse<{ session: Session }>>(`/sessions/${id}/extend`, { minutes }),

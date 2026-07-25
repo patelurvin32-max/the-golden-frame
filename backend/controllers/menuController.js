@@ -3,6 +3,7 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ROLES } = require('../config/constants');
 const mongoose = require('mongoose');
+const { syncTablesWithMenuItems } = require('../utils/tableSync');
 
 // GET /api/menu
 exports.getMenuItems = asyncHandler(async (req, res) => {
@@ -90,6 +91,7 @@ exports.getMenuCategories = asyncHandler(async (req, res) => {
     _id: cat._id,
     name: cat.name,
     status: cat.status,
+    isGameTable: cat.isGameTable || false,
     totalItems: countMap.get(cat._id.toString()) || 0,
     createdAt: cat.createdAt,
     updatedAt: cat.updatedAt,
@@ -108,7 +110,10 @@ exports.createMenuCategory = asyncHandler(async (req, res, next) => {
     return next(new AppError('Category with this name already exists.', 400));
   }
 
-  const category = await MenuCategory.create({ name: name.trim(), status: status || 'Active' });
+  const category = await MenuCategory.create({
+    name: name.trim(),
+    status: status || 'Active'
+  });
   res.status(201).json({ success: true, data: { category } });
 });
 
@@ -142,14 +147,15 @@ exports.updateMenuCategory = asyncHandler(async (req, res, next) => {
 exports.deleteMenuCategory = asyncHandler(async (req, res, next) => {
   const categoryId = req.params.id;
 
+  const category = await MenuCategory.findById(categoryId);
+  if (!category) return next(new AppError('Category not found.', 404));
+
   const itemsCount = await MenuItem.countDocuments({ category: categoryId, status: 'Active' });
   if (itemsCount > 0) {
     return next(new AppError('This category contains menu items. Please move or delete them before deleting this category.', 400));
   }
 
-  const category = await MenuCategory.findByIdAndDelete(categoryId);
-  if (!category) return next(new AppError('Category not found.', 404));
-
+  await MenuCategory.findByIdAndDelete(categoryId);
   res.status(200).json({ success: true, message: 'Category deleted successfully.' });
 });
 
@@ -163,8 +169,6 @@ exports.getMenuItem = asyncHandler(async (req, res, next) => {
 // POST /api/menu
 exports.createMenuItem = asyncHandler(async (req, res, next) => {
   const { name, category, price, halfPrice, fullPrice, description, availability, status, branch } = req.body;
-
-  console.log('Create menu item - User role:', req.user.role, 'User branches:', req.user.branches, 'Request branch:', branch);
 
   // Validate required fields
   if (!name || !name.trim()) return next(new AppError('Item name is required.', 400));
@@ -181,12 +185,10 @@ exports.createMenuItem = asyncHandler(async (req, res, next) => {
   let finalBranch = branch;
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
     finalBranch = req.user.branches[0];
-    console.log('Auto-assigned branch for non-super admin:', finalBranch);
   }
 
   if (!finalBranch) return next(new AppError('Branch is required.', 400));
 
-  console.log('Creating menu item with branch:', finalBranch);
   const item = await MenuItem.create({
     name: name.trim(),
     category,
@@ -199,7 +201,6 @@ exports.createMenuItem = asyncHandler(async (req, res, next) => {
     branch: finalBranch
   });
 
-  console.log('Created menu item:', item._id, 'with branch:', item.branch);
   res.status(201).json({ success: true, data: { item } });
 });
 
@@ -207,11 +208,11 @@ exports.createMenuItem = asyncHandler(async (req, res, next) => {
 exports.updateMenuItem = asyncHandler(async (req, res, next) => {
   const { name, category, price, halfPrice, fullPrice, description, availability, status } = req.body;
 
-  const item = await MenuItem.findById(req.params.id);
+  const item = await MenuItem.findById(req.params.id).populate('category');
   if (!item) return next(new AppError('Item not found.', 404));
 
   // If category is being changed, validate it's active
-  if (category && category !== item.category.toString()) {
+  if (category && category !== item.category._id.toString()) {
     const categoryDoc = await MenuCategory.findById(category);
     if (!categoryDoc) return next(new AppError('Category not found.', 400));
     if (categoryDoc.status !== 'Active') return next(new AppError('Cannot assign items to inactive categories.', 400));
@@ -220,16 +221,6 @@ exports.updateMenuItem = asyncHandler(async (req, res, next) => {
   // Validate price if provided
   if (price !== undefined && price !== null && price !== '') {
     if (isNaN(price) || Number(price) < 0) return next(new AppError('Price must be a valid number.', 400));
-  }
-
-  // Validate halfPrice if provided
-  if (halfPrice !== undefined && halfPrice !== null && halfPrice !== '') {
-    if (isNaN(halfPrice) || Number(halfPrice) < 0) return next(new AppError('Half price must be a valid number.', 400));
-  }
-
-  // Validate fullPrice if provided
-  if (fullPrice !== undefined && fullPrice !== null && fullPrice !== '') {
-    if (isNaN(fullPrice) || Number(fullPrice) < 0) return next(new AppError('Full price must be a valid number.', 400));
   }
 
   const updateData = {};
@@ -248,7 +239,9 @@ exports.updateMenuItem = asyncHandler(async (req, res, next) => {
 
 // DELETE /api/menu/:id
 exports.deleteMenuItem = asyncHandler(async (req, res, next) => {
-  const item = await MenuItem.findByIdAndUpdate(req.params.id, { status: 'Inactive' }, { new: true });
+  const item = await MenuItem.findById(req.params.id).populate('category');
   if (!item) return next(new AppError('Item not found.', 404));
+
+  await MenuItem.findByIdAndUpdate(req.params.id, { status: 'Inactive' }, { new: true });
   res.status(200).json({ success: true, message: 'Item deleted successfully.' });
 });

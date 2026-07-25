@@ -9,6 +9,7 @@ const router = express.Router();
 router.use(protect, requirePermission('tables:operate'));
 
 router.get('/live', sessionController.getLiveSessions);
+router.get('/:id', sessionController.getSession);
 router.post('/start', [body('tableId').isMongoId()], validate, sessionController.startSession);
 router.patch('/:id/pause', sessionController.pauseSession);
 router.patch('/:id/resume', sessionController.resumeSession);

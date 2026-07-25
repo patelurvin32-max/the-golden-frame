@@ -123,45 +123,26 @@ const seedDefaults = async () => {
     }
   }
 
-  const starterTables = [
-    { name: 'Pool 1', type: 'pool', hourlyRate: 300 },
-    { name: 'Snooker 1', type: 'snooker', hourlyRate: 400 },
-    { name: 'PS5 1', type: 'ps5', hourlyRate: 200 },
-  ];
-
-  const seededBranches = await Branch.find({ name: { $in: DEFAULT_BRANCHES } });
-  for (const branch of seededBranches) {
-    for (const tableDef of starterTables) {
-      const tableExists = await Table.findOne({ branch: branch._id, name: tableDef.name });
-      if (tableExists) continue;
-
-      const table = await Table.create({
-        ...tableDef,
-        branch: branch._id,
-      });
-
-      table.qrCode = await generateTableQRCode(table._id);
-      await table.save();
-
-      console.log(`🎱 Table created: ${table.name} @ ${branch.name}`);
-    }
-  }
-
   // Super admin account (always recreated for local dev)
   const adminEmail = process.env.SUPER_ADMIN_EMAIL || 'admin@thegoldenframe.app';
   const adminPassword = process.env.SUPER_ADMIN_PASSWORD || 'Admin@123456';
   
-  // Delete existing admin to ensure clean password reset
-  await User.deleteOne({ email: adminEmail });
-  
-  // Create new admin user - pre-save hook will hash the password
-  await User.create({
-    name: 'Super Admin',
-    email: adminEmail,
-    password: adminPassword,  // Plain text - pre-save hook will hash it
-    role: ROLES.SUPER_ADMIN,
-    isActive: true,
-  });
+  const adminUser = await User.findOne({ email: adminEmail });
+  if (adminUser) {
+    adminUser.name = 'Super Admin';
+    adminUser.password = adminPassword;
+    adminUser.role = ROLES.SUPER_ADMIN;
+    adminUser.isActive = true;
+    await adminUser.save();
+  } else {
+    await User.create({
+      name: 'Super Admin',
+      email: adminEmail,
+      password: adminPassword,
+      role: ROLES.SUPER_ADMIN,
+      isActive: true,
+    });
+  }
   console.log(`👑 Super admin recreated: ${adminEmail}`);
 
   // Seed default categories

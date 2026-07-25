@@ -10,7 +10,7 @@ const customerSchema = new mongoose.Schema(
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     visits: { type: Number, default: 0 },
     totalSpending: { type: Number, default: 0 },
-    favoriteGame: { type: String, enum: ['pool', 'snooker', 'ps5', null], default: null },
+    favoriteGame: { type: String, default: null },
     membership: {
       tier: { type: String, enum: [...MEMBERSHIP_TIERS, null], default: null },
       startDate: { type: Date },

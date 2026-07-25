@@ -1,7 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const { protect, restrictTo, requirePermission } = require('../middleware/auth');
-const { ROLES, TABLE_TYPES } = require('../config/constants');
+const { ROLES } = require('../config/constants');
 const validate = require('../middleware/validate');
 const tableController = require('../controllers/tableController');
 
@@ -17,7 +17,7 @@ router
     [
       body('name').notEmpty(),
       body('branch').isMongoId(),
-      body('type').isIn(TABLE_TYPES),
+      body('type').notEmpty(),
       body('hourlyRate').isFloat({ min: 0 }),
     ],
     validate,

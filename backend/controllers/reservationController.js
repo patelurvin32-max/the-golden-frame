@@ -19,11 +19,18 @@ const buildFilter = (query, user) => {
 
   if (query.dateFrom || query.dateTo) {
     filter.reservationDate = {};
-    if (query.dateFrom) filter.reservationDate.$gte = new Date(query.dateFrom);
-    if (query.dateTo) {
+    if (query.dateFrom && query.dateTo) {
+      // Range filter: both dateFrom and dateTo provided
+      filter.reservationDate.$gte = new Date(query.dateFrom);
       const end = new Date(query.dateTo);
       end.setHours(23, 59, 59, 999);
       filter.reservationDate.$lte = end;
+    } else if (query.dateFrom) {
+      // Single date filter: only dateFrom provided, filter for that specific date
+      const d = new Date(query.dateFrom);
+      const next = new Date(d);
+      next.setDate(d.getDate() + 1);
+      filter.reservationDate = { $gte: d, $lt: next };
     }
   } else if (query.date) {
     const d = new Date(query.date);
@@ -58,8 +65,8 @@ const buildSort = (sortBy, sortOrder) => {
 exports.getReservations = asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const pageSize = Math.min(100, Math.max(5, parseInt(req.query.pageSize, 10) || 10));
-  const sortBy = req.query.sortBy || 'reservationDate';
-  const sortOrder = req.query.sortOrder || 'asc';
+  const sortBy = req.query.sortBy || 'createdAt';
+  const sortOrder = req.query.sortOrder || 'desc';
 
   const filter = buildFilter(req.query, req.user);
   const sort = buildSort(sortBy, sortOrder);
@@ -195,6 +202,12 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
   }
 
   let finalTable = table;
+  if (!finalTable && menuItemId) {
+    const matchedTable = await Table.findOne({ menuItemId, branch: finalBranch, isActive: true });
+    if (matchedTable) {
+      finalTable = matchedTable._id;
+    }
+  }
   if (!finalTable) {
     finalTable = await getFirstAvailableTable({ branch: finalBranch, reservationDate, reservationTime, durationMinutes });
     if (!finalTable) return next(new AppError('No available table for this reservation slot.', 409));
@@ -252,15 +265,27 @@ exports.updateReservation = asyncHandler(async (req, res, next) => {
   const reservation = await Reservation.findById(req.params.id);
   if (!reservation) return next(new AppError('Reservation not found.', 404));
 
-  const { table, reservationDate, reservationTime, durationMinutes } = req.body;
-  const slotChanging = (table && table !== reservation.table.toString())
+  const { table, reservationDate, reservationTime, durationMinutes, menuItemId } = req.body;
+
+  let targetTable = table;
+  if (!targetTable && menuItemId) {
+    const matchedTable = await Table.findOne({ menuItemId, branch: reservation.branch, isActive: true });
+    if (matchedTable) {
+      targetTable = matchedTable._id;
+    }
+  }
+  if (targetTable) {
+    req.body.table = targetTable;
+  }
+
+  const slotChanging = (req.body.table && req.body.table.toString() !== reservation.table.toString())
     || (reservationDate && new Date(reservationDate).toDateString() !== reservation.reservationDate.toDateString())
     || (reservationTime && reservationTime !== reservation.reservationTime);
 
   if (slotChanging) {
     const clash = await checkDoubleBooking({
       branch: reservation.branch,
-      table: table || reservation.table,
+      table: req.body.table || reservation.table,
       reservationDate: reservationDate || reservation.reservationDate,
       reservationTime: reservationTime || reservation.reservationTime,
       durationMinutes: durationMinutes || reservation.durationMinutes,

@@ -46,7 +46,7 @@ const paymentSchema = new mongoose.Schema(
     // For mixed payments, breakdown by sub-method
     breakdown: [
       {
-        method: { type: String, enum: ['cash', 'upi'] },
+        method: { type: String, enum: ['cash', 'upi', 'wallet', 'card', 'mixed'] },
         amount: { type: Number },
       },
     ],

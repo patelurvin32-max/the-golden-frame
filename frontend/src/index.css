@@ -62,32 +62,46 @@
   .animate-slide-up { animation: slideUp 0.3s ease-out; }
 }
 
-/* Fix datetime-local calendar icon alignment */
+/* Light mode picker icon styling */
+input[type="date"],
+input[type="time"],
 input[type="datetime-local"] {
-  padding-right: 3rem !important;
-  border-top-right-radius: 0.25rem !important;
-  border-bottom-right-radius: 0.25rem !important;
+  color-scheme: light;
 }
 
-/* Fix date input calendar icon alignment */
-input[type="date"] {
-  padding-right: 3rem !important;
-  border-top-right-radius: 0.25rem !important;
-  border-bottom-right-radius: 0.25rem !important;
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.7;
+  filter: brightness(0);
 }
 
-/* Ensure calendar picker icon is visible in dark theme */
-input[type="date"]::-webkit-calendar-picker-indicator {
-  filter: invert(1);
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="time"]::-webkit-calendar-picker-indicator:hover,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
   opacity: 1;
+}
+
+/* Dark mode picker icon styling: force pure bright white (#ffffff) icon */
+.dark input[type="date"],
+.dark input[type="time"],
+.dark input[type="datetime-local"] {
+  color-scheme: dark;
+}
+
+.dark input[type="date"]::-webkit-calendar-picker-indicator,
+.dark input[type="time"]::-webkit-calendar-picker-indicator,
+.dark input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: brightness(0) invert(1) !important;
+  opacity: 0.95;
   cursor: pointer;
 }
 
-/* Fix time input clock icon alignment */
-input[type="time"] {
-  padding-right: 3rem !important;
-  border-top-right-radius: 0.25rem !important;
-  border-bottom-right-radius: 0.25rem !important;
+.dark input[type="date"]::-webkit-calendar-picker-indicator:hover,
+.dark input[type="time"]::-webkit-calendar-picker-indicator:hover,
+.dark input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
 }
 
 /* Remove number input spinner (up/down arrows) */
@@ -99,6 +113,7 @@ input[type="number"]::-webkit-outer-spin-button {
 
 input[type="number"] {
   -moz-appearance: textfield;
+  appearance: textfield;
 }
 
 @keyframes slideUp {
