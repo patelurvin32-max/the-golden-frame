@@ -176,7 +176,13 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   let walletAmount = parseCurrencyValue(req.body.walletAmount) || 0;
   const amountReceived = parseCurrencyValue(req.body.amountReceived) || 0;
   const paymentStatus = req.body.paymentStatus || 'unpaid';
-  const paymentMethod = req.body.paymentMethod || 'cash';
+  const paymentMethod = (paymentStatus === 'unpaid' && (!req.body.paymentMethod || req.body.paymentMethod === '')) 
+    ? null 
+    : req.body.paymentMethod;
+  
+  if ((paymentStatus === 'paid' || paymentStatus === 'partial') && !paymentMethod) {
+    return next(new AppError('Payment Method is required', 400));
+  }
   
   // Calculate total paid from individual payment methods
   let totalPaid = cashAmount + onlineAmount + walletAmount;
@@ -518,9 +524,16 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
 
 // PATCH /api/customers/:id
 exports.updateCustomer = asyncHandler(async (req, res, next) => {
-  // Get the existing order to check if menuItemId is changing
   const existingOrder = await Order.findById(req.params.id);
   if (!existingOrder) return next(new AppError('Order not found.', 404));
+
+  const targetPaymentStatus = req.body.paymentStatus || existingOrder.paymentStatus;
+  if ((targetPaymentStatus === 'paid' || targetPaymentStatus === 'partial') && (req.body.paymentMethod === '' || (!req.body.paymentMethod && !existingOrder.paymentMethod))) {
+    return next(new AppError('Payment Method is required', 400));
+  }
+  if (targetPaymentStatus === 'unpaid' && (!req.body.paymentMethod || req.body.paymentMethod === '')) {
+    req.body.paymentMethod = null;
+  }
 
   // Validate mixed payment amounts if payment method is mixed
   if (req.body.paymentMethod === 'mixed') {

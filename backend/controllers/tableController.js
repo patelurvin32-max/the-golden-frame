@@ -21,7 +21,14 @@ exports.getTables = asyncHandler(async (req, res) => {
 
   const tables = await Table.find(filter)
     .populate('branch', 'name code')
-    .populate('currentSession')
+    .populate({
+      path: 'currentSession',
+      populate: [
+        { path: 'menuCategoryId', select: 'name' },
+        { path: 'menuItemId', select: 'name price' },
+        { path: 'customer', select: 'name phone' }
+      ]
+    })
     .sort('name');
 
   res.status(200).json({ success: true, results: tables.length, data: { tables } });
@@ -31,7 +38,16 @@ exports.getTables = asyncHandler(async (req, res) => {
 exports.getTable = asyncHandler(async (req, res, next) => {
   await syncTablesWithMenuItems();
 
-  const table = await Table.findById(req.params.id).populate('branch').populate('currentSession');
+  const table = await Table.findById(req.params.id)
+    .populate('branch')
+    .populate({
+      path: 'currentSession',
+      populate: [
+        { path: 'menuCategoryId', select: 'name' },
+        { path: 'menuItemId', select: 'name price' },
+        { path: 'customer', select: 'name phone' }
+      ]
+    });
   if (!table) return next(new AppError('Table not found.', 404));
   res.status(200).json({ success: true, data: { table } });
 });

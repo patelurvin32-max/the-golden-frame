@@ -40,7 +40,7 @@ const emptyForm: PaymentFormValues & {
   startTime: '',
   endTime: '',
   paymentStatus: 'unpaid',
-  paymentMethod: 'cash',
+  paymentMethod: '',
   cashAmount: '',
   onlineAmount: '',
   walletAmount: '',
@@ -366,7 +366,10 @@ export default function CustomersPage() {
     if (!isProductCategory && !form.startTime) { toast.error('Start Time is required'); return; }
     if (!form.billAmount) { toast.error('Total Amount is required'); return; }
     if (!form.paymentStatus) { toast.error('Payment Status is required'); return; }
-    if (!form.paymentMethod) { toast.error('Payment Method is required'); return; }
+    if ((form.paymentStatus === 'paid' || form.paymentStatus === 'partial') && !form.paymentMethod) {
+      toast.error('Payment Method is required');
+      return;
+    }
 
     const billAmount = parseCurrencyValue(form.billAmount);
     
@@ -450,10 +453,13 @@ export default function CustomersPage() {
       }
     }
 
+    const paymentMethodToSave = (form.paymentStatus === 'unpaid' && !form.paymentMethod) ? null : form.paymentMethod;
+
     const payload = {
       ...form,
       branch,
       billAmount,
+      paymentMethod: paymentMethodToSave,
       amountReceived: totalPaid,
       cashAmount,
       onlineAmount,
@@ -514,7 +520,7 @@ export default function CustomersPage() {
       startTime: c.startTime ? new Date(c.startTime).toISOString().slice(0, 16) : '',
       endTime: c.endTime ? new Date(c.endTime).toISOString().slice(0, 16) : '',
       paymentStatus: c.paymentStatus,
-      paymentMethod: c.paymentMethod as 'cash' | 'upi' | 'mixed' | 'wallet',
+      paymentMethod: (c.paymentMethod as any) || '',
       cashAmount: (c as any).cashAmount ? String((c as any).cashAmount) : '',
       onlineAmount: (c as any).onlineAmount ? String((c as any).onlineAmount) : '',
       walletAmount: (c as any).walletAmount ? String((c as any).walletAmount) : '',

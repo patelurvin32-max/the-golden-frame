@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
-import { tableService, sessionService, customerService, billingService } from '@/services';
+import { tableService, sessionService, customerService, billingService, menuService } from '@/services';
 import { useAppStore } from '@/store';
 import { useSocket } from '@/hooks/useSocket';
-import type { Table, Customer } from '@/types';
+import type { Table, Customer, MenuCategoryDoc, MenuItem, SessionItem } from '@/types';
 import {
   Button, Card, CardContent, Badge, Modal, Input, Label,
   Select, EmptyState, Skeleton, PageHeader, useToast
@@ -129,6 +129,15 @@ function TableCard({ table, onAction }: { table: Table; onAction: (action: strin
                   👤 {session.customerName || session.customer?.name}
                 </p>
               )}
+              {session.addedItems && session.addedItems.length > 0 ? (
+                <p className="text-xs text-muted-foreground truncate">
+                  🛍️ Added: {session.addedItems.map((i: any) => `${i.itemName}${i.quantity > 1 ? ` (×${i.quantity})` : ''}`).join(', ')}
+                </p>
+              ) : (session.menuItem || session.menuItemId?.name || session.menuCategory) ? (
+                <p className="text-xs text-muted-foreground truncate">
+                  🏷️ {session.menuCategory || (typeof session.menuCategoryId === 'object' ? session.menuCategoryId?.name : '') ? `${session.menuCategory || (typeof session.menuCategoryId === 'object' ? session.menuCategoryId?.name : '')} · ` : ''}{session.menuItem || (typeof session.menuItemId === 'object' ? session.menuItemId?.name : '')}
+                </p>
+              ) : null}
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-2xl font-bold font-mono text-foreground">{formatElapsedTime(seconds)}</p>
@@ -159,6 +168,9 @@ function TableCard({ table, onAction }: { table: Table; onAction: (action: strin
                 <Button size="sm" variant="outline" className="flex-1" onClick={() => onAction('extend', table)}>
                   +
                 </Button>
+                <Button size="sm" variant="outline" className="flex-1" onClick={() => onAction('edit', table)}>
+                  Edit
+                </Button>
                 <Button size="sm" variant="destructive" className="flex-1" onClick={() => onAction('stop', table)}>
                   ■ Stop
                 </Button>
@@ -168,6 +180,9 @@ function TableCard({ table, onAction }: { table: Table; onAction: (action: strin
               <>
                 <Button size="sm" className="flex-1" onClick={() => onAction('resume', table)}>
                   ▶ Resume
+                </Button>
+                <Button size="sm" variant="outline" className="flex-1" onClick={() => onAction('edit', table)}>
+                  Edit
                 </Button>
                 <Button size="sm" variant="destructive" className="flex-1" onClick={() => onAction('stop', table)}>
                   ■ Stop
@@ -197,11 +212,74 @@ export default function TablesPage() {
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
   const [activeTable, setActiveTable] = useState<Table | null>(null);
-  const [modal, setModal] = useState<'start' | 'extend' | 'stop' | null>(null);
+  const [modal, setModal] = useState<'start' | 'extend' | 'stop' | 'editSession' | null>(null);
+  const [editForm, setEditForm] = useState<{ menuCategoryId: string; menuItemId: string }>({
+    menuCategoryId: '',
+    menuItemId: '',
+  });
   const [startForm, setStartForm] = useState({ customerId: '', customerSearch: '', customerName: '', phoneNumber: '', extraPlayers: '' });
   const [extendMinutes, setExtendMinutes] = useState(30);
   const [customerResults, setCustomerResults] = useState<Customer[]>([]);
   const [phoneError, setPhoneError] = useState('');
+
+  // Fetch menu categories for Edit Live Session modal
+  const { data: categoriesData } = useQuery({
+    queryKey: ['menu-categories'],
+    queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+  });
+
+  const categories: MenuCategoryDoc[] = Array.isArray((categoriesData as any)?.data?.categories)
+    ? (categoriesData as any).data.categories
+    : [];
+
+  const allowedEditCategories = useMemo(() => {
+    const allowedNames = ['beverage', 'beverages', 'accessory', 'accessories'];
+    return categories.filter((cat) => allowedNames.includes(cat.name?.toLowerCase().trim()));
+  }, [categories]);
+
+  const branchToFetch = selectedBranch || '';
+
+  const { data: editMenuItemsData, isFetching: isEditMenuItemsLoading } = useQuery({
+    queryKey: ['edit-menu-items', editForm.menuCategoryId, branchToFetch],
+    queryFn: () => menuService.getAll({ category: editForm.menuCategoryId, branch: branchToFetch, limit: '1000' }).then((r) => r.data),
+    enabled: !!editForm.menuCategoryId && modal === 'editSession',
+  });
+
+  const editMenuItems: MenuItem[] = Array.isArray((editMenuItemsData as any)?.data?.items)
+    ? (editMenuItemsData as any).data.items
+    : [];
+
+  const updateSessionMenuMutation = useMutation({
+    mutationFn: (d: { sessionId: string; menuCategoryId: string; menuItemId: string }) =>
+      sessionService.updateMenu(d.sessionId, d.menuCategoryId, d.menuItemId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tables'] });
+      toast.success('Live session menu updated!');
+      setModal(null);
+      setActiveTable(null);
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to update live session menu'),
+  });
+
+  const handleUpdateSessionMenu = () => {
+    if (!activeTable || !activeTable.currentSession) return;
+    if (!editForm.menuCategoryId) {
+      toast.error('Menu Category is required');
+      return;
+    }
+    if (!editForm.menuItemId) {
+      toast.error('Menu Item is required');
+      return;
+    }
+    const session = activeTable.currentSession as any;
+    updateSessionMenuMutation.mutate({
+      sessionId: session._id,
+      menuCategoryId: editForm.menuCategoryId,
+      menuItemId: editForm.menuItemId,
+    });
+  };
 
   const emptyStopForm: PaymentFormValues & { notes: string } = {
     paymentStatus: 'paid',
@@ -299,13 +377,31 @@ export default function TablesPage() {
     else if (action === 'pause') { if (sessionId) pauseMutation.mutate(sessionId); }
     else if (action === 'resume') { if (sessionId) resumeMutation.mutate(sessionId); }
     else if (action === 'extend') { setModal('extend'); }
+    else if (action === 'edit') {
+      if (!session) return;
+      const catId = typeof session.menuCategoryId === 'object' && session.menuCategoryId !== null
+        ? session.menuCategoryId._id
+        : session.menuCategoryId || '';
+      const itemId = typeof session.menuItemId === 'object' && session.menuItemId !== null
+        ? session.menuItemId._id
+        : session.menuItemId || '';
+      setEditForm({
+        menuCategoryId: catId,
+        menuItemId: itemId,
+      });
+      setModal('editSession');
+    }
     else if (action === 'setAvailable') { updateTableMutation.mutate({ id: table._id, status: 'available' }); }
     else if (action === 'stop') {
       if (!session) return;
       const elapsedSecs = getElapsedSeconds(session.startTime, session.pauses || []);
       const billableMins = Math.ceil(elapsedSecs / 60) + (session.extendedMinutes || 0);
       const hourlyRate = session.hourlyRate || table.hourlyRate || 0;
-      const computedBillAmount = Math.round((billableMins / 60) * hourlyRate);
+      const computedGameAmount = Math.round((billableMins / 60) * hourlyRate);
+
+      const addedItems: SessionItem[] = session.addedItems || [];
+      const addedItemsTotal = addedItems.reduce((sum, item) => sum + (item.totalAmount || 0), 0);
+      const computedGrandTotal = computedGameAmount + addedItemsTotal;
 
       setStopForm({
         paymentStatus: 'paid',
@@ -315,7 +411,7 @@ export default function TablesPage() {
         walletAmount: '',
         amountReceived: '',
         pendingPaymentAmount: '',
-        billAmount: String(computedBillAmount),
+        billAmount: String(computedGrandTotal),
         addToWallet: false,
         extraAmount: '0',
         walletBalance: (session.customer as any)?.walletBalance || 0,
@@ -580,6 +676,74 @@ export default function TablesPage() {
               <span className="text-muted-foreground">Duration Played</span>
               <strong className="text-foreground font-mono">{formatElapsedTime(getElapsedSeconds((activeTable?.currentSession as any)?.startTime, (activeTable?.currentSession as any)?.pauses || []))}</strong>
             </div>
+            <div className="flex justify-between items-center pt-1 border-t border-blue-500/20">
+              <span className="text-muted-foreground">Game / Table Amount</span>
+              <strong className="text-foreground font-semibold">
+                {formatCurrency(Math.round((Math.ceil(getElapsedSeconds((activeTable?.currentSession as any)?.startTime, (activeTable?.currentSession as any)?.pauses || []) / 60) + ((activeTable?.currentSession as any)?.extendedMinutes || 0)) / 60 * ((activeTable?.currentSession as any)?.hourlyRate || activeTable?.hourlyRate || 0)))}
+              </strong>
+            </div>
+          </div>
+
+          {/* Added Items Section (Read-Only) */}
+          <div className="p-3 rounded-xl bg-muted/30 border border-border space-y-2.5">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Added Items</h4>
+              {((activeTable?.currentSession as any)?.addedItems || []).length > 0 && (
+                <span className="text-xs font-semibold text-emerald-400">
+                  Subtotal: {formatCurrency(((activeTable?.currentSession as any)?.addedItems || []).reduce((sum: number, item: any) => sum + (item.totalAmount || 0), 0))}
+                </span>
+              )}
+            </div>
+
+            {((activeTable?.currentSession as any)?.addedItems || []).length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">No beverages or accessories added during session.</p>
+            ) : (
+              <div className="space-y-2">
+                {Object.entries(
+                  ((activeTable?.currentSession as any)?.addedItems || []).reduce((groups: Record<string, any[]>, item: any) => {
+                    const cat = item.categoryName || 'Other';
+                    if (!groups[cat]) groups[cat] = [];
+                    groups[cat].push(item);
+                    return groups;
+                  }, {})
+                ).map(([categoryName, items]: [string, any]) => (
+                  <div key={categoryName} className="space-y-1">
+                    <p className="text-xs font-bold text-primary tracking-wide uppercase">{categoryName}</p>
+                    <div className="space-y-1 pl-2">
+                      {items.map((item: any, idx: number) => (
+                        <div key={idx} className="flex justify-between items-center text-xs">
+                          <span className="text-foreground">
+                            • {item.itemName} <span className="text-muted-foreground font-mono">× {item.quantity}</span>
+                          </span>
+                          <span className="text-muted-foreground font-mono">
+                            {item.quantity > 1 ? `₹${item.unitPrice} each — ` : ''}
+                            <strong className="text-foreground font-semibold">{formatCurrency(item.totalAmount)}</strong>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Billing Calculation Breakdown */}
+          <div className="p-3 rounded-xl bg-primary/10 border border-primary/20 space-y-1 text-xs">
+            <div className="flex justify-between items-center">
+              <span className="text-muted-foreground">Game Amount</span>
+              <span className="font-semibold">{formatCurrency(Math.round((Math.ceil(getElapsedSeconds((activeTable?.currentSession as any)?.startTime, (activeTable?.currentSession as any)?.pauses || []) / 60) + ((activeTable?.currentSession as any)?.extendedMinutes || 0)) / 60 * ((activeTable?.currentSession as any)?.hourlyRate || activeTable?.hourlyRate || 0)))}</span>
+            </div>
+            {((activeTable?.currentSession as any)?.addedItems || []).length > 0 && (
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">Added Items Total</span>
+                <span className="font-semibold text-emerald-400">{formatCurrency(((activeTable?.currentSession as any)?.addedItems || []).reduce((sum: number, item: any) => sum + (item.totalAmount || 0), 0))}</span>
+              </div>
+            )}
+            <div className="flex justify-between items-center pt-1.5 border-t border-primary/20 text-sm font-bold">
+              <span>Final Bill Amount</span>
+              <span className="text-primary font-mono text-base">{formatCurrency(Number(stopForm.billAmount) || 0)}</span>
+            </div>
           </div>
 
           {/* Exact Reused PaymentForm Component from Add New Customer (Editable prefilled Bill Amount) */}
@@ -604,6 +768,55 @@ export default function TablesPage() {
             <Button variant="outline" className="flex-1" onClick={() => setModal(null)}>Cancel</Button>
             <Button className="flex-1" loading={stopLoading} onClick={handleCompleteStopAndPay}>
               Complete Stop & Pay
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Edit Live Session Modal */}
+      <Modal open={modal === 'editSession'} onClose={() => setModal(null)} title={`Edit Live Session — ${activeTable?.name}`} size="md">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label>Menu Category *</Label>
+            <Select
+              value={editForm.menuCategoryId}
+              onChange={(e) => setEditForm((f) => ({ ...f, menuCategoryId: e.target.value, menuItemId: '' }))}
+            >
+              <option value="">Select Menu Category</option>
+              {allowedEditCategories.map((cat) => (
+                <option key={cat._id} value={cat._id}>
+                  {cat.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Menu Item *</Label>
+            <Select
+              value={editForm.menuItemId}
+              onChange={(e) => setEditForm((f) => ({ ...f, menuItemId: e.target.value }))}
+              disabled={!editForm.menuCategoryId || isEditMenuItemsLoading}
+            >
+              <option value="">{isEditMenuItemsLoading ? 'Loading items...' : 'Select Menu Item'}</option>
+              {editMenuItems.map((item) => (
+                <option key={item._id} value={item._id}>
+                  {item.name} {item.price ? `(${formatCurrency(item.price)})` : ''}
+                </option>
+              ))}
+            </Select>
+          </div>
+
+          <div className="flex gap-2 pt-2">
+            <Button variant="outline" className="flex-1" onClick={() => setModal(null)}>
+              Cancel
+            </Button>
+            <Button
+              className="flex-1"
+              loading={updateSessionMenuMutation.isPending}
+              onClick={handleUpdateSessionMenu}
+            >
+              Update
             </Button>
           </div>
         </div>

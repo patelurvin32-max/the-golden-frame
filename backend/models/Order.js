@@ -12,7 +12,7 @@ const orderSchema = new mongoose.Schema(
     startTime: { type: Date },
     endTime: { type: Date },
     paymentStatus: { type: String, enum: ['paid', 'partial', 'unpaid', 'refunded'], required: true },
-    paymentMethod: { type: String, enum: PAYMENT_METHODS, required: true },
+    paymentMethod: { type: String, enum: [...PAYMENT_METHODS, 'n/a', 'N/A', null, ''], default: null, required: false },
     cashAmount: { type: Number, default: 0 },
     onlineAmount: { type: Number, default: 0 },
     walletAmount: { type: Number, default: 0 },

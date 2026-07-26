@@ -10,8 +10,8 @@ const NAV_ITEMS = [
   { path: '/billing', label: 'Billing', icon: '🧾', roles: ['super_admin', 'admin', 'branch_manager', 'staff', 'cashier'] },
   { path: '/reservations', label: 'Bookings', icon: '🗓️', roles: ['super_admin', 'admin', 'branch_manager', 'staff', 'cashier'] },
   { path: '/customers', label: 'Customers', icon: '👥', roles: ['super_admin', 'admin', 'branch_manager', 'staff', 'cashier'] },
-  { path: '/menu', label: 'Menu', icon: '🍽️', roles: ['super_admin', 'admin', 'branch_manager'], parent: 'master' },
-  { path: '/inventory', label: 'Inventory', icon: '📦', roles: ['super_admin', 'admin', 'branch_manager'] },
+  { path: '/menu', label: 'Menu', icon: '🎯', roles: ['super_admin', 'admin', 'branch_manager'], parent: 'master' },
+  { path: '/inventory', label: 'Inventory', icon: '📦', roles: ['super_admin', 'admin', 'branch_manager'], parent: 'master' },
   { path: '/pending-payments', label: 'Pending Payments', icon: '💳', roles: ['super_admin', 'admin', 'branch_manager', 'staff', 'cashier'] },
   { path: '/expenses', label: 'Expenses', icon: '💸', roles: ['super_admin', 'admin', 'branch_manager'] },
   { path: '/attendance', label: 'Attendance', icon: '✅', roles: ['super_admin', 'admin', 'branch_manager'] },
@@ -21,7 +21,7 @@ const NAV_ITEMS = [
   { path: '/branches', label: 'Branches', icon: '🏢', roles: ['super_admin'], parent: 'master' },
   { path: '/settings', label: 'Settings', icon: '⚙️', roles: ['super_admin'], parent: 'master' },
   { path: '/logs', label: 'Audit Logs', icon: '📋', roles: ['super_admin'], parent: 'master' },
-  { id: 'master', label: 'Master', icon: '⚙️', roles: ['super_admin'], isParent: true },
+  { id: 'master', label: 'Master', icon: '⚙️', roles: ['super_admin', 'admin', 'branch_manager'], isParent: true },
 ];
 
 export const Sidebar = () => {
@@ -35,9 +35,11 @@ export const Sidebar = () => {
   // Custom ordering for Staff role
   const staffOrder = ['customers', 'reservations', 'pending-payments', 'tables', 'billing', 'my-attendance'];
   // Custom ordering for Branch Manager role
-  const branchManagerOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'menu', 'inventory', 'users'];
+  const branchManagerOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'master'];
   // Custom ordering for Super Admin role
-  const superAdminOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'inventory', 'reports', 'master'];
+  const superAdminOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master'];
+  // Custom ordering for Master children
+  const masterChildOrder = ['menu', 'users', 'inventory', 'branches', 'settings', 'logs'];
 
   const orderedFiltered = role === 'staff'
     ? filtered.filter((item) => !item.isParent).sort((a, b) => {
@@ -47,21 +49,14 @@ export const Sidebar = () => {
         const indexB = staffOrder.indexOf(pathB || 'dashboard');
         return indexA - indexB;
       })
-    : role === 'branch_manager'
-    ? filtered.filter((item) => !item.isParent).sort((a, b) => {
-        const pathA = a.path?.replace('/', '') || '';
-        const pathB = b.path?.replace('/', '') || '';
-        const indexA = branchManagerOrder.indexOf(pathA || 'dashboard');
-        const indexB = branchManagerOrder.indexOf(pathB || 'dashboard');
-        return indexA - indexB;
-      })
-    : role === 'super_admin'
+    : (role === 'branch_manager' || role === 'admin' || role === 'super_admin')
     ? filtered.sort((a, b) => {
+        const orderMap = role === 'branch_manager' ? branchManagerOrder : superAdminOrder;
         const keyA = a.isParent ? a.id : a.path?.replace('/', '') || '';
         const keyB = b.isParent ? b.id : b.path?.replace('/', '') || '';
-        const indexA = superAdminOrder.indexOf(keyA || 'dashboard');
-        const indexB = superAdminOrder.indexOf(keyB || 'dashboard');
-        return indexA - indexB;
+        const indexA = orderMap.indexOf(keyA || 'dashboard');
+        const indexB = orderMap.indexOf(keyB || 'dashboard');
+        return (indexA === -1 ? 99 : indexA) - (indexB === -1 ? 99 : indexB);
       })
     : filtered.filter((item) => !item.isParent);
 
@@ -90,8 +85,15 @@ export const Sidebar = () => {
           <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
             {orderedFiltered.map((item) => {
               if (item.isParent) {
-                // Master parent menu
-                const children = orderedFiltered.filter((child) => child.parent === item.id);
+                const children = orderedFiltered
+                  .filter((child) => child.parent === item.id)
+                  .sort((a, b) => {
+                    const keyA = a.path?.replace('/', '') || '';
+                    const keyB = b.path?.replace('/', '') || '';
+                    const indexA = masterChildOrder.indexOf(keyA);
+                    const indexB = masterChildOrder.indexOf(keyB);
+                    return (indexA === -1 ? 99 : indexA) - (indexB === -1 ? 99 : indexB);
+                  });
                 return (
                   <div key={item.id}>
                     <button

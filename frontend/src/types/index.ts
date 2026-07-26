@@ -6,7 +6,7 @@ export type Role = 'super_admin' | 'admin' | 'branch_manager' | 'staff' | 'cashi
 export type TableType = string;
 export type TableStatus = 'available' | 'running' | 'reserved' | 'maintenance';
 export type SessionStatus = 'running' | 'paused' | 'completed' | 'cancelled';
-export type PaymentMethod = 'cash' | 'upi' | 'mixed' | 'wallet';
+export type PaymentMethod = 'cash' | 'upi' | 'mixed' | 'wallet' | '' | null;
 export type PaymentStatus = 'unpaid' | 'paid' | 'partial';
 export type MembershipTier = 'silver' | 'gold' | 'platinum';
 export type ExpenseCategory = 'rent' | 'electricity' | 'salary' | 'internet' | 'maintenance' | 'suppliers' | 'others';
@@ -55,6 +55,17 @@ export interface Table {
   currentSession?: Session;
 }
 
+export interface SessionItem {
+  _id?: string;
+  menuCategoryId?: string;
+  menuItemId?: string;
+  categoryName: string;
+  itemName: string;
+  quantity: number;
+  unitPrice: number;
+  totalAmount: number;
+}
+
 export interface Session {
   _id: string;
   table: Table;
@@ -70,6 +81,11 @@ export interface Session {
   billableMinutes: number;
   amount: number;
   bill?: string;
+  menuCategoryId?: string | { _id: string; name: string };
+  menuItemId?: string | { _id: string; name: string; price?: number };
+  menuCategory?: string;
+  menuItem?: string;
+  addedItems?: SessionItem[];
 }
 
 export interface Customer {
@@ -96,7 +112,7 @@ export interface Customer {
   startTime: string;
   endTime?: string;
   paymentStatus: 'paid' | 'unpaid' | 'refunded';
-  paymentMethod: 'cash' | 'upi' | 'mixed' | 'wallet';
+  paymentMethod?: PaymentMethod;
   numberOfPlayers?: number;
   billAmount: number;
   createdAt?: string;

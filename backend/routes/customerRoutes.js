@@ -34,8 +34,18 @@ router
         return true;
       }),
       body('paymentStatus').notEmpty().withMessage('Payment Status is required'),
-      body('paymentMethod').notEmpty().withMessage('Payment Method is required')
-        .isIn(['cash', 'upi', 'mixed']).withMessage('Invalid payment method'),
+      body('paymentMethod').custom((value, { req }) => {
+        const status = req.body.paymentStatus;
+        if (status === 'paid' || status === 'partial') {
+          if (!value) {
+            throw new Error('Payment Method is required');
+          }
+        }
+        if (value && !['cash', 'upi', 'mixed', 'wallet', 'n/a', 'N/A', ''].includes(value)) {
+          throw new Error('Invalid payment method');
+        }
+        return true;
+      }),
       body('billAmount')
         .notEmpty().withMessage('Total Amount is required')
         .custom((value) => {

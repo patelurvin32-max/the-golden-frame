@@ -9,7 +9,7 @@ const paymentHistorySchema = new mongoose.Schema(
     customerName: { type: String, required: true },
     customerPhone: { type: String, required: true },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
-    paymentMethod: { type: String, enum: PAYMENT_METHODS, required: true },
+    paymentMethod: { type: String, enum: [...PAYMENT_METHODS, 'n/a', 'N/A', null, ''], default: null, required: false },
     cashAmount: { type: Number, default: 0 },
     onlineAmount: { type: Number, default: 0 },
     walletAmount: { type: Number, default: 0 },

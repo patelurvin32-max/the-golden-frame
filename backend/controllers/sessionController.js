@@ -2,12 +2,20 @@ const mongoose = require('mongoose');
 const Session = require('../models/Session');
 const Table = require('../models/Table');
 const Customer = require('../models/Customer');
+const { MenuCategory, MenuItem } = require('../models/Operations');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { logActivity } = require('../services/activityLogService');
 
 const emitTableUpdate = async (req, table) => {
-  const populated = await Table.findById(table._id).populate('currentSession');
+  const populated = await Table.findById(table._id).populate({
+    path: 'currentSession',
+    populate: [
+      { path: 'menuCategoryId', select: 'name' },
+      { path: 'menuItemId', select: 'name price' },
+      { path: 'customer', select: 'name phone' }
+    ]
+  });
   req.app.get('io')?.to(`branch:${table.branch}`).emit('table:updated', populated);
 };
 
@@ -147,18 +155,29 @@ exports.stopSession = asyncHandler(async (req, res, next) => {
     { new: true }
   );
 
+  const addedItemsTotal = (session.addedItems || []).reduce((sum, item) => sum + (item.totalAmount || 0), 0);
+  const grandTotal = Math.round((session.amount + addedItemsTotal) * 100) / 100;
+
   await logActivity({
     userId: req.user._id,
     branchId: session.branch,
     action: 'session.stop',
     entity: 'Session',
     entityId: session._id,
-    description: `${req.user.name} stopped session on table ${table.name} — ₹${session.amount}`,
+    description: `${req.user.name} stopped session on table ${table.name} — ₹${grandTotal}`,
     ipAddress: req.ip,
   });
 
   await emitTableUpdate(req, table);
-  res.status(200).json({ success: true, data: { session } });
+  res.status(200).json({
+    success: true,
+    data: {
+      session,
+      addedItems: session.addedItems || [],
+      addedItemsTotal,
+      grandTotal,
+    }
+  });
 });
 
 // GET /api/sessions/:id
@@ -166,7 +185,9 @@ exports.getSession = asyncHandler(async (req, res, next) => {
   const session = await Session.findById(req.params.id)
     .populate('table', 'name type hourlyRate')
     .populate('customer', 'name phone')
-    .populate('startedBy', 'name');
+    .populate('startedBy', 'name')
+    .populate('menuCategoryId', 'name')
+    .populate('menuItemId', 'name price');
   if (!session) return next(new AppError('Session not found.', 404));
   res.status(200).json({ success: true, data: { session } });
 });
@@ -182,7 +203,68 @@ exports.getLiveSessions = asyncHandler(async (req, res) => {
   const sessions = await Session.find(filter)
     .populate('table', 'name type hourlyRate')
     .populate('customer', 'name phone')
-    .populate('startedBy', 'name');
+    .populate('startedBy', 'name')
+    .populate('menuCategoryId', 'name')
+    .populate('menuItemId', 'name price');
 
   res.status(200).json({ success: true, results: sessions.length, data: { sessions } });
+});
+
+// PATCH /api/sessions/:id/update-menu  { menuCategoryId, menuItemId, quantity }
+exports.updateSessionMenu = asyncHandler(async (req, res, next) => {
+  const { menuCategoryId, menuItemId, quantity = 1 } = req.body;
+  if (!menuCategoryId || !menuItemId) {
+    return next(new AppError('Menu Category and Menu Item are required.', 400));
+  }
+
+  const session = await Session.findById(req.params.id);
+  if (!session) return next(new AppError('Session not found.', 404));
+
+  const [menuCategoryDoc, menuItemDoc] = await Promise.all([
+    MenuCategory.findById(menuCategoryId),
+    MenuItem.findById(menuItemId)
+  ]);
+
+  if (!menuItemDoc) {
+    return next(new AppError('Selected Menu Item not found.', 404));
+  }
+
+  const categoryName = menuCategoryDoc?.name || 'Item';
+  const itemName = menuItemDoc.name;
+  const unitPrice = menuItemDoc.price || 0;
+  const qty = Number(quantity) || 1;
+
+  if (!session.addedItems) session.addedItems = [];
+
+  const existingIndex = session.addedItems.findIndex(
+    (item) => item.menuItemId?.toString() === menuItemId.toString()
+  );
+
+  if (existingIndex > -1) {
+    session.addedItems[existingIndex].quantity += qty;
+    session.addedItems[existingIndex].unitPrice = unitPrice;
+    session.addedItems[existingIndex].totalAmount = session.addedItems[existingIndex].quantity * unitPrice;
+  } else {
+    session.addedItems.push({
+      menuCategoryId,
+      menuItemId,
+      categoryName,
+      itemName,
+      quantity: qty,
+      unitPrice,
+      totalAmount: qty * unitPrice,
+    });
+  }
+
+  session.menuCategoryId = menuCategoryId;
+  session.menuItemId = menuItemId;
+  session.menuCategory = categoryName;
+  session.menuItem = itemName;
+
+  await session.save();
+
+  const table = await Table.findById(session.table);
+  await emitTableUpdate(req, table);
+
+  res.status(200).json({ success: true, data: { session } });
 });

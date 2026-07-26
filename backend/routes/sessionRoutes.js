@@ -15,6 +15,10 @@ router.patch('/:id/pause', sessionController.pauseSession);
 router.patch('/:id/resume', sessionController.resumeSession);
 router.patch('/:id/extend', [body('minutes').isInt({ min: 1 })], validate, sessionController.extendSession);
 router.patch('/:id/transfer', [body('customerId').isMongoId()], validate, sessionController.transferCustomer);
+router.patch('/:id/update-menu', [
+  body('menuCategoryId').isMongoId().withMessage('Menu Category is required'),
+  body('menuItemId').isMongoId().withMessage('Menu Item is required'),
+], validate, sessionController.updateSessionMenu);
 router.patch('/:id/stop', sessionController.stopSession);
 
 module.exports = router;

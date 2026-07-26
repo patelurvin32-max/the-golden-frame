@@ -398,7 +398,6 @@ function ViewModal({ res, onClose, onEdit, onStatusChange }: {
           { label: 'Branch',   value: res.branch?.name },
           { label: 'Category', value: typeof res.menuCategoryId === 'object' ? res.menuCategoryId?.name : res.table?.type },
           { label: 'Item',     value: typeof res.menuItemId === 'object' ? res.menuItemId?.name : res.table?.name },
-          { label: 'Table',    value: res.table?.name ? `${res.table.name} (${res.table.type || ''})` : null },
           { label: 'Date',     value: formatDate(res.reservationDate) },
           { label: 'Time',     value: res.reservationTime },
           { label: 'Duration', value: `${res.durationMinutes} min` },

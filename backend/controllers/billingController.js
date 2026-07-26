@@ -39,18 +39,37 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     if (!session) return next(new AppError('Session not found.', 404));
     if (session.status !== 'completed') return next(new AppError('Session must be stopped before billing.', 400));
 
-    // Use manual amount if provided, otherwise use calculated session amount
-    const sessionAmount = manualAmount !== undefined ? Number(manualAmount) : session.amount;
+    const addedItemsTotal = (session.addedItems || []).reduce((sum, item) => sum + (item.totalAmount || 0), 0);
+    const calculatedGrandTotal = session.amount + addedItemsTotal;
+
+    // Use manual amount if provided, otherwise use calculated grand total
+    const finalBillAmount = manualAmount !== undefined ? Number(manualAmount) : calculatedGrandTotal;
+    const sessionTimeAmount = manualAmount !== undefined ? Math.max(0, finalBillAmount - addedItemsTotal) : session.amount;
 
     const tableItem = {
       description: `${session.table?.type?.toUpperCase()} - ${session.table?.name} (${session.billableMinutes} min)`,
       quantity: 1,
-      unitPrice: sessionAmount,
-      total: sessionAmount,
+      unitPrice: sessionTimeAmount,
+      total: sessionTimeAmount,
       type: 'table_time',
     };
     items.push(tableItem);
-    subtotal += sessionAmount;
+    subtotal += sessionTimeAmount;
+
+    // Add session added items (beverages & accessories) to bill line items
+    if (session.addedItems && session.addedItems.length > 0) {
+      for (const addedItem of session.addedItems) {
+        items.push({
+          description: `${addedItem.categoryName} - ${addedItem.itemName}`,
+          quantity: addedItem.quantity,
+          unitPrice: addedItem.unitPrice,
+          total: addedItem.totalAmount,
+          type: 'inventory',
+          menuItem: addedItem.menuItemId,
+        });
+        subtotal += addedItem.totalAmount;
+      }
+    }
   }
 
   // 2. Inventory / food items sold
@@ -242,7 +261,7 @@ exports.getBills = asyncHandler(async (req, res) => {
       .populate('customer', 'name phone')
       .populate('branch', 'name')
       .populate('createdBy', 'name')
-      .populate('session', 'customerName phoneNumber customer')
+      .populate({ path: 'session', populate: { path: 'table', select: 'name type' } })
       .sort(sortOption)
       .skip((page - 1) * limit)
       .limit(limit),
@@ -269,10 +288,55 @@ exports.getBill = asyncHandler(async (req, res, next) => {
   const bill = await Bill.findById(req.params.id)
     .populate('customer', 'name phone')
     .populate('branch', 'name')
-    .populate('session')
+    .populate({ path: 'session', populate: { path: 'table', select: 'name type' } })
     .populate('createdBy', 'name');
   if (!bill) return next(new AppError('Bill not found.', 404));
   res.status(200).json({ success: true, data: { bill } });
+});
+
+// PUT /api/bills/:id
+exports.updateBill = asyncHandler(async (req, res, next) => {
+  const { items, paymentStatus, total, subtotal, addedItems } = req.body;
+  const bill = await Bill.findById(req.params.id);
+  if (!bill) return next(new AppError('Bill not found.', 404));
+
+  if (items && Array.isArray(items)) {
+    bill.items = items;
+  }
+  if (subtotal !== undefined) {
+    bill.subtotal = Number(subtotal);
+  }
+  if (total !== undefined) {
+    bill.total = Number(total);
+  }
+  if (paymentStatus) {
+    bill.paymentStatus = paymentStatus;
+  }
+
+  await bill.save();
+
+  // If associated session exists, sync session.addedItems with the updated beverages & accessories
+  if (bill.session && Array.isArray(addedItems)) {
+    await Session.findByIdAndUpdate(bill.session, { addedItems });
+  }
+
+  await logActivity({
+    userId: req.user._id,
+    branchId: bill.branch,
+    action: 'bill.update',
+    entity: 'Bill',
+    entityId: bill._id,
+    description: `${req.user.name} updated bill ${bill.invoiceNumber} — ₹${bill.total}`,
+    ipAddress: req.ip,
+  });
+
+  const populated = await Bill.findById(bill._id)
+    .populate('customer', 'name phone')
+    .populate('branch', 'name')
+    .populate({ path: 'session', populate: { path: 'table', select: 'name type' } })
+    .populate('createdBy', 'name');
+
+  res.status(200).json({ success: true, data: { bill: populated } });
 });
 
 // POST /api/bills/from-customer  — create a bill directly from customer data

@@ -43,6 +43,8 @@ export const sessionService = {
   extend: (id: string, minutes: number) => api.patch<ApiResponse<{ session: Session }>>(`/sessions/${id}/extend`, { minutes }),
   stop: (id: string) => api.patch<ApiResponse<{ session: Session }>>(`/sessions/${id}/stop`),
   transfer: (id: string, customerId: string) => api.patch<ApiResponse<{ session: Session }>>(`/sessions/${id}/transfer`, { customerId }),
+  updateMenu: (id: string, menuCategoryId: string, menuItemId: string) =>
+    api.patch<ApiResponse<{ session: Session }>>(`/sessions/${id}/update-menu`, { menuCategoryId, menuItemId }),
 };
 
 // ── Customers ─────────────────────────────────────────────────────────────────
@@ -62,6 +64,7 @@ export const billingService = {
   getAll: (params?: Record<string, string>) => api.get<ApiResponse<{ bills: Bill[] }>>('/bills', { params }),
   getOne: (id: string) => api.get<ApiResponse<{ bill: Bill }>>(`/bills/${id}`),
   create: (data: Record<string, unknown>) => api.post<ApiResponse<{ bill: Bill }>>('/bills', data),
+  update: (id: string, data: Record<string, unknown>) => api.put<ApiResponse<{ bill: Bill }>>(`/bills/${id}`, data),
   createFromCustomer: (customerId: string) => api.post<ApiResponse<{ bill: Bill }>>('/bills/from-customer', { customerId }),
   receivePayment: (id: string, data: Record<string, unknown>) => api.post<ApiResponse<{ bill: Bill }>>(`/bills/${id}/payment`, data),
   downloadPDF: (id: string) => api.get(`/bills/${id}/pdf`, { responseType: 'blob' }),

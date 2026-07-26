@@ -117,7 +117,7 @@ export default function PendingPaymentsPage() {
     
     setPaymentForm({
       paymentStatus: pendingAmount > 0 ? 'partial' : 'paid',
-      paymentMethod: customer.paymentMethod === 'mixed' ? 'cash' : customer.paymentMethod,
+      paymentMethod: (customer.paymentMethod === 'mixed' || !customer.paymentMethod) ? 'cash' : customer.paymentMethod,
       cashAmount: '',
       onlineAmount: '',
       walletAmount: '',

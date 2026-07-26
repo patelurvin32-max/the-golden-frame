@@ -286,14 +286,14 @@ export default function MenuPage() {
             activeTab === 'items' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
           )}
         >
-          🍽️ Menu Items
+          🎯 Menu Items
         </button>
         <button onClick={() => setActiveTab('categories')}
           className={cn('px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px',
             activeTab === 'categories' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
           )}
         >
-          🏷️ Categories
+          📁 Categories
         </button>
       </div>
 
@@ -347,7 +347,7 @@ export default function MenuPage() {
             {itemsLoading ? (
               <div className="p-4 space-y-3">{[...Array(6)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
             ) : items.length === 0 ? (
-              <EmptyState icon="🍽️" title="No menu items" description="Add your first menu item to the café menu" action={<Button size="sm" onClick={() => setModal('create')}>+ Add Menu Item</Button>} />
+              <EmptyState icon="🎯" title="No menu items" description="Add your first menu item to the club menu" action={<Button size="sm" onClick={() => setModal('create')}>+ Add Menu Item</Button>} />
             ) : (
               <div className="overflow-x-auto">
                 <Table2>

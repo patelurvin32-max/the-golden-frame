@@ -13,6 +13,19 @@ const pauseSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const sessionItemSchema = new mongoose.Schema(
+  {
+    menuCategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuCategory' },
+    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem' },
+    categoryName: { type: String, required: true },
+    itemName: { type: String, required: true },
+    quantity: { type: Number, required: true, default: 1 },
+    unitPrice: { type: Number, required: true, default: 0 },
+    totalAmount: { type: Number, required: true, default: 0 },
+  },
+  { _id: true, timestamps: true }
+);
+
 const sessionSchema = new mongoose.Schema(
   {
     table: { type: mongoose.Schema.Types.ObjectId, ref: 'Table', required: true },
@@ -31,6 +44,11 @@ const sessionSchema = new mongoose.Schema(
     billableMinutes: { type: Number, default: 0 },
     amount: { type: Number, default: 0 },
     bill: { type: mongoose.Schema.Types.ObjectId, ref: 'Bill' },
+    menuCategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuCategory' },
+    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem' },
+    menuCategory: { type: String },
+    menuItem: { type: String },
+    addedItems: [sessionItemSchema],
   },
   { timestamps: true }
 );

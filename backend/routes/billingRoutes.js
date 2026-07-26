@@ -21,6 +21,7 @@ router.post(
   billingController.createBillFromCustomer
 );
 router.get('/:id', billingController.getBill);
+router.put('/:id', billingController.updateBill);
 router.post('/:id/payment', [body('method').notEmpty(), body('amount').isFloat({ min: 0 })], validate, billingController.receivePayment);
 router.get('/:id/pdf', billingController.downloadPDF);
 

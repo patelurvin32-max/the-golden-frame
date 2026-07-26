@@ -4,7 +4,7 @@ import { formatCurrency, parseCurrencyValue } from '@/utils';
 
 export interface PaymentFormValues {
   paymentStatus: 'paid' | 'partial' | 'unpaid' | 'refunded';
-  paymentMethod: 'cash' | 'upi' | 'mixed' | 'wallet';
+  paymentMethod: 'cash' | 'upi' | 'mixed' | 'wallet' | '' | null;
   cashAmount: string;
   onlineAmount: string;
   walletAmount: string;
@@ -71,6 +71,8 @@ export default function PaymentForm({
     onChange({ ...values, [field]: value });
   };
 
+  const isPaymentMethodRequired = values.paymentStatus === 'paid' || values.paymentStatus === 'partial';
+
   return (
     <div className="space-y-3">
       {showBillAmountField && (
@@ -102,12 +104,13 @@ export default function PaymentForm({
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label>Payment Method *</Label>
+          <Label>Payment Method {isPaymentMethodRequired ? '*' : ''}</Label>
           <Select
-            value={values.paymentMethod}
+            value={values.paymentMethod || ''}
             onChange={(e) => handleFieldChange('paymentMethod', e.target.value as any)}
             disabled={disabled}
           >
+            <option value="">Select Payment Method</option>
             {PAYMENT_METHODS.map((method) => (
               <option key={method} value={method} className="capitalize">
                 {method === 'wallet' ? 'Wallet / Advance Balance' : method}
