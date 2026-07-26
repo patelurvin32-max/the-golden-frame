@@ -29,6 +29,8 @@ const inventorySchema = new mongoose.Schema(
 
 // Indexes for better query performance
 inventorySchema.index({ branch: 1, isActive: 1 });
+inventorySchema.index({ branch: 1, category: 1, isActive: 1 });
+inventorySchema.index({ branch: 1, isActive: 1, currentStock: 1 });
 inventorySchema.index({ category: 1 });
 inventorySchema.index({ name: 1 });
 inventorySchema.index({ sku: 1 });
@@ -89,7 +91,6 @@ const menuItemSchema = new mongoose.Schema(
     halfPrice: { type: Number, min: 0 },
     fullPrice: { type: Number, min: 0 },
     description: { type: String, trim: true },
-    availability: { type: String, enum: ['Available', 'Unavailable'], default: 'Available' },
     status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' },
   },
   { timestamps: true }
@@ -100,7 +101,6 @@ menuItemSchema.index({ branch: 1, status: 1 });
 menuItemSchema.index({ category: 1 });
 menuItemSchema.index({ category: 1, branch: 1, status: 1 }); // Compound index for filtering by category and branch
 menuItemSchema.index({ name: 1 });
-menuItemSchema.index({ availability: 1 });
 menuItemSchema.index({ status: 1 });
 menuItemSchema.index({ createdAt: -1 });
 
@@ -123,10 +123,12 @@ const stockTransactionSchema = new mongoose.Schema(
 
 // Indexes for stock transactions
 stockTransactionSchema.index({ inventoryItem: 1 });
+stockTransactionSchema.index({ inventoryItem: 1, type: 1 });
 stockTransactionSchema.index({ customer: 1 });
 stockTransactionSchema.index({ order: 1 });
 stockTransactionSchema.index({ type: 1 });
 stockTransactionSchema.index({ branch: 1 });
+stockTransactionSchema.index({ branch: 1, createdAt: -1 });
 stockTransactionSchema.index({ createdAt: -1 });
 
 module.exports = {

@@ -107,23 +107,25 @@ exports.getCategories = asyncHandler(async (req, res) => {
   if (req.user.role !== ROLES.SUPER_ADMIN) {
     filter.branch = { $in: req.user.branches };
   }
-  const categories = await InventoryCategory.find(filter).sort('name');
+  const categories = await InventoryCategory.find(filter).sort('name').lean();
 
-  // Compute Total Items for each category
-  const categoriesWithCount = await Promise.all(
-    categories.map(async (cat) => {
-      const totalItems = await Inventory.countDocuments({ category: cat._id, isActive: true });
-      return {
-        _id: cat._id,
-        name: cat.name,
-        branch: cat.branch,
-        status: cat.status,
-        totalItems,
-        createdAt: cat.createdAt,
-        updatedAt: cat.updatedAt,
-      };
-    })
-  );
+  // Single aggregation query to count items for all categories
+  const categoryCounts = await Inventory.aggregate([
+    { $match: { isActive: true } },
+    { $group: { _id: '$category', totalItems: { $sum: 1 } } }
+  ]);
+
+  const countMap = new Map(categoryCounts.map(c => [c._id?.toString(), c.totalItems]));
+
+  const categoriesWithCount = categories.map((cat) => ({
+    _id: cat._id,
+    name: cat.name,
+    branch: cat.branch,
+    status: cat.status,
+    totalItems: countMap.get(cat._id.toString()) || 0,
+    createdAt: cat.createdAt,
+    updatedAt: cat.updatedAt,
+  }));
 
   res.status(200).json({ success: true, count: categoriesWithCount.length, data: { categories: categoriesWithCount } });
 });
@@ -194,7 +196,7 @@ exports.deleteCategory = asyncHandler(async (req, res, next) => {
 
 // GET /api/inventory/:id
 exports.getInventoryItem = asyncHandler(async (req, res, next) => {
-  const item = await Inventory.findById(req.params.id).populate('category');
+  const item = await Inventory.findById(req.params.id).populate('category').lean();
   if (!item) return next(new AppError('Item not found.', 404));
   res.status(200).json({ success: true, data: { item } });
 });
@@ -276,35 +278,36 @@ exports.getInventoryReport = asyncHandler(async (req, res) => {
   }
   if (req.query.branch) filter.branch = req.query.branch;
 
-  const items = await Inventory.find(filter).populate('category');
+  const items = await Inventory.find(filter).populate('category').lean();
+  const itemIds = items.map(i => i._id);
 
-  // Calculate sold quantities from stock transactions
-  const itemsWithStats = await Promise.all(
-    items.map(async (item) => {
-      const soldQuantity = await StockTransaction.aggregate([
-        { $match: { inventoryItem: item._id, type: 'sale' } },
-        { $group: { _id: null, total: { $sum: '$quantity' } } }
-      ]);
+  // Single aggregation query for all sold quantities
+  const salesStats = await StockTransaction.aggregate([
+    { $match: { inventoryItem: { $in: itemIds }, type: 'sale' } },
+    { $group: { _id: '$inventoryItem', totalSold: { $sum: '$quantity' } } }
+  ]);
 
-      const sold = soldQuantity[0]?.total || 0;
-      const remainingStock = item.currentStock;
-      const stockStatus = remainingStock === 0 ? 'out_of_stock' : 
-                          remainingStock <= item.minimumStockAlert ? 'low_stock' : 'normal';
+  const salesMap = new Map(salesStats.map(s => [s._id.toString(), s.totalSold]));
 
-      return {
-        _id: item._id,
-        name: item.name,
-        category: item.category,
-        openingStock: item.openingStock,
-        soldQuantity: sold,
-        remainingStock: remainingStock,
-        status: stockStatus,
-        unit: item.unit,
-        purchasePrice: item.purchasePrice,
-        sellingPrice: item.sellingPrice,
-      };
-    })
-  );
+  const itemsWithStats = items.map((item) => {
+    const sold = salesMap.get(item._id.toString()) || 0;
+    const remainingStock = item.currentStock;
+    const stockStatus = remainingStock === 0 ? 'out_of_stock' : 
+                        remainingStock <= item.minimumStockAlert ? 'low_stock' : 'normal';
+
+    return {
+      _id: item._id,
+      name: item.name,
+      category: item.category,
+      openingStock: item.openingStock,
+      soldQuantity: sold,
+      remainingStock: remainingStock,
+      status: stockStatus,
+      unit: item.unit,
+      purchasePrice: item.purchasePrice,
+      sellingPrice: item.sellingPrice,
+    };
+  });
 
   const summary = {
     totalItems: itemsWithStats.length,

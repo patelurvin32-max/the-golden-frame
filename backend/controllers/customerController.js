@@ -92,7 +92,7 @@ exports.getCustomers = asyncHandler(async (req, res) => {
       .limit(limit)
       .populate('customer', 'name phone email customerId walletBalance')
       .populate('menuCategoryId', 'name status')
-      .populate('menuItemId', 'name price availability status')
+      .populate('menuItemId', 'name price status')
       .populate('branch', 'name code')
       .lean(), // Use lean() for faster queries
     Order.countDocuments(filter),
@@ -125,7 +125,7 @@ exports.getCustomer = asyncHandler(async (req, res, next) => {
   const order = await Order.findById(req.params.id)
     .populate('customer', 'name phone email customerId walletBalance')
     .populate('menuCategoryId', 'name status')
-    .populate('menuItemId', 'name price availability status')
+    .populate('menuItemId', 'name price status')
     .populate('branch', 'name code')
     .lean(); // Use lean() for faster queries
   if (!order) return next(new AppError('Order not found.', 404));
@@ -270,8 +270,9 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       branchId: customer.branch,
       actor: req.user,
       title: 'New Customer Created',
-      message: `${req.user.name} created a new customer (${customer.name}) in branch ${customer.branch}.`,
+      message: `${req.user.name} created a new customer (${customer.name}).`,
       superAdminOnly: req.user.role === ROLES.SUPER_ADMIN,
+      req,
     }).catch(err => console.error('Error creating branch notification:', err));
   }
   
@@ -502,7 +503,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   const populatedOrderDoc = await order.populate([
     { path: 'customer', select: 'name phone email customerId' },
     { path: 'menuCategoryId', select: 'name status' },
-    { path: 'menuItemId', select: 'name price availability status' },
+    { path: 'menuItemId', select: 'name price status' },
     { path: 'branch', select: 'name code' }
   ]);
   
@@ -739,7 +740,7 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
   const populatedOrderDoc = await order.populate([
     { path: 'customer', select: 'name phone email customerId' },
     { path: 'menuCategoryId', select: 'name status' },
-    { path: 'menuItemId', select: 'name price availability status' },
+    { path: 'menuItemId', select: 'name price status' },
     { path: 'branch', select: 'name code' }
   ]);
   

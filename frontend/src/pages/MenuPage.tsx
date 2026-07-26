@@ -18,10 +18,11 @@ const emptyForm = {
   halfPrice: '',
   fullPrice: '',
   description: '',
-  availability: 'Available' as 'Available' | 'Unavailable',
   status: 'Active' as 'Active' | 'Inactive',
   branch: ''
 };
+
+import { useDebounce } from '@/hooks/useDebounce';
 
 export default function MenuPage() {
   const qc = useQueryClient();
@@ -41,6 +42,7 @@ export default function MenuPage() {
   const [form, setForm] = useState({ ...emptyForm });
 
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 300);
   const [filterCategory, setFilterCategory] = useState('all');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -54,22 +56,27 @@ export default function MenuPage() {
   const { data: branchData } = useQuery({
     queryKey: ['branches'],
     queryFn: () => branchService.getAll().then((r) => r.data.data.branches),
+    staleTime: 5 * 60 * 1000,
   });
 
   const { data: inventoryItems } = useQuery({
     queryKey: ['inventory-items'],
     queryFn: () => inventoryService.getAll({ limit: '1000' }).then((r) => r.data.data.items),
+    enabled: modal === 'create',
+    staleTime: 5 * 60 * 1000,
   });
 
   const { data: activeCategories } = useQuery({
     queryKey: ['menu-categories', 'active'],
-    queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data.data.categories)
+    queryFn: () => menuService.getCategories({ activeOnly: 'true' }).then((r) => r.data.data.categories),
+    staleTime: 5 * 60 * 1000,
   });
 
   const { data: allCategories, isLoading: categoriesLoading } = useQuery({
     queryKey: ['menu-categories', 'all'],
     queryFn: () => menuService.getCategories().then((r) => r.data.data.categories),
-    enabled: activeTab === 'categories'
+    enabled: activeTab === 'categories',
+    staleTime: 5 * 60 * 1000,
   });
 
   const params: Record<string, string> = {
@@ -80,18 +87,30 @@ export default function MenuPage() {
   const branchToUse = selectedBranch || (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : user.branches[0]._id) : null);
   if (branchToUse) params.branch = String(branchToUse);
   if (filterCategory !== 'all') params.category = String(filterCategory);
-  if (search) params.search = search;
+  if (debouncedSearch) params.search = debouncedSearch;
 
   const { data: menuData, isLoading: itemsLoading } = useQuery({
-    queryKey: ['menu', branchToUse, filterCategory, search, page, pageSize],
+    queryKey: ['menu', branchToUse, filterCategory, debouncedSearch, page, pageSize],
     queryFn: () => menuService.getAll(params).then((r) => r.data.data),
-    enabled: activeTab === 'items'
+    enabled: activeTab === 'items',
+    placeholderData: (prev) => prev,
   });
 
   const items: MenuItem[] = menuData?.items || [];
   const pagination = menuData?.pagination || { page: 1, limit: pageSize, total: 0, pages: 1 };
   const totalRecords = pagination.total;
   const totalPages = Math.max(1, pagination.pages);
+
+  const sortedItems = React.useMemo(() => {
+    if (filterCategory !== 'all') return items;
+    return [...items].sort((a, b) => {
+      const catA = a.category?.name || 'Unassigned';
+      const catB = b.category?.name || 'Unassigned';
+      const catComp = catA.localeCompare(catB);
+      if (catComp !== 0) return catComp;
+      return a.name.localeCompare(b.name);
+    });
+  }, [items, filterCategory]);
 
   // ── Form Syncing ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -104,7 +123,6 @@ export default function MenuPage() {
         halfPrice: selected.halfPrice ? String(selected.halfPrice) : '',
         fullPrice: selected.fullPrice ? String(selected.fullPrice) : '',
         description: selected.description || '',
-        availability: selected.availability,
         status: selected.status,
         branch: typeof selected.branch === 'string' ? selected.branch : selected.branch?._id || ''
       });
@@ -309,7 +327,7 @@ export default function MenuPage() {
                   <Input placeholder="Search menu items..." value={search} onChange={(e) => setSearch(e.target.value)} />
                 </div>
                 <div className="flex items-center gap-2">
-                  <Label className="text-xs text-muted-foreground whitespace-nowrap">Rows per page:</Label>
+                  <Label className="text-xs text-muted-foreground whitespace-nowrap">Rows:</Label>
                   <Select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
                     <option value={10}>10</option>
                     <option value={25}>25</option>
@@ -358,21 +376,20 @@ export default function MenuPage() {
                       <TableHead>Price</TableHead>
                       <TableHead>Half Price</TableHead>
                       <TableHead>Full Price</TableHead>
-                      <TableHead>Availability</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="w-[180px]">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {items.map((item, index) => {
-                      const prevItem = index > 0 ? items[index - 1] : null;
-                      const isFirstOfCategory = !prevItem || prevItem.category?._id !== item.category?._id;
+                    {sortedItems.map((item, index) => {
+                      const prevItem = index > 0 ? sortedItems[index - 1] : null;
+                      const isFirstOfCategory = !prevItem || (prevItem.category?._id || 'unassigned') !== (item.category?._id || 'unassigned');
 
                       return (
                         <React.Fragment key={item._id}>
                           {isFirstOfCategory && (
                             <TableRow className="bg-muted/40 hover:bg-muted/40 border-b border-border">
-                              <TableCell colSpan={8} className="py-2 px-4 font-bold text-xs text-muted-foreground tracking-wide uppercase">
+                              <TableCell colSpan={7} className="py-2 px-4 font-bold text-xs text-muted-foreground tracking-wide uppercase">
                                 📁 {item.category?.name || 'Unassigned'}
                               </TableCell>
                             </TableRow>
@@ -383,11 +400,6 @@ export default function MenuPage() {
                             <TableCell>{formatCurrency(item.price)}</TableCell>
                             <TableCell>{item.halfPrice ? formatCurrency(item.halfPrice) : '—'}</TableCell>
                             <TableCell>{item.fullPrice ? formatCurrency(item.fullPrice) : '—'}</TableCell>
-                            <TableCell>
-                              <Badge variant={item.availability === 'Available' ? 'success' : 'danger'}>
-                                {item.availability}
-                              </Badge>
-                            </TableCell>
                             <TableCell>
                               <Badge variant={item.status === 'Active' ? 'success' : 'danger'}>
                                 {item.status}
@@ -537,21 +549,12 @@ export default function MenuPage() {
             <div className="space-y-1.5"><Label>Full Price</Label><Input type="number" step="0.01" min="0" value={form.fullPrice} onChange={(e) => setForm((f) => ({ ...f, fullPrice: e.target.value }))} /></div>
           </div>
           <div className="space-y-1.5"><Label>Description</Label><Input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Optional description" /></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label>Availability</Label>
-              <Select value={form.availability} onChange={(e) => setForm((f) => ({ ...f, availability: e.target.value as 'Available' | 'Unavailable' }))}>
-                <option value="Available">Available</option>
-                <option value="Unavailable">Unavailable</option>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Status</Label>
-              <Select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as 'Active' | 'Inactive' }))}>
-                <option value="Active">Active</option>
-                <option value="Inactive">Inactive</option>
-              </Select>
-            </div>
+          <div className="space-y-1.5">
+            <Label>Status</Label>
+            <Select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as 'Active' | 'Inactive' }))}>
+              <option value="Active">Active</option>
+              <option value="Inactive">Inactive</option>
+            </Select>
           </div>
           {canSelectBranch && (
             <div className="space-y-1.5">

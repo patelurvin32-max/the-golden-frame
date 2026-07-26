@@ -54,12 +54,15 @@ const emptyForm: PaymentFormValues & {
   walletBalance: 0,
 };
 
+import { useDebounce } from '@/hooks/useDebounce';
+
 export default function CustomersPage() {
   const qc = useQueryClient();
   const toast = useToast();
   const { selectedBranch } = useAppStore();
   const { user } = useAuthStore();
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 300);
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [modal, setModal] = useState<'create' | 'edit' | null>(null);
@@ -71,10 +74,10 @@ export default function CustomersPage() {
 
   const params: Record<string, string> = { page: String(page), limit: String(rowsPerPage) };
   if (selectedBranch) params.branch = selectedBranch;
-  if (search) params.search = search;
+  if (debouncedSearch) params.search = debouncedSearch;
 
   const { data, isLoading } = useQuery({
-    queryKey: ['customers', selectedBranch, search, page, rowsPerPage],
+    queryKey: ['customers', selectedBranch, debouncedSearch, page, rowsPerPage],
     queryFn: () => customerService.getAll(params).then((r) => r.data),
     placeholderData: (prev) => prev,
   });
@@ -106,10 +109,11 @@ export default function CustomersPage() {
 
   const branchToFetch = form.branch || selectedBranch || '';
 
-  // Preload all menu items for the branch to enable instant selection
+  // Only fetch menu items when create or edit modal is open
   const { data: allMenuItemsData, isFetching: isFetchingAllMenuItems } = useQuery({
     queryKey: ['all-menu-items', branchToFetch],
     queryFn: () => menuService.getAll({ limit: '1000', branch: branchToFetch }).then((r) => r.data),
+    enabled: modal !== null,
     staleTime: 10 * 60 * 1000, // Cache for 10 minutes
     gcTime: 15 * 60 * 1000, // Keep in cache for 15 minutes
   });

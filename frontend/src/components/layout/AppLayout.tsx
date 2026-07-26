@@ -3,9 +3,12 @@ import { Sidebar } from './Sidebar';
 import { Navbar } from './Navbar';
 import { useAppStore } from '@/store';
 import { cn } from '@/utils';
+import { useIdleTimer } from '@/hooks/useIdleTimer';
 
 export const AppLayout = () => {
   const { sidebarOpen } = useAppStore();
+  useIdleTimer();
+
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar />

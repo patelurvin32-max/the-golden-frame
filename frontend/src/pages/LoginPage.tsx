@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff } from 'lucide-react';
@@ -15,6 +14,15 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const currentYear = new Date().getFullYear();
+
+  useEffect(() => {
+    const expiredMsg = sessionStorage.getItem('session_expired_message');
+    if (expiredMsg) {
+      sessionStorage.removeItem('session_expired_message');
+      setError(expiredMsg);
+      toast.error(expiredMsg);
+    }
+  }, [toast]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

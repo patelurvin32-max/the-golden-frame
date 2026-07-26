@@ -57,7 +57,6 @@ const copyMenuToBranch = async () => {
           halfPrice: item.halfPrice,
           fullPrice: item.fullPrice,
           description: item.description,
-          availability: item.availability,
           status: item.status
         });
         copied++;

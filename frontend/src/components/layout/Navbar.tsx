@@ -1,17 +1,27 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAppStore, useAuthStore } from '@/store';
 import { branchService, notificationService } from '@/services';
 import type { Branch, Notification } from '@/types';
 import { Button, Select } from '@/components/ui';
 import { formatDateTime } from '@/utils';
+import { useSocket } from '@/hooks/useSocket';
 
 export const Navbar = () => {
   const { toggleSidebar, toggleDarkMode, isDarkMode, selectedBranch, setSelectedBranch } = useAppStore();
   const { user } = useAuthStore();
   const [showNotif, setShowNotif] = useState(false);
   const queryClient = useQueryClient();
+  const { onNotification } = useSocket();
+
+  // Listen for real-time notifications via Socket.IO
+  useEffect(() => {
+    const cleanup = onNotification(() => {
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    });
+    return cleanup;
+  }, [onNotification, queryClient]);
 
   const markAllReadMutation = useMutation({
     mutationFn: () => notificationService.markAllRead(),
@@ -37,7 +47,7 @@ export const Navbar = () => {
   const unread = notifications.filter((n) => !n.isRead).length;
 
   return (
-    <header className="h-14 border-b border-border bg-card/80 backdrop-blur-sm flex items-center px-4 gap-4">
+    <header className="h-14 border-b border-border bg-card flex items-center px-4 gap-4 relative z-40">
       {/* Sidebar toggle */}
       <button onClick={toggleSidebar} className="h-8 w-8 rounded-lg hover:bg-accent flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
         ☰
@@ -83,10 +93,10 @@ export const Navbar = () => {
 
         {showNotif && (
           <>
-            <div className="fixed inset-0 z-40" onClick={() => setShowNotif(false)} />
-            <div className="absolute right-0 top-10 z-50 w-80 rounded-2xl border border-border bg-background shadow-2xl">
-              <div className="border-b border-border p-4 flex items-center justify-between">
-                <p className="font-semibold text-sm">Notifications</p>
+            <div className="fixed inset-0 z-40 bg-black/10" onClick={() => setShowNotif(false)} />
+            <div className="absolute right-0 top-full mt-2 z-50 w-80 sm:w-96 max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-card shadow-2xl overflow-hidden">
+              <div className="border-b border-border p-4 flex items-center justify-between bg-card">
+                <p className="font-semibold text-sm text-foreground">Notifications</p>
                 {unread > 0 && (
                   <button
                     onClick={() => markAllReadMutation.mutate()}
@@ -96,18 +106,18 @@ export const Navbar = () => {
                   </button>
                 )}
               </div>
-              <div className="max-h-80 overflow-y-auto">
+              <div className="max-h-[70vh] sm:max-h-96 overflow-y-auto divide-y divide-border bg-card">
                 {notifications.length === 0 ? (
                   <p className="p-8 text-center text-sm text-muted-foreground">No notifications</p>
                 ) : (
-                  notifications.slice(0, 10).map((n) => (
-                    <div key={n._id} className={`p-4 border-b border-border last:border-0 ${!n.isRead ? 'bg-primary/5' : ''}`}>
-                      <div className="flex items-start gap-2">
+                  notifications.slice(0, 3).map((n: any) => (
+                    <div key={n._id} className={`p-4 transition-colors hover:bg-accent/40 ${!n.isRead ? 'bg-primary/10' : 'bg-card'}`}>
+                      <div className="flex items-start gap-2.5">
                         {!n.isRead && <span className="h-2 w-2 rounded-full bg-primary mt-1.5 flex-shrink-0" />}
-                        <div className="flex-1">
-                          <p className="text-sm font-medium">{n.title}</p>
-                          <p className="text-xs text-muted-foreground mt-0.5">{n.message}</p>
-                          <p className="text-xs text-muted-foreground/60 mt-1">{formatDateTime(n.createdAt)}</p>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-foreground leading-tight break-words">{n.title}</p>
+                          <p className="text-xs text-muted-foreground mt-1 break-words leading-relaxed">{n.message}</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1.5 font-medium">{formatDateTime(n.createdAt)}</p>
                         </div>
                       </div>
                     </div>
@@ -115,9 +125,9 @@ export const Navbar = () => {
                 )}
               </div>
               {notifications.length > 0 && (
-                <div className="border-t border-border p-3">
-                  <Link to="/notifications" onClick={() => setShowNotif(false)} className="block w-full text-xs text-center text-muted-foreground hover:text-foreground transition-colors">
-                    See More
+                <div className="border-t border-border p-3 bg-card text-center">
+                  <Link to="/notifications" onClick={() => setShowNotif(false)} className="inline-block w-full text-xs font-medium text-muted-foreground hover:text-primary transition-colors">
+                    See More Notifications →
                   </Link>
                 </div>
               )}

@@ -74,7 +74,7 @@ function useRunningTimer(session: any) {
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [session?.startTime, session?.status, JSON.stringify(session?.pauses || [])]);
+  }, [session?.startTime, session?.status, session?.pauses?.length]);
 
   return seconds;
 }
@@ -221,6 +221,7 @@ export default function TablesPage() {
   const [extendMinutes, setExtendMinutes] = useState(30);
   const [customerResults, setCustomerResults] = useState<Customer[]>([]);
   const [phoneError, setPhoneError] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Fetch menu categories for Edit Live Session modal
   const { data: categoriesData } = useQuery({
@@ -308,7 +309,7 @@ export default function TablesPage() {
     refetchInterval: 300000,
   });
 
-  const availableTypes = Array.from(new Set((data || []).map((t: Table) => t.type.toLowerCase())));
+  const availableTypes = useMemo(() => Array.from(new Set((data || []).map((t: Table) => t.type.toLowerCase()))), [data]);
 
   // Real-time socket updates
   useEffect(() => {
@@ -320,12 +321,12 @@ export default function TablesPage() {
     return off;
   }, [selectedBranch]);
 
-  const tables = (data || []).filter((t: Table) => {
+  const tables = useMemo(() => (data || []).filter((t: Table) => {
     if (filterType !== 'all' && t.type.toLowerCase() !== filterType.toLowerCase()) return false;
     const effectiveStatus = (t.currentSession as any)?.status === 'paused' ? 'paused' : t.status;
     if (filterStatus !== 'all' && effectiveStatus !== filterStatus) return false;
     return true;
-  });
+  }), [data, filterType, filterStatus]);
 
   // Mutations
   const startMutation = useMutation({
@@ -501,18 +502,31 @@ export default function TablesPage() {
     }
   };
 
-  const statusCounts = (data || []).reduce((acc: any, t: Table) => {
+  const statusCounts = useMemo(() => (data || []).reduce((acc: any, t: Table) => {
     const s = (t.currentSession as any)?.status === 'paused' ? 'paused' : t.status;
     acc[s] = (acc[s] || 0) + 1;
     return acc;
-  }, {});
+  }, {}), [data]);
+
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await qc.refetchQueries({ queryKey: ['tables', selectedBranch] });
+      toast.success('Live tables refreshed successfully');
+    } catch (error) {
+      toast.error('Failed to refresh live tables');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   return (
     <div className="space-y-5 animate-fade-in">
       <PageHeader
         title="Live Tables"
         actions={
-          <Button size="sm" onClick={() => qc.invalidateQueries({ queryKey: ['tables'] })}>
+          <Button size="sm" onClick={handleRefresh} loading={isRefreshing || isLoading} disabled={isRefreshing || isLoading}>
             🔄 Refresh
           </Button>
         }

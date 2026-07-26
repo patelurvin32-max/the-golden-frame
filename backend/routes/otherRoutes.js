@@ -121,8 +121,62 @@ notifRouter.get('/', asyncHandler(async (req, res) => {
     const branches = Array.isArray(req.user.branches) ? req.user.branches : [];
     filter.branch = { $in: branches };
   }
-  const notifications = await Notification.find(filter).sort('-createdAt').limit(50);
-  res.status(200).json({ success: true, data: { notifications } });
+
+  if (req.query.status === 'unread') filter.isRead = false;
+  if (req.query.status === 'read') filter.isRead = true;
+
+  if (req.query.search) {
+    const searchRegex = new RegExp(req.query.search, 'i');
+    filter.$or = [
+      { title: searchRegex },
+      { message: searchRegex },
+      { 'meta.actorName': searchRegex },
+    ];
+  }
+
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 50;
+  const skip = (page - 1) * limit;
+
+  const [rawNotifications, total] = await Promise.all([
+    Notification.find(filter)
+      .populate('branch', 'name code')
+      .sort('-createdAt')
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Notification.countDocuments(filter),
+  ]);
+
+  const notifications = rawNotifications.map((n) => {
+    const branchName = (n.branch && typeof n.branch === 'object' && n.branch.name)
+      ? n.branch.name
+      : (n.meta?.branchName || 'Unknown Branch');
+
+    let message = n.message || '';
+    message = message.replace(/in branch [0-9a-fA-F]{24}/gi, `in ${branchName} branch`);
+    message = message.replace(/[0-9a-fA-F]{24}/gi, branchName);
+
+    return {
+      ...n,
+      message,
+      branchName,
+      actorName: n.meta?.actorName || 'User',
+    };
+  });
+
+  res.status(200).json({
+    success: true,
+    data: {
+      notifications,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit),
+      },
+    },
+  });
 }));
 notifRouter.patch('/:id/read', asyncHandler(async (req, res) => {
   await Notification.findByIdAndUpdate(req.params.id, { isRead: true });

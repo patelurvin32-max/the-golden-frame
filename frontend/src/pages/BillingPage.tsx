@@ -11,6 +11,8 @@ import {
 import { formatCurrency, formatDateTime, downloadBlob, cn } from '@/utils';
 import PaymentForm, { PaymentFormValues } from '@/components/PaymentForm';
 
+import { useDebounce } from '@/hooks/useDebounce';
+
 // ── Main Billing Page ─────────────────────────────────────────────────────────
 export default function BillingPage() {
   const qc = useQueryClient();
@@ -21,6 +23,7 @@ export default function BillingPage() {
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 300);
 
   // Edit Modal state
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
@@ -53,17 +56,14 @@ export default function BillingPage() {
   const params: Record<string, string> = {};
   if (selectedBranch) params.branch = selectedBranch;
   if (statusFilter !== 'all') params.status = statusFilter;
-  if (search) params.search = search;
+  if (debouncedSearch) params.search = debouncedSearch;
   params.page = String(page);
   params.limit = String(rowsPerPage);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['bills', selectedBranch, statusFilter, page, rowsPerPage, search],
+    queryKey: ['bills', selectedBranch, statusFilter, page, rowsPerPage, debouncedSearch],
     queryFn: () => billingService.getAll(params).then((r) => r.data),
-    refetchOnWindowFocus: false,
-    refetchOnMount: 'always',
-    staleTime: 0,
-    gcTime: 0,
+    placeholderData: (prev) => prev,
   });
 
   const bills: Bill[] = (data as any)?.data?.bills || [];
@@ -332,7 +332,7 @@ export default function BillingPage() {
           className="max-w-xs"
         />
         <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">Rows per page:</span>
+          <span className="text-sm text-muted-foreground">Rows:</span>
           <Select
             value={String(rowsPerPage)}
             onChange={(e) => { setRowsPerPage(Number(e.target.value)); setPage(1); }}
@@ -384,9 +384,11 @@ export default function BillingPage() {
               <TableRow>
                 <TableHead>Invoice #</TableHead>
                 <TableHead>Customer Name</TableHead>
-                <TableHead>Date & Time</TableHead>
+                <TableHead>Menu Category</TableHead>
+                <TableHead>Menu Item</TableHead>
                 <TableHead>Total Amount</TableHead>
                 <TableHead>Payment Status</TableHead>
+                <TableHead>Date & Time</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -403,8 +405,11 @@ export default function BillingPage() {
                       </span>
                     )}
                   </TableCell>
-                  <TableCell className="text-muted-foreground text-xs">
-                    {formatDateTime(bill.createdAt)}
+                  <TableCell className="text-sm">
+                    {(bill.session as any)?.menuCategoryId?.name || (bill.session as any)?.menuCategory || '—'}
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {(bill.session as any)?.menuItemId?.name || (bill.session as any)?.menuItem || '—'}
                   </TableCell>
                   <TableCell className="font-bold text-emerald-400">
                     {formatCurrency(bill.total)}
@@ -416,6 +421,9 @@ export default function BillingPage() {
                     >
                       {bill.paymentStatus}
                     </Badge>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-xs">
+                    {formatDateTime(bill.createdAt)}
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1">

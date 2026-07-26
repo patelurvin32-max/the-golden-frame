@@ -53,9 +53,14 @@ const sessionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+sessionSchema.index({ table: 1 });
+sessionSchema.index({ customerName: 1 });
+sessionSchema.index({ status: 1 });
 sessionSchema.index({ branch: 1, status: 1, startTime: -1 });
 sessionSchema.index({ branch: 1, startTime: -1 });
 sessionSchema.index({ branch: 1, endTime: -1 });
+sessionSchema.index({ customer: 1, createdAt: -1 });
+sessionSchema.index({ table: 1, status: 1 });
 
 sessionSchema.methods.calculateBillableMinutes = function calculateBillableMinutes() {
   const end = this.endTime || new Date();

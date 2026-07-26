@@ -101,19 +101,22 @@ exports.createBill = asyncHandler(async (req, res, next) => {
 
   // 4. Membership discount
   let membershipDiscount = 0;
-  if (customerId) {
-    const customer = await Customer.findById(customerId).select('membership');
+
+  // Fetch settings and customer membership in parallel
+  const [settings, membershipCustomer] = await Promise.all([
+    Settings.findOne().lean(),
+    customerId ? Customer.findById(customerId).select('membership').lean() : null,
+  ]);
+
+  if (membershipCustomer?.membership?.tier) {
     const { MembershipPlan } = require('../models/Operations');
-    if (customer?.membership?.tier) {
-      const plan = await MembershipPlan.findOne({ tier: customer.membership.tier, isActive: true });
-      if (plan) {
-        membershipDiscount = (subtotal * plan.discountPercent) / 100;
-      }
+    const plan = await MembershipPlan.findOne({ tier: membershipCustomer.membership.tier, isActive: true }).lean();
+    if (plan) {
+      membershipDiscount = (subtotal * plan.discountPercent) / 100;
     }
   }
 
   // 5. Tax
-  const settings = await Settings.findOne();
   const taxPercent = settings?.taxPercent || 0;
   const afterDiscounts = Math.max(0, subtotal - discountAmount - membershipDiscount);
   const tax = (afterDiscounts * taxPercent) / 100;
@@ -170,7 +173,7 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
   if (!bill) return next(new AppError('Bill not found.', 404));
 
   // Check if bill is already fully paid based on recorded payments
-  const existingPayments = await Payment.find({ bill: bill._id });
+  const existingPayments = await Payment.find({ bill: bill._id }).lean();
   const existingPaid = existingPayments.reduce((sum, p) => sum + p.amount, 0);
   if (bill.paymentStatus === 'paid' && existingPayments.length > 0 && existingPaid >= bill.total) {
     return next(new AppError('Bill is already fully paid.', 400));
@@ -186,9 +189,8 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
     transactionRef,
   });
 
-  // Check if bill is now fully paid (sum all payments)
-  const allPayments = await Payment.find({ bill: bill._id });
-  const totalPaid = allPayments.reduce((sum, p) => sum + p.amount, 0);
+  // Compute new total paid from existing payments + new payment (avoid second query)
+  const totalPaid = existingPaid + amount;
   bill.paymentStatus = totalPaid >= bill.total ? 'paid' : 'partial';
   await bill.save();
 
@@ -232,10 +234,12 @@ exports.getBills = asyncHandler(async (req, res) => {
   // Search functionality - search by invoice number or customer name
   if (req.query.search) {
     const searchRegex = new RegExp(req.query.search, 'i');
-    const customerIds = await Customer.find({ name: searchRegex }).select('_id').lean();
+    // Run customer and session searches in parallel
+    const [customerIds, sessionIds] = await Promise.all([
+      Customer.find({ name: searchRegex }).select('_id').lean(),
+      Session.find({ customerName: searchRegex }).select('_id').lean(),
+    ]);
     const customerIdsList = customerIds.map((c) => c._id);
-    
-    const sessionIds = await Session.find({ customerName: searchRegex }).select('_id').lean();
     const sessionIdsList = sessionIds.map((s) => s._id);
 
     filter.$or = [
@@ -261,10 +265,19 @@ exports.getBills = asyncHandler(async (req, res) => {
       .populate('customer', 'name phone')
       .populate('branch', 'name')
       .populate('createdBy', 'name')
-      .populate({ path: 'session', populate: { path: 'table', select: 'name type' } })
+      .populate({ 
+        path: 'session', 
+        populate: { 
+          path: 'table', 
+          select: 'name type' 
+        } 
+      })
+      .populate('session.menuCategoryId', 'name')
+      .populate('session.menuItemId', 'name')
       .sort(sortOption)
       .skip((page - 1) * limit)
-      .limit(limit),
+      .limit(limit)
+      .lean(),
     Bill.countDocuments(filter),
   ]);
 

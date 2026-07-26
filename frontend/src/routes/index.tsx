@@ -18,6 +18,7 @@ const MyAttendancePage = lazy(() => import('@/pages/MyAttendancePage'));
 const SettingsPage = lazy(() => import('@/pages/SettingsPage'));
 const ReservationsPage = lazy(() => import('@/pages/ReservationsPage'));
 const PendingPaymentsPage = lazy(() => import('@/pages/PendingPaymentsPage'));
+const NotificationsPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.NotificationsPage })));
 const BranchesPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.BranchesPage })));
 const UsersPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.UsersPage })));
 const LogsPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.LogsPage })));
@@ -93,6 +94,7 @@ export function AppRoutes() {
               <Route path="attendance" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager']}><AttendancePage /></ProtectedRoute>} />
               <Route path="my-attendance" element={<ProtectedRoute roles={['staff']}><MyAttendancePage /></ProtectedRoute>} />
               <Route path="reservations" element={<ReservationsPage />} />
+              <Route path="notifications" element={<NotificationsPage />} />
               <Route path="reports" element={<ProtectedRoute roles={['super_admin', 'admin']}><ReportsPage /></ProtectedRoute>} />
               {/* Super admin only */}
               <Route path="users" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager']}><UsersPage /></ProtectedRoute>} />

@@ -2,6 +2,7 @@ const { Expense } = require('../models/Operations');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ROLES } = require('../config/constants');
+const { createBranchNotification } = require('../services/notificationService');
 
 exports.getExpenses = asyncHandler(async (req, res) => {
   const filter = {};
@@ -37,6 +38,15 @@ exports.createExpense = asyncHandler(async (req, res, next) => {
   }
 
   const expense = await Expense.create({ ...req.body, branch: finalBranch, createdBy: req.user._id });
+
+  createBranchNotification({
+    branchId: finalBranch,
+    actor: req.user,
+    title: 'New Expense Added',
+    message: `${req.user.name} recorded a new expense (${expense.title || expense.category || 'Expense'}) of ₹${expense.amount || 0}.`,
+    req,
+  }).catch((err) => console.error('Error creating expense notification:', err));
+
   res.status(201).json({ success: true, data: { expense } });
 });
 

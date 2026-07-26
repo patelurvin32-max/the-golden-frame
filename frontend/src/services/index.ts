@@ -129,7 +129,7 @@ export const reportService = {
 
 // ── Notifications ─────────────────────────────────────────────────────────────
 export const notificationService = {
-  getAll: () => api.get('/notifications'),
+  getAll: (params?: Record<string, string>) => api.get('/notifications', { params }),
   markRead: (id: string) => api.patch(`/notifications/${id}/read`),
   markAllRead: () => api.patch('/notifications/read-all'),
 };

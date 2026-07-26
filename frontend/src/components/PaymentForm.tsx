@@ -166,9 +166,6 @@ export default function PaymentForm({
           placeholder="Enter amount received (optional)"
           disabled={disabled}
         />
-        <p className="text-xs text-muted-foreground">
-          Leave empty to assume full payment of {formatCurrency(Number(values.billAmount) || 0)}
-        </p>
       </div>
 
       {/* Extra Amount Display */}

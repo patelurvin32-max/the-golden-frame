@@ -8,9 +8,32 @@ const { generateTableQRCode } = require('../services/qrCodeService');
  *
  * PlayStation & Table categories in Menu Management are the
  * single source of truth for Live Tables.
+ *
+ * Throttled: runs at most once every 60 seconds to avoid
+ * blocking every table/session API request.
  */
+let _lastSyncTime = 0;
+let _syncPromise = null;
+const SYNC_THROTTLE_MS = 60_000; // 60 seconds
+
 const syncTablesWithMenuItems = async () => {
+  const now = Date.now();
+  // Skip if sync ran recently
+  if (now - _lastSyncTime < SYNC_THROTTLE_MS) return;
+  // Deduplicate concurrent calls — return the same promise
+  if (_syncPromise) return _syncPromise;
+
+  _syncPromise = _doSync();
   try {
+    await _syncPromise;
+  } finally {
+    _syncPromise = null;
+  }
+};
+
+const _doSync = async () => {
+  try {
+    _lastSyncTime = Date.now();
     // 1. Get active PlayStation and Table categories
     const categories = await MenuCategory.find({
       name: { $in: [/playstation/i, /^table$/i] },

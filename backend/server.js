@@ -10,15 +10,68 @@ const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);
 
 // ── Socket.io ─────────────────────────────────────────────────────────────────
-const allowedOrigins = process.env.CLIENT_URL 
-  ? process.env.CLIENT_URL.split(',').map(o => o.trim())
-  : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:4173'];
+const isLocalNetworkOrigin = (origin) => {
+  if (!origin) return true;
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname;
 
-console.log('🔌 Socket.io allowed origins:', allowedOrigins);
+    if (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '::1' ||
+      hostname.endsWith('.localhost')
+    ) {
+      return true;
+    }
+
+    if (
+      /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
+      /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)
+    ) {
+      return true;
+    }
+  } catch (e) {
+    return false;
+  }
+  return false;
+};
+
+const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS || process.env.CLIENT_URL || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([
+  ...configuredOrigins,
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:4173',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+  'http://127.0.0.1:4173',
+]));
+
+console.log('🔌 Socket.io configured allowed origins:', allowedOrigins);
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      const normalizedOrigin = origin.replace(/\/$/, '');
+      const normalizedAllowed = allowedOrigins.map((o) => o.replace(/\/$/, ''));
+
+      if (normalizedAllowed.includes(normalizedOrigin)) {
+        return callback(null, true);
+      }
+
+      if (process.env.NODE_ENV !== 'production' && isLocalNetworkOrigin(origin)) {
+        return callback(null, true);
+      }
+
+      callback(new Error('Not allowed by Socket.io CORS'));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   },
@@ -31,14 +84,22 @@ app.set('io', io);
 io.on('connection', (socket) => {
   console.log(`🔌 Socket connected: ${socket.id}`);
 
+  // Clients join user/role/branch rooms for real-time updates
+  socket.on('join:user', ({ userId, role, branchId }) => {
+    if (userId) socket.join(`user:${userId}`);
+    if (role) socket.join(`role:${role}`);
+    if (branchId) socket.join(`branch:${branchId}`);
+    console.log(`   Socket ${socket.id} joined rooms: user:${userId}, role:${role}, branch:${branchId}`);
+  });
+
   // Clients join a branch room to receive live table updates
   socket.on('join:branch', (branchId) => {
-    socket.join(`branch:${branchId}`);
+    if (branchId) socket.join(`branch:${branchId}`);
     console.log(`   Socket ${socket.id} joined branch room: ${branchId}`);
   });
 
   socket.on('leave:branch', (branchId) => {
-    socket.leave(`branch:${branchId}`);
+    if (branchId) socket.leave(`branch:${branchId}`);
   });
 
   socket.on('disconnect', () => {
@@ -67,8 +128,10 @@ const start = async () => {
   // Seed default data on first run
   await seedDefaults();
 
-  server.listen(PORT, () => {
-    console.log(`\n🎱 The Golden Frame API running on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
+  const HOST = process.env.HOST || '0.0.0.0';
+
+  server.listen(PORT, HOST, () => {
+    console.log(`\n🎱 The Golden Frame API running on http://${HOST === '0.0.0.0' ? '0.0.0.0' : HOST}:${PORT} (${process.env.NODE_ENV || 'development'})`);
     console.log(`   Health: http://localhost:${PORT}/api/health\n`);
   });
 };

@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const helmet = require('helmet');
+const compression = require('compression');
 const cors = require('cors');
 const mongoSanitize = require('express-mongo-sanitize');
 const rateLimit = require('express-rate-limit');
@@ -35,6 +36,7 @@ app.set('trust proxy', true);
 
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(helmet());
+app.use(compression({ level: 6, threshold: 1024 }));
 app.use(mongoSanitize());
 
 // Disable rate limiting in development for easier testing
@@ -61,31 +63,73 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
-const allowedOrigins = process.env.CLIENT_URL 
-  ? process.env.CLIENT_URL.split(',').map(o => o.trim())
-  : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:4173'];
-if (!allowedOrigins.includes('http://localhost:5174')) {
-  allowedOrigins.push('http://localhost:5174');
-}
+const isLocalNetworkOrigin = (origin) => {
+  if (!origin) return true;
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname;
 
-console.log('🌐 CORS allowed origins:', allowedOrigins);
-console.log('🌐 NODE_ENV:', process.env.NODE_ENV);
-console.log('🌐 CLIENT_URL:', process.env.CLIENT_URL || 'not set');
+    if (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '::1' ||
+      hostname.endsWith('.localhost')
+    ) {
+      return true;
+    }
+
+    if (
+      /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
+      /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)
+    ) {
+      return true;
+    }
+  } catch (e) {
+    return false;
+  }
+  return false;
+};
+
+const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS || process.env.CLIENT_URL || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([
+  ...configuredOrigins,
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:4173',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+  'http://127.0.0.1:4173',
+]));
+
+console.log('🌐 CORS configured allowed origins:', allowedOrigins);
+console.log('🌐 NODE_ENV:', process.env.NODE_ENV || 'development');
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
+    // Allow requests with no origin (mobile apps, Postman, curl, server-to-server)
     if (!origin) {
-      console.log('🌐 CORS: Allowing request with no origin');
       return callback(null, true);
     }
-    // Check if origin matches any allowed origin (with or without trailing slash)
+
     const normalizedOrigin = origin.replace(/\/$/, '');
-    const normalizedAllowed = allowedOrigins.map(o => o.replace(/\/$/, ''));
+    const normalizedAllowed = allowedOrigins.map((o) => o.replace(/\/$/, ''));
+
     if (normalizedAllowed.includes(normalizedOrigin)) {
-      console.log('🌐 CORS: Allowing origin:', origin);
       return callback(null, true);
     }
+
+    // In development mode, dynamically allow local network origins (e.g. 192.168.x.x, 10.x.x.x)
+    const isDev = process.env.NODE_ENV !== 'production';
+    if (isDev && isLocalNetworkOrigin(origin)) {
+      console.log('🌐 CORS (Dev mode): Allowing local network origin:', origin);
+      return callback(null, true);
+    }
+
     console.log('🌐 CORS blocked origin:', origin, 'Allowed:', normalizedAllowed);
     callback(new Error('Not allowed by CORS'));
   },

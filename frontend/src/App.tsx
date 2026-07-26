@@ -6,7 +6,7 @@ import './index.css';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 30_000,        // 30s before background refetch
+      staleTime: 60_000,        // 60s before background refetch
       gcTime: 5 * 60_000,       // 5min cache
       retry: (failureCount, error: unknown) => {
         const status = (error as { response?: { status?: number } })?.response?.status;

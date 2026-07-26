@@ -20,33 +20,39 @@ export default function DashboardPage() {
     queryKey: ['dashboard-stats', selectedBranch],
     queryFn: () => reportService.getDashboard(branchParam).then((r) => r.data.data),
     refetchInterval: 300000,
+    staleTime: 60_000,
   });
 
   const { data: revenueData } = useQuery({
     queryKey: ['revenue-chart', selectedBranch],
     queryFn: () => reportService.getRevenue({ ...branchParam, groupBy: 'day' }).then((r) => r.data.data),
+    staleTime: 60_000,
   });
 
   const { data: tableUsage } = useQuery({
     queryKey: ['table-usage', selectedBranch],
     queryFn: () => reportService.getTableUsage(branchParam).then((r) => r.data.data),
+    staleTime: 60_000,
   });
 
   const { data: branchComp } = useQuery({
     queryKey: ['branch-comparison'],
     queryFn: () => reportService.getBranchComparison().then((r) => r.data.data),
+    staleTime: 60_000,
   });
 
   const { data: tablesData } = useQuery({
     queryKey: ['tables-live', selectedBranch],
     queryFn: () => tableService.getAll(branchParam).then((r) => r.data.data.tables),
     refetchInterval: 300000,
+    staleTime: 60_000,
   });
 
   const { data: billsData } = useQuery({
     queryKey: ['bills-pending', selectedBranch],
     queryFn: () => billingService.getAll({ ...branchParam, paymentStatus: 'unpaid' }).then((r) => r.data.data.bills),
     refetchInterval: 300000,
+    staleTime: 60_000,
   });
 
   // Chart data: merge revenue & expense by date

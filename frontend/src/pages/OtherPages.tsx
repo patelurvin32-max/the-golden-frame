@@ -1,9 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Branches Page
 // ─────────────────────────────────────────────────────────────────────────────
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { branchService, userService, attendanceService, logsService, settingsService } from '@/services';
+import { branchService, userService, attendanceService, logsService, settingsService, notificationService } from '@/services';
 import {
   Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select,
   PageHeader, Skeleton, EmptyState, Table2, TableHeader, TableBody,
@@ -13,6 +13,7 @@ import { Eye, EyeOff, Calendar } from 'lucide-react';
 import { formatDate, formatDateTime, cn } from '@/utils';
 import type { Branch, User } from '@/types';
 import { useAppStore, useAuthStore } from '@/store';
+import { useSocket } from '@/hooks/useSocket';
 
 type LogsResponse = {
   logs: any[];
@@ -357,54 +358,92 @@ export function UsersPage() {
   };
 
   return (
-    <div className="space-y-5 animate-fade-in">
+    <div className="space-y-3 sm:space-y-5 animate-fade-in">
       <PageHeader title="Staff Management" 
         actions={<Button size="sm" onClick={openCreateModal}>+ Add Staff</Button>}
       />
       <Card>
-        {isLoading ? <div className="p-4 space-y-3">{[...Array(4)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
+        {isLoading ? <div className="p-3 sm:p-4 space-y-3">{[...Array(4)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
           : users.length === 0 ? <EmptyState icon="👤" title="No staff accounts" action={<Button size="sm" onClick={openCreateModal}>+ Add Staff</Button>} />
           : (
-            <Table2>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Role</TableHead>
-                  <TableHead>Branches</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+            <>
+              {/* Desktop table */}
+              <div className="hidden sm:block">
+                <Table2>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Role</TableHead>
+                      <TableHead>Branches</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {users.map((user) => (
+                      <TableRow key={user._id}>
+                        <TableCell className="font-semibold">{user.name}</TableCell>
+                        <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
+                        <TableCell><Badge variant={roleColor[user.role] as any} className="capitalize">{user.role.replace('_', ' ')}</Badge></TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{(user.branches as any[]).map((b: any) => b.name || b).join(', ') || '—'}</TableCell>
+                        <TableCell><Badge variant={user.isActive ? 'success' : 'danger'}>{user.isActive ? 'Active' : 'Inactive'}</Badge></TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-2">
+                            {user.role !== 'super_admin' && (
+                              <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300" onClick={() => openEditModal(user)}>
+                                <PencilIcon />
+                                Edit
+                              </Button>
+                            )}
+                            {user.isActive && user.role !== 'super_admin' && (
+                              <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-300"
+                                onClick={() => { if (window.confirm('Deactivate this user?')) deactivateMutation.mutate(user._id); }}
+                              >
+                                Deactivate
+                              </Button>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table2>
+              </div>
+              {/* Mobile card layout */}
+              <div className="sm:hidden divide-y divide-border">
                 {users.map((user) => (
-                  <TableRow key={user._id}>
-                    <TableCell className="font-semibold">{user.name}</TableCell>
-                    <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
-                    <TableCell><Badge variant={roleColor[user.role] as any} className="capitalize">{user.role.replace('_', ' ')}</Badge></TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{(user.branches as any[]).map((b: any) => b.name || b).join(', ') || '—'}</TableCell>
-                    <TableCell><Badge variant={user.isActive ? 'success' : 'danger'}>{user.isActive ? 'Active' : 'Inactive'}</Badge></TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap gap-2">
-                        {user.role !== 'super_admin' && (
-                          <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300" onClick={() => openEditModal(user)}>
-                            <PencilIcon />
-                            Edit
-                          </Button>
-                        )}
-                        {user.isActive && user.role !== 'super_admin' && (
-                          <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-300"
+                  <div key={user._id} className="p-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-semibold text-sm truncate">{user.name}</span>
+                      <Badge variant={user.isActive ? 'success' : 'danger'} className="shrink-0 ml-2">{user.isActive ? 'Active' : 'Inactive'}</Badge>
+                    </div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Badge variant={roleColor[user.role] as any} className="capitalize text-[10px]">{user.role.replace('_', ' ')}</Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+                    {(user.branches as any[]).length > 0 && (
+                      <p className="text-xs text-muted-foreground mt-0.5">{(user.branches as any[]).map((b: any) => b.name || b).join(', ')}</p>
+                    )}
+                    {user.role !== 'super_admin' && (
+                      <div className="flex gap-2 mt-2">
+                        <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300 h-8 text-xs px-2" onClick={() => openEditModal(user)}>
+                          <PencilIcon />
+                          Edit
+                        </Button>
+                        {user.isActive && (
+                          <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-300 h-8 text-xs px-2"
                             onClick={() => { if (window.confirm('Deactivate this user?')) deactivateMutation.mutate(user._id); }}
                           >
                             Deactivate
                           </Button>
                         )}
                       </div>
-                    </TableCell>
-                  </TableRow>
+                    )}
+                  </div>
                 ))}
-              </TableBody>
-            </Table2>
+              </div>
+            </>
           )}
       </Card>
 
@@ -528,9 +567,9 @@ export function UsersPage() {
             )}
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-2 pt-2">
-            <Button variant="outline" className="flex-1" onClick={closeModal}>Cancel</Button>
-            <Button className="flex-1" loading={createMutation.isPending || updateMutation.isPending} onClick={handleSave}>
+          <div className="flex flex-row gap-2 pt-3 sticky bottom-0 bg-card -mx-4 sm:-mx-5 px-4 sm:px-5 pb-4 sm:pb-5 -mb-4 sm:-mb-5 border-t border-border mt-4">
+            <Button variant="outline" className="flex-1 h-12 sm:h-10 text-sm font-medium" onClick={closeModal}>Cancel</Button>
+            <Button className="flex-1 h-12 sm:h-10 text-sm font-medium" loading={createMutation.isPending || updateMutation.isPending} onClick={handleSave}>
               {modalMode === 'edit' ? 'Save Changes' : 'Create Staff'}
             </Button>
           </div>
@@ -788,6 +827,171 @@ export function SettingsPage() {
           <Button onClick={() => saveMutation.mutate(form)} loading={saveMutation.isPending}>Save Settings</Button>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+export function NotificationsPage() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const { onNotification } = useSocket();
+
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'unread' | 'read'>('all');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  useEffect(() => {
+    const cleanup = onNotification(() => {
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+    });
+    return cleanup;
+  }, [onNotification, qc]);
+
+  const params: Record<string, string> = {
+    page: String(page),
+    limit: String(pageSize),
+  };
+  if (statusFilter !== 'all') params.status = statusFilter;
+  if (search) params.search = search;
+
+  const { data: notifData, isLoading } = useQuery({
+    queryKey: ['notifications', statusFilter, search, page, pageSize],
+    queryFn: () => notificationService.getAll(params).then((r) => r.data as any),
+  });
+
+  const markAllReadMutation = useMutation({
+    mutationFn: () => notificationService.markAllRead(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+      toast.success('All notifications marked as read');
+    },
+  });
+
+  const markReadMutation = useMutation({
+    mutationFn: (id: string) => notificationService.markRead(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+    },
+  });
+
+  const notifications: any[] = notifData?.data?.notifications || [];
+  const pagination = notifData?.data?.pagination || { total: 0, page: 1, limit: pageSize, pages: 1 };
+  const totalRecords = pagination.total;
+  const totalPages = Math.max(1, pagination.pages);
+
+  return (
+    <div className="space-y-5 animate-fade-in">
+      <PageHeader
+        title="Notifications"
+        actions={
+          notifications.length > 0 ? (
+            <Button size="sm" variant="outline" onClick={() => markAllReadMutation.mutate()} loading={markAllReadMutation.isPending}>
+              ✓ Mark All as Read
+            </Button>
+          ) : undefined
+        }
+      />
+
+      {/* Filter Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3 flex-wrap flex-1">
+          <div className="w-64">
+            <Input
+              placeholder="Search notifications..."
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            />
+          </div>
+          <Select
+            value={statusFilter}
+            onChange={(e) => { setStatusFilter(e.target.value as any); setPage(1); }}
+            className="w-36 h-9 text-xs"
+          >
+            <option value="all">All Status</option>
+            <option value="unread">Unread Only</option>
+            <option value="read">Read Only</option>
+          </Select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Label className="text-xs text-muted-foreground whitespace-nowrap">Rows:</Label>
+          <Select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}>
+            <option value={10}>10</option>
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+          </Select>
+        </div>
+      </div>
+
+      <Card>
+        <CardContent className="p-0 divide-y divide-border">
+          {isLoading ? (
+            <div className="p-6 space-y-4">
+              {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-14 w-full" />)}
+            </div>
+          ) : notifications.length === 0 ? (
+            <EmptyState icon="🔔" title="No notifications found" description="You have no notifications matching your filters." />
+          ) : (
+            notifications.map((n: any) => (
+              <div key={n._id} className={`p-4 flex items-start justify-between gap-4 transition-colors ${!n.isRead ? 'bg-primary/5' : ''}`}>
+                <div className="flex items-start gap-3 min-w-0 flex-1">
+                  <div className={`h-2.5 w-2.5 rounded-full mt-1.5 shrink-0 ${!n.isRead ? 'bg-primary' : 'bg-muted'}`} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-semibold text-foreground">{n.title}</p>
+                      <Badge variant="outline" className="text-[10px] uppercase font-bold tracking-wider">
+                        🏢 {n.branchName || 'Unknown Branch'}
+                      </Badge>
+                      {!n.isRead ? (
+                        <Badge variant="info" className="text-[10px]">Unread</Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px]">Read</Badge>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1.5 break-words leading-relaxed">{n.message}</p>
+                    <div className="flex items-center gap-3 mt-2 text-[11px] text-muted-foreground/70">
+                      <span>👤 {n.actorName || n.meta?.actorName || 'System'}</span>
+                      <span>•</span>
+                      <span>🕒 {formatDateTime(n.createdAt)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {!n.isRead && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-xs text-primary shrink-0"
+                    onClick={() => markReadMutation.mutate(n._id)}
+                  >
+                    Mark as read
+                  </Button>
+                )}
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Pagination Footer */}
+      <div className="flex items-center justify-between mt-4">
+        <p className="text-sm text-muted-foreground">
+          Showing {totalRecords === 0 ? 0 : (page - 1) * pageSize + 1}–{Math.min(page * pageSize, totalRecords)} of {totalRecords} notifications
+        </p>
+        <div className="flex items-center gap-3">
+          <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+            Previous
+          </Button>
+          <span className="text-sm text-muted-foreground font-medium">
+            Page {page} of {totalPages}
+          </span>
+          <Button size="sm" variant="outline" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
+            Next
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

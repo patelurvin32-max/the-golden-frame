@@ -202,7 +202,6 @@ export interface MenuItem {
   halfPrice?: number;
   fullPrice?: number;
   description?: string;
-  availability: 'Available' | 'Unavailable';
   status: 'Active' | 'Inactive';
   createdAt?: string;
   updatedAt?: string;

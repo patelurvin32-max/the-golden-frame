@@ -4,6 +4,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ROLES } = require('../config/constants');
 const mongoose = require('mongoose');
 const { syncTablesWithMenuItems } = require('../utils/tableSync');
+const { createBranchNotification } = require('../services/notificationService');
 
 // GET /api/menu
 exports.getMenuItems = asyncHandler(async (req, res) => {
@@ -17,7 +18,8 @@ exports.getMenuItems = asyncHandler(async (req, res) => {
   // Super Admin can see all branches (or filter by explicit branch parameter)
   // Branch Managers and Staff can only see their assigned branches
   if (req.user.role !== ROLES.SUPER_ADMIN) {
-    filter.branch = { $in: req.user.branches };
+    const userBranches = (req.user.branches || []).map(b => new mongoose.Types.ObjectId(b._id || b));
+    filter.branch = { $in: userBranches };
   }
   // Super Admin can optionally filter by specific branch
   if (req.query.branch && req.user.role === ROLES.SUPER_ADMIN) {
@@ -34,14 +36,24 @@ exports.getMenuItems = asyncHandler(async (req, res) => {
     ];
   }
 
-  // Use simple find with populate instead of aggregation for better performance
+  const pipeline = [
+    { $match: filter },
+    {
+      $lookup: {
+        from: 'menucategories',
+        localField: 'category',
+        foreignField: '_id',
+        as: 'category'
+      }
+    },
+    { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
+    { $sort: { 'category.name': 1, name: 1 } },
+    { $skip: skip },
+    { $limit: limit }
+  ];
+
   const [items, total] = await Promise.all([
-    MenuItem.find(filter)
-      .populate('category', 'name status')
-      .sort({ name: 1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(), // Use lean() for faster queries
+    MenuItem.aggregate(pipeline),
     MenuItem.countDocuments(filter)
   ]);
 
@@ -168,7 +180,7 @@ exports.getMenuItem = asyncHandler(async (req, res, next) => {
 
 // POST /api/menu
 exports.createMenuItem = asyncHandler(async (req, res, next) => {
-  const { name, category, price, halfPrice, fullPrice, description, availability, status, branch } = req.body;
+  const { name, category, price, halfPrice, fullPrice, description, status, branch } = req.body;
 
   // Validate required fields
   if (!name || !name.trim()) return next(new AppError('Item name is required.', 400));
@@ -196,17 +208,24 @@ exports.createMenuItem = asyncHandler(async (req, res, next) => {
     halfPrice: halfPrice ? Number(halfPrice) : undefined,
     fullPrice: fullPrice ? Number(fullPrice) : undefined,
     description: description ? description.trim() : undefined,
-    availability: availability || 'Available',
     status: status || 'Active',
     branch: finalBranch
   });
+
+  createBranchNotification({
+    branchId: finalBranch,
+    actor: req.user,
+    title: 'Menu Item Added',
+    message: `Menu item "${item.name}" was added by ${req.user.name}.`,
+    req,
+  }).catch((err) => console.error('Error creating menu notification:', err));
 
   res.status(201).json({ success: true, data: { item } });
 });
 
 // PATCH /api/menu/:id
 exports.updateMenuItem = asyncHandler(async (req, res, next) => {
-  const { name, category, price, halfPrice, fullPrice, description, availability, status } = req.body;
+  const { name, category, price, halfPrice, fullPrice, description, status } = req.body;
 
   const item = await MenuItem.findById(req.params.id).populate('category');
   if (!item) return next(new AppError('Item not found.', 404));
@@ -230,10 +249,18 @@ exports.updateMenuItem = asyncHandler(async (req, res, next) => {
   if (halfPrice !== undefined && halfPrice !== null && halfPrice !== '') updateData.halfPrice = Number(halfPrice);
   if (fullPrice !== undefined && fullPrice !== null && fullPrice !== '') updateData.fullPrice = Number(fullPrice);
   if (description !== undefined) updateData.description = description.trim();
-  if (availability) updateData.availability = availability;
   if (status) updateData.status = status;
 
   const updatedItem = await MenuItem.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true }).populate('category');
+
+  createBranchNotification({
+    branchId: updatedItem.branch,
+    actor: req.user,
+    title: 'Menu Item Updated',
+    message: `Menu item "${updatedItem.name}" was updated by ${req.user.name}.`,
+    req,
+  }).catch((err) => console.error('Error creating menu notification:', err));
+
   res.status(200).json({ success: true, data: { item: updatedItem } });
 });
 

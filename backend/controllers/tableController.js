@@ -29,14 +29,14 @@ exports.getTables = asyncHandler(async (req, res) => {
         { path: 'customer', select: 'name phone' }
       ]
     })
-    .sort('name');
+    .sort('name')
+    .lean();
 
   res.status(200).json({ success: true, results: tables.length, data: { tables } });
 });
 
 // GET /api/tables/:id
 exports.getTable = asyncHandler(async (req, res, next) => {
-  await syncTablesWithMenuItems();
 
   const table = await Table.findById(req.params.id)
     .populate('branch')

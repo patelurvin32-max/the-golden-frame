@@ -23,6 +23,8 @@ const emptyForm = {
   branch: ''
 };
 
+import { useDebounce } from '@/hooks/useDebounce';
+
 export default function InventoryPage() {
   const qc = useQueryClient();
   const toast = useToast();
@@ -41,6 +43,7 @@ export default function InventoryPage() {
   const [restockForm, setRestockForm] = useState({ quantity: 10, cost: 0, supplier: '' });
   
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 300);
   const [filterCategory, setFilterCategory] = useState('all');
   const [showLowStock, setShowLowStock] = useState(false);
   const [page, setPage] = useState(1);
@@ -55,17 +58,20 @@ export default function InventoryPage() {
   const { data: branchData } = useQuery({
     queryKey: ['branches'],
     queryFn: () => branchService.getAll().then((r) => r.data.data.branches),
+    staleTime: 5 * 60 * 1000,
   });
 
   const { data: activeCategories } = useQuery({
     queryKey: ['categories', 'active'],
-    queryFn: () => inventoryService.getCategories({ activeOnly: 'true' }).then((r) => r.data.data.categories)
+    queryFn: () => inventoryService.getCategories({ activeOnly: 'true' }).then((r) => r.data.data.categories),
+    staleTime: 5 * 60 * 1000,
   });
 
   const { data: allCategories, isLoading: categoriesLoading } = useQuery({
     queryKey: ['categories', 'all'],
     queryFn: () => inventoryService.getCategories().then((r) => r.data.data.categories),
-    enabled: activeTab === 'categories'
+    enabled: activeTab === 'categories',
+    staleTime: 5 * 60 * 1000,
   });
 
   const params: Record<string, string> = {
@@ -75,12 +81,13 @@ export default function InventoryPage() {
   if (selectedBranch) params.branch = selectedBranch;
   if (filterCategory !== 'all') params.category = filterCategory;
   if (showLowStock) params.lowStock = 'true';
-  if (search) params.search = search;
+  if (debouncedSearch) params.search = debouncedSearch;
 
   const { data: inventoryData, isLoading: itemsLoading } = useQuery({
-    queryKey: ['inventory', selectedBranch, filterCategory, showLowStock, search, page, pageSize],
+    queryKey: ['inventory', selectedBranch, filterCategory, showLowStock, debouncedSearch, page, pageSize],
     queryFn: () => inventoryService.getAll(params).then((r) => r.data.data),
-    enabled: activeTab === 'items'
+    enabled: activeTab === 'items',
+    placeholderData: (prev) => prev,
   });
 
   // Query low stock items total count for the branch
@@ -89,7 +96,9 @@ export default function InventoryPage() {
     queryFn: () =>
       inventoryService
         .getAll({ branch: selectedBranch || '', lowStock: 'true', limit: '1' })
-        .then((r) => r.data.data.pagination.total)
+        .then((r) => r.data.data.pagination.total),
+    enabled: activeTab === 'items',
+    staleTime: 60_000,
   });
 
   const items: InventoryItem[] = inventoryData?.items || [];
@@ -341,7 +350,7 @@ export default function InventoryPage() {
                   <Input placeholder="Search items or SKU..." value={search} onChange={(e) => setSearch(e.target.value)} />
                 </div>
                 <div className="flex items-center gap-2">
-                  <Label className="text-xs text-muted-foreground whitespace-nowrap">Rows per page:</Label>
+                  <Label className="text-xs text-muted-foreground whitespace-nowrap">Rows:</Label>
                   <Select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
                     <option value={10}>10</option>
                     <option value={25}>25</option>

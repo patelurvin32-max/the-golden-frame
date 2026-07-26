@@ -57,6 +57,9 @@ const paymentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+billSchema.index({ invoiceNumber: 1 }, { unique: true });
+billSchema.index({ session: 1 });
+billSchema.index({ customer: 1 });
 billSchema.index({ branch: 1, createdAt: -1, paymentStatus: 1 });
 billSchema.index({ branch: 1, createdAt: -1, customer: 1 });
 paymentSchema.index({ branch: 1, createdAt: -1, method: 1 });

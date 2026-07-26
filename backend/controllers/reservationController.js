@@ -248,6 +248,7 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     actor: req.user,
     title: 'New Reservation Created',
     message: `${req.user.name} created a new reservation (${reservation.reservationId}) for ${customerName}.`,
+    req,
   }).catch((err) => console.error('Failed to create reservation notification:', err.message));
 
   void logActivity({

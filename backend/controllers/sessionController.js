@@ -15,7 +15,7 @@ const emitTableUpdate = async (req, table) => {
       { path: 'menuItemId', select: 'name price' },
       { path: 'customer', select: 'name phone' }
     ]
-  });
+  }).lean();
   req.app.get('io')?.to(`branch:${table.branch}`).emit('table:updated', populated);
 };
 
@@ -74,11 +74,9 @@ exports.pauseSession = asyncHandler(async (req, res, next) => {
   session.status = 'paused';
   await session.save();
 
-  const table = await Table.findByIdAndUpdate(session.table, { status: 'maintenance' }, { new: true });
-  // Note: using 'maintenance' visually would be confusing; instead keep table status as 'running'
-  // but expose session.status='paused' to the frontend for the correct paused UI state.
-  table.status = 'running';
-  await table.save();
+  // Keep table status as 'running' — the frontend uses session.status='paused'
+  // to display the correct paused UI state.
+  const table = await Table.findById(session.table);
 
   await emitTableUpdate(req, table);
   res.status(200).json({ success: true, data: { session } });
@@ -187,15 +185,14 @@ exports.getSession = asyncHandler(async (req, res, next) => {
     .populate('customer', 'name phone')
     .populate('startedBy', 'name')
     .populate('menuCategoryId', 'name')
-    .populate('menuItemId', 'name price');
+    .populate('menuItemId', 'name price')
+    .lean();
   if (!session) return next(new AppError('Session not found.', 404));
   res.status(200).json({ success: true, data: { session } });
 });
 
 // GET /api/sessions/live?branch=...
 exports.getLiveSessions = asyncHandler(async (req, res) => {
-  await syncTablesWithMenuItems();
-
   const filter = { status: { $in: ['running', 'paused'] } };
   if (req.query.branch) filter.branch = req.query.branch;
   else if (req.user.role !== 'super_admin') filter.branch = { $in: req.user.branches };
@@ -205,7 +202,8 @@ exports.getLiveSessions = asyncHandler(async (req, res) => {
     .populate('customer', 'name phone')
     .populate('startedBy', 'name')
     .populate('menuCategoryId', 'name')
-    .populate('menuItemId', 'name price');
+    .populate('menuItemId', 'name price')
+    .lean();
 
   res.status(200).json({ success: true, results: sessions.length, data: { sessions } });
 });
