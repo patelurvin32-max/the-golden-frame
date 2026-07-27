@@ -541,7 +541,6 @@ export default function MenuPage() {
                 </option>
               ))}
             </Select>
-            <p className="text-xs text-muted-foreground">Linking to inventory will automatically track stock when this menu item is ordered.</p>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5"><Label>Price *</Label><Input type="number" step="0.01" min="0" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: Number(e.target.value) }))} /></div>

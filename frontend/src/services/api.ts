@@ -19,12 +19,19 @@ export const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-// ── Request interceptor — attach access token ─────────────────────────────────
+// ── Request interceptor — attach access token + CSRF token ───────────────────
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = localStorage.getItem('accessToken');
   if (token && config.headers) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+
+  // Attach CSRF token for state-changing requests
+  const csrfToken = sessionStorage.getItem('csrfToken');
+  if (csrfToken && config.headers) {
+    config.headers['X-CSRF-Token'] = csrfToken;
+  }
+
   return config;
 });
 
@@ -40,7 +47,14 @@ const processQueue = (error: unknown, token: string | null) => {
 const isAuthEndpoint = (url?: string) => Boolean(url && (url.includes('/auth/login') || url.includes('/auth/refresh')));
 
 api.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    // Capture CSRF token from every response header and store it
+    const csrfToken = res.headers['x-csrf-token'];
+    if (csrfToken) {
+      sessionStorage.setItem('csrfToken', csrfToken);
+    }
+    return res;
+  },
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
     const requestUrl = originalRequest?.url;

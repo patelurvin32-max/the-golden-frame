@@ -25,148 +25,125 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
   const bf = branchFilter(req);
   const matchBranch = bf ? { branch: bf } : {};
 
-  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
-  const yearStart = new Date(new Date().getFullYear(), 0, 1);
+  const now = new Date();
+  const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+  const monthStart = new Date(now); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const yearStart  = new Date(now.getFullYear(), 0, 1);
 
-  const [
-    todayRevenue,
-    monthRevenue,
-    yearRevenue,
-    todayCashCollection,
-    monthCashCollection,
-    todayOnlineCollection,
-    monthOnlineCollection,
-    todayExpenses,
-    monthExpenses,
-    runningTables,
-    availableTables,
-    todayCustomers,
-    totalWalletBalance,
-    todayWalletCredits,
-    todayWalletDebits,
-    todayPaidOrders,
-    todayPartialOrders,
-    todayUnpaidOrders,
-    totalOutstandingBalance,
-  ] = await Promise.all([
-    Bill.aggregate([{ $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: todayStart } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
-    Bill.aggregate([{ $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: monthStart } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
-    Bill.aggregate([{ $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: yearStart } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
-    // Cash collection (including mixed payments)
-    Payment.aggregate([
-      { $match: { ...matchBranch, createdAt: { $gte: todayStart } } },
-      {
-        $addFields: {
-          cashAmount: {
-            $cond: [
-              { $eq: ['$method', 'mixed'] },
-              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'cash'] } } }, 0] },
-              { $cond: [{ $eq: ['$method', 'cash'] }, { amount: '$amount' }, { amount: 0 }]
-              }
-            ]
-          }
-        }
+  // Helper to extract a cash or upi amount from a payment doc (handles mixed breakdown)
+  const cashExpr = {
+    $cond: [
+      { $eq: ['$method', 'cash'] },
+      '$amount',
+      { $reduce: { input: { $filter: { input: { $ifNull: ['$breakdown', []] }, cond: { $eq: ['$$this.method', 'cash'] } } }, initialValue: 0, in: { $add: ['$$value', '$$this.amount'] } } }
+    ]
+  };
+  const onlineExpr = {
+    $cond: [
+      { $eq: ['$method', 'upi'] },
+      '$amount',
+      { $reduce: { input: { $filter: { input: { $ifNull: ['$breakdown', []] }, cond: { $eq: ['$$this.method', 'upi'] } } }, initialValue: 0, in: { $add: ['$$value', '$$this.amount'] } } }
+    ]
+  };
+
+  // ── 1 query for all Bill stats (was 6 separate Bill aggregates + 3 Order aggregates) ──
+  const billStatsPromise = Bill.aggregate([
+    { $match: { ...matchBranch } },
+    {
+      $facet: {
+        todayRevenue:  [{ $match: { paymentStatus: 'paid',    createdAt: { $gte: todayStart } } }, { $group: { _id: null, v: { $sum: '$total' } } }],
+        monthRevenue:  [{ $match: { paymentStatus: 'paid',    createdAt: { $gte: monthStart } } }, { $group: { _id: null, v: { $sum: '$total' } } }],
+        yearRevenue:   [{ $match: { paymentStatus: 'paid',    createdAt: { $gte: yearStart  } } }, { $group: { _id: null, v: { $sum: '$total' } } }],
+        todayPaid:     [{ $match: { paymentStatus: 'paid',    createdAt: { $gte: todayStart } } }, { $count: 'n' }],
+        todayPartial:  [{ $match: { paymentStatus: 'partial', createdAt: { $gte: todayStart } } }, { $count: 'n' }],
+        todayUnpaid:   [{ $match: { paymentStatus: 'unpaid',  createdAt: { $gte: todayStart } } }, { $count: 'n' }],
+        outstanding:   [{ $match: { paymentStatus: { $in: ['unpaid', 'partial'] } } }, { $group: { _id: null, v: { $sum: '$total' } } }],
       },
-      { $group: { _id: null, total: { $sum: '$cashAmount.amount' } } }
-    ]),
-    Payment.aggregate([
-      { $match: { ...matchBranch, createdAt: { $gte: monthStart } } },
-      {
-        $addFields: {
-          cashAmount: {
-            $cond: [
-              { $eq: ['$method', 'mixed'] },
-              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'cash'] } } }, 0] },
-              { $cond: [{ $eq: ['$method', 'cash'] }, { amount: '$amount' }, { amount: 0 }]
-              }
-            ]
-          }
-        }
-      },
-      { $group: { _id: null, total: { $sum: '$cashAmount.amount' } } }
-    ]),
-    // Online collection (including mixed payments)
-    Payment.aggregate([
-      { $match: { ...matchBranch, createdAt: { $gte: todayStart } } },
-      {
-        $addFields: {
-          onlineAmount: {
-            $cond: [
-              { $eq: ['$method', 'mixed'] },
-              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'upi'] } } }, 0] },
-              { $cond: [{ $eq: ['$method', 'upi'] }, { amount: '$amount' }, { amount: 0 }]
-              }
-            ]
-          }
-        }
-      },
-      { $group: { _id: null, total: { $sum: '$onlineAmount.amount' } } }
-    ]),
-    Payment.aggregate([
-      { $match: { ...matchBranch, createdAt: { $gte: monthStart } } },
-      {
-        $addFields: {
-          onlineAmount: {
-            $cond: [
-              { $eq: ['$method', 'mixed'] },
-              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'upi'] } } }, 0] },
-              { $cond: [{ $eq: ['$method', 'upi'] }, { amount: '$amount' }, { amount: 0 }]
-              }
-            ]
-          }
-        }
-      },
-      { $group: { _id: null, total: { $sum: '$onlineAmount.amount' } } }
-    ]),
-    Expense.aggregate([{ $match: { ...matchBranch, date: { $gte: todayStart } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-    Expense.aggregate([{ $match: { ...matchBranch, date: { $gte: monthStart } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-    Table.countDocuments({ ...(bf ? { branch: bf } : {}), status: 'running', isActive: true }),
-    Table.countDocuments({ ...(bf ? { branch: bf } : {}), status: 'available', isActive: true }),
-    Session.countDocuments({ ...(matchBranch), startTime: { $gte: todayStart } }),
-    Customer.aggregate([{ $match: { ...matchBranch, isActive: true } }, { $group: { _id: null, total: { $sum: '$walletBalance' } } }]),
-    WalletTransaction.aggregate([{ $match: { ...matchBranch, type: 'credit', createdAt: { $gte: todayStart } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-    WalletTransaction.aggregate([{ $match: { ...matchBranch, type: 'debit', createdAt: { $gte: todayStart } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-    // Payment status breakdown
-    Order.aggregate([{ $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: todayStart } } }, { $count: 'count' }]),
-    Order.aggregate([{ $match: { ...matchBranch, paymentStatus: 'partial', createdAt: { $gte: todayStart } } }, { $count: 'count' }]),
-    Order.aggregate([{ $match: { ...matchBranch, paymentStatus: 'unpaid', createdAt: { $gte: todayStart } } }, { $count: 'count' }]),
-    // Total outstanding balance
-    Order.aggregate([{ $match: { ...matchBranch, paymentStatus: { $in: ['partial', 'unpaid'] } } }, { $group: { _id: null, total: { $sum: '$pendingPaymentAmount' } } }]),
+    },
   ]);
 
-  const todayRev = todayRevenue[0]?.total || 0;
-  const monthRev = monthRevenue[0]?.total || 0;
-  const yearRev = yearRevenue[0]?.total || 0;
-  const todayExp = todayExpenses[0]?.total || 0;
-  const monthExp = monthExpenses[0]?.total || 0;
-  const todayCash = todayCashCollection[0]?.total || 0;
-  const monthCash = monthCashCollection[0]?.total || 0;
-  const todayOnline = todayOnlineCollection[0]?.total || 0;
-  const monthOnline = monthOnlineCollection[0]?.total || 0;
+  // ── 1 query for all Payment stats (was 4 separate Payment aggregates) ──
+  const paymentStatsPromise = Payment.aggregate([
+    { $match: { ...matchBranch, createdAt: { $gte: monthStart } } },
+    {
+      $facet: {
+        todayCash:    [{ $match: { createdAt: { $gte: todayStart } } }, { $group: { _id: null, v: { $sum: cashExpr   } } }],
+        monthCash:    [                                                  { $group: { _id: null, v: { $sum: cashExpr   } } }],
+        todayOnline:  [{ $match: { createdAt: { $gte: todayStart } } }, { $group: { _id: null, v: { $sum: onlineExpr } } }],
+        monthOnline:  [                                                  { $group: { _id: null, v: { $sum: onlineExpr } } }],
+      },
+    },
+  ]);
+
+  // ── 1 query for all Expense stats (was 2 separate Expense aggregates) ──
+  const expenseStatsPromise = Expense.aggregate([
+    { $match: { ...matchBranch } },
+    {
+      $facet: {
+        today: [{ $match: { date: { $gte: todayStart } } }, { $group: { _id: null, v: { $sum: '$amount' } } }],
+        month: [{ $match: { date: { $gte: monthStart } } }, { $group: { _id: null, v: { $sum: '$amount' } } }],
+      },
+    },
+  ]);
+
+  // ── Remaining simple lookups, all run in parallel with the 3 above ──
+  const [billStats, paymentStats, expenseStats, tables, todayCustomers, walletResult, walletTxStats] =
+    await Promise.all([
+      billStatsPromise,
+      paymentStatsPromise,
+      expenseStatsPromise,
+      Table.find({ ...(bf ? { branch: bf } : {}), isActive: true }).select('status').lean(),
+      Session.countDocuments({ ...matchBranch, startTime: { $gte: todayStart } }),
+      Customer.aggregate([{ $match: { ...matchBranch, isActive: true } }, { $group: { _id: null, total: { $sum: '$walletBalance' } } }]),
+      WalletTransaction.aggregate([
+        { $match: { ...matchBranch, createdAt: { $gte: todayStart } } },
+        {
+          $facet: {
+            credits: [{ $match: { type: 'credit' } }, { $group: { _id: null, v: { $sum: '$amount' } } }],
+            debits:  [{ $match: { type: 'debit'  } }, { $group: { _id: null, v: { $sum: '$amount' } } }],
+          },
+        },
+      ]),
+    ]);
+
+  // Helper to extract a facet value safely
+  const fv = (facetResult, key, field = 'v') => facetResult[0]?.[key]?.[0]?.[field] ?? 0;
+
+  const runningTables   = tables.filter((t) => t.status === 'running').length;
+  const availableTables = tables.filter((t) => t.status === 'available').length;
+
+  const todayRev  = fv(billStats,    'todayRevenue');
+  const monthRev  = fv(billStats,    'monthRevenue');
+  const yearRev   = fv(billStats,    'yearRevenue');
+  const todayExp  = fv(expenseStats, 'today');
+  const monthExp  = fv(expenseStats, 'month');
+  const todayCash    = fv(paymentStats, 'todayCash');
+  const monthCash    = fv(paymentStats, 'monthCash');
+  const todayOnline  = fv(paymentStats, 'todayOnline');
+  const monthOnline  = fv(paymentStats, 'monthOnline');
 
   res.status(200).json({
     success: true,
     data: {
-      revenue: { today: todayRev, month: monthRev, year: yearRev },
+      revenue:  { today: todayRev, month: monthRev, year: yearRev },
       expenses: { today: todayExp, month: monthExp },
-      profit: { today: todayRev - todayExp, month: monthRev - monthExp },
-      tables: { running: runningTables, available: availableTables },
+      profit:   { today: todayRev - todayExp, month: monthRev - monthExp },
+      tables:   { running: runningTables, available: availableTables },
       customersToday: todayCustomers,
       collection: {
-        cash: { today: todayCash, month: monthCash },
+        cash:   { today: todayCash,   month: monthCash   },
         online: { today: todayOnline, month: monthOnline },
       },
       wallet: {
-        totalBalance: totalWalletBalance[0]?.total || 0,
-        todayCredits: todayWalletCredits[0]?.total || 0,
-        todayDebits: todayWalletDebits[0]?.total || 0,
+        totalBalance:  walletResult[0]?.total ?? 0,
+        todayCredits:  fv(walletTxStats, 'credits'),
+        todayDebits:   fv(walletTxStats, 'debits'),
       },
       paymentStatus: {
-        paid: todayPaidOrders[0]?.count || 0,
-        partial: todayPartialOrders[0]?.count || 0,
-        unpaid: todayUnpaidOrders[0]?.count || 0,
-        outstandingBalance: totalOutstandingBalance[0]?.total || 0,
+        paid:               fv(billStats, 'todayPaid',    'n'),
+        partial:            fv(billStats, 'todayPartial', 'n'),
+        unpaid:             fv(billStats, 'todayUnpaid',  'n'),
+        outstandingBalance: fv(billStats, 'outstanding'),
       },
     },
   });
@@ -272,9 +249,7 @@ exports.getTableUsageReport = asyncHandler(async (req, res) => {
 
 // GET /api/reports/branch-comparison
 exports.getBranchComparison = asyncHandler(async (req, res) => {
-  console.log('📊 Branch comparison request received');
   const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
-  console.log('📊 Month start date:', monthStart);
 
   try {
     const [revenueByBranch, expenseByBranch] = await Promise.all([
@@ -301,9 +276,6 @@ exports.getBranchComparison = asyncHandler(async (req, res) => {
       ]),
     ]);
 
-    console.log('📊 Revenue by branch:', revenueByBranch);
-    console.log('📊 Expense by branch:', expenseByBranch);
-
     const expenseMap = Object.fromEntries(expenseByBranch.map((e) => [e._id.toString(), e.expenses]));
     const comparison = revenueByBranch.map((b) => ({
       ...b,
@@ -311,7 +283,6 @@ exports.getBranchComparison = asyncHandler(async (req, res) => {
       profit: b.revenue - (expenseMap[b._id.toString()] || 0),
     }));
 
-    console.log('📊 Branch comparison result:', comparison);
     res.status(200).json({ success: true, data: { comparison } });
   } catch (error) {
     console.error('❌ Branch comparison error:', error);

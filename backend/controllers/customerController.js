@@ -300,7 +300,6 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       // Check if this orderId already exists (to handle race conditions)
       const existingOrder = await Order.findOne({ orderId });
       if (existingOrder) {
-        console.log(`OrderId ${orderId} already exists, retrying...`);
         retryCount++;
         continue;
       }

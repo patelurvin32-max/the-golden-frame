@@ -306,7 +306,8 @@ export default function TablesPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['tables', selectedBranch],
     queryFn: () => tableService.getAll(params).then((r) => r.data.data.tables),
-    refetchInterval: 300000,
+    refetchInterval: 5 * 60_000,  // 5min safety fallback poll; socket handles real-time
+    staleTime: Infinity,          // Socket.io pushes updates — don't mark stale between polls
   });
 
   const availableTypes = useMemo(() => Array.from(new Set((data || []).map((t: Table) => t.type.toLowerCase()))), [data]);

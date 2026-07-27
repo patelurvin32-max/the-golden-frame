@@ -4,17 +4,18 @@ const { body } = require('express-validator');
 const { protect, requirePermission } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 const menuController = require('../controllers/menuController');
+const { cacheMiddleware } = require('../middleware/cache');
 
 const router = express.Router();
 
 // Category Routes - GET uses menu:view, others use menu:manage
-router.get('/categories', protect, requirePermission('menu:view'), menuController.getMenuCategories);
+router.get('/categories', protect, requirePermission('menu:view'), cacheMiddleware(600), menuController.getMenuCategories);
 router.post('/categories', protect, requirePermission('menu:manage'), [body('name').notEmpty()], validate, menuController.createMenuCategory);
 router.patch('/categories/:id', protect, requirePermission('menu:manage'), menuController.updateMenuCategory);
 router.delete('/categories/:id', protect, requirePermission('menu:manage'), menuController.deleteMenuCategory);
 
 // Menu Item Routes - GET uses menu:view, others use menu:manage
-router.get('/', protect, requirePermission('menu:view'), menuController.getMenuItems);
+router.get('/', protect, requirePermission('menu:view'), cacheMiddleware(300), menuController.getMenuItems);
 router.post('/', protect, requirePermission('menu:manage'), [
   body('name').notEmpty(),
   body('branch').optional({ checkFalsy: true }).isMongoId(),

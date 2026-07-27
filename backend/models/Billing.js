@@ -34,6 +34,9 @@ const billSchema = new mongoose.Schema(
     paymentStatus: { type: String, enum: ['unpaid', 'paid', 'partial'], default: 'unpaid' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     pdfUrl: { type: String },
+    // Denormalized for faster search (avoids Customer/Session pre-lookup on every getBills search)
+    customerName:  { type: String, trim: true, default: '' },
+    customerPhone: { type: String, trim: true, default: '' },
   },
   { timestamps: true }
 );
@@ -57,12 +60,13 @@ const paymentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-billSchema.index({ invoiceNumber: 1 }, { unique: true });
 billSchema.index({ session: 1 });
 billSchema.index({ customer: 1 });
+billSchema.index({ customerName: 1 });
 billSchema.index({ branch: 1, createdAt: -1, paymentStatus: 1 });
 billSchema.index({ branch: 1, createdAt: -1, customer: 1 });
 paymentSchema.index({ branch: 1, createdAt: -1, method: 1 });
+paymentSchema.index({ branch: 1, method: 1, createdAt: -1 });
 paymentSchema.index({ bill: 1, createdAt: -1 });
 
 module.exports = {

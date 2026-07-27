@@ -22,10 +22,11 @@ const cookieOptions = (maxAgeMs) => {
   // The browser will handle it correctly with SameSite=None and Secure
   if (!isProduction && process.env.CLIENT_URL && process.env.CLIENT_URL.includes('localhost')) {
     try {
-      const clientUrl = new URL(process.env.CLIENT_URL);
+      const firstUrl = process.env.CLIENT_URL.split(',')[0].trim();
+      const clientUrl = new URL(firstUrl);
       options.domain = clientUrl.hostname;
     } catch (err) {
-      console.warn('Could not parse CLIENT_URL for cookie domain:', err.message);
+      // Ignore domain parsing fallback
     }
   }
 
@@ -57,18 +58,56 @@ exports.login = asyncHandler(async (req, res, next) => {
   if (!email || !password) return next(new AppError('Email and password are required.', 400));
 
   const normalizedEmail = String(email).trim().toLowerCase();
-  const user = await User.findOne({ email: normalizedEmail }).select('+password +refreshTokens');
+  const user = await User.findOne({ email: normalizedEmail })
+    .select('+password +refreshTokens +failedLoginAttempts +lockedUntil +lastFailedLogin');
 
+  // ── Step 1: Check lockout BEFORE checking password (prevents timing attacks) ──
+  if (user?.lockedUntil && user.lockedUntil > new Date()) {
+    const minutesLeft = Math.ceil((user.lockedUntil - new Date()) / 60_000);
+    return next(
+      new AppError(`Account locked due to too many failed attempts. Try again in ${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}.`, 429)
+    );
+  }
+
+  // ── Step 2: Generic message for non-existent user (no enumeration) ──
   if (!user) {
     return next(new AppError('Incorrect email or password', 401));
   }
 
+  // ── Step 3: Check password ──
   const passwordMatch = await user.comparePassword(password);
+
   if (!passwordMatch) {
+    // Increment failed attempts
+    user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+    user.lastFailedLogin = new Date();
+
+    // Lock after 10 failed attempts for 15 minutes
+    if (user.failedLoginAttempts >= 10) {
+      user.lockedUntil = new Date(Date.now() + 15 * 60_000);
+      await user.save({ validateBeforeSave: false });
+
+      return next(
+        new AppError('Account locked due to too many failed attempts. Try again in 15 minutes.', 429)
+      );
+    }
+
+    await user.save({ validateBeforeSave: false });
     return next(new AppError('Incorrect email or password', 401));
   }
 
-  if (!user.isActive) return next(new AppError('Your account has been deactivated.', 403));
+  // ── Step 4: Check account is active ──
+  if (!user.isActive) {
+    return next(new AppError('Your account has been deactivated.', 403));
+  }
+
+  // ── Step 5: Successful login — reset lockout counters ──
+  if (user.failedLoginAttempts > 0 || user.lockedUntil) {
+    user.failedLoginAttempts = 0;
+    user.lockedUntil = null;
+    user.lastFailedLogin = null;
+    await user.save({ validateBeforeSave: false });
+  }
 
   const { accessToken, refreshToken } = await issueTokens(user, res);
   res.status(200).json({

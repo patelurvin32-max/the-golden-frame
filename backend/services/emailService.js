@@ -107,7 +107,6 @@ const buildBrevoApiRequest = ({ to, subject, html, text, from, replyTo, cc, bcc,
     emailData.bcc = bccRecipients;
   }
 
-  console.log('BREVO FINAL PAYLOAD:', JSON.stringify(emailData, null, 2));
 
   return emailData;
 };

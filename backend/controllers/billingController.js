@@ -103,10 +103,16 @@ exports.createBill = asyncHandler(async (req, res, next) => {
   let membershipDiscount = 0;
 
   // Fetch settings and customer membership in parallel
+  let _sessionForName = null;
   const [settings, membershipCustomer] = await Promise.all([
     Settings.findOne().lean(),
-    customerId ? Customer.findById(customerId).select('membership').lean() : null,
+    customerId ? Customer.findById(customerId).select('name phone membership').lean() : null,
   ]);
+
+  if (!membershipCustomer && sessionId) {
+    // For session-based bills without a registered customer, grab name from session
+    _sessionForName = await Session.findById(sessionId).select('customerName phoneNumber').lean();
+  }
 
   if (membershipCustomer?.membership?.tier) {
     const { MembershipPlan } = require('../models/Operations');
@@ -140,6 +146,9 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     total,
     paymentStatus: paymentStatus || 'unpaid',
     createdBy: req.user._id,
+    // Denormalized fields for fast search without pre-lookup queries
+    customerName:  membershipCustomer?.name || _sessionForName?.customerName || '',
+    customerPhone: membershipCustomer?.phone || _sessionForName?.phoneNumber || '',
   });
 
   // Update session with bill reference
@@ -203,17 +212,16 @@ exports.downloadPDF = asyncHandler(async (req, res, next) => {
     .populate('customer', 'name phone walletBalance')
     .populate('order', 'paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid additionalPlayers')
     .populate('branch', 'name address phone')
-    .populate('session')
-    .populate('createdBy', 'name');
+    .populate({
+      path: 'session',
+      populate: { path: 'table', select: 'name type' },  // nested populate, no second round-trip
+    })
+    .populate('createdBy', 'name')
+    .lean();
   if (!bill) return next(new AppError('Bill not found.', 404));
 
-  // Populate session table details if session exists
-  if (bill.session) {
-    await bill.session.populate('table', 'name type');
-  }
-
-  const settings = await Settings.findOne();
-  const pdfBuffer = await generateInvoicePDF(bill.toObject(), settings?.toObject() || {});
+  const settings = await Settings.findOne().lean();
+  const pdfBuffer = await generateInvoicePDF(bill, settings || {});
 
   res.set({
     'Content-Type': 'application/pdf',
@@ -231,21 +239,13 @@ exports.getBills = asyncHandler(async (req, res) => {
   if (req.query.branch) filter.branch = req.query.branch;
   if (req.query.status) filter.paymentStatus = req.query.status;
 
-  // Search functionality - search by invoice number or customer name
+  // Search functionality — search on denormalized fields (no pre-lookup queries needed)
   if (req.query.search) {
     const searchRegex = new RegExp(req.query.search, 'i');
-    // Run customer and session searches in parallel
-    const [customerIds, sessionIds] = await Promise.all([
-      Customer.find({ name: searchRegex }).select('_id').lean(),
-      Session.find({ customerName: searchRegex }).select('_id').lean(),
-    ]);
-    const customerIdsList = customerIds.map((c) => c._id);
-    const sessionIdsList = sessionIds.map((s) => s._id);
-
     filter.$or = [
-      { invoiceNumber: searchRegex },
-      { customer: { $in: customerIdsList } },
-      { session: { $in: sessionIdsList } },
+      { invoiceNumber:  searchRegex },
+      { customerName:   searchRegex },
+      { customerPhone:  searchRegex },
     ];
   }
 

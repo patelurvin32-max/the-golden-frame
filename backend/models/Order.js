@@ -28,7 +28,6 @@ const orderSchema = new mongoose.Schema(
 );
 
 // Indexes for performance
-orderSchema.index({ orderId: 1 }, { unique: true });
 orderSchema.index({ customer: 1 });
 orderSchema.index({ branch: 1 });
 orderSchema.index({ menuCategoryId: 1 });

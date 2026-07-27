@@ -28,6 +28,7 @@ const settingsRouter = require('./routes/settingsRoute');
 
 const errorHandler = require('./middleware/errorHandler');
 const AppError = require('./utils/AppError');
+const { doubleCsrfProtection, generateCsrfToken } = require('./middleware/csrfProtection');
 
 const app = express();
 
@@ -46,7 +47,7 @@ if (process.env.NODE_ENV !== 'production') {
     max: 10000, // 10,000 requests per minute in development
     standardHeaders: true,
     legacyHeaders: false,
-    trustProxy: true, // Required when app.set('trust proxy', true) is set
+    validate: { trustProxy: false },
     message: { success: false, message: 'Too many requests. Please slow down.' },
   });
   app.use('/api/', limiter);
@@ -56,7 +57,7 @@ if (process.env.NODE_ENV !== 'production') {
     max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 1000,
     standardHeaders: true,
     legacyHeaders: false,
-    trustProxy: true, // Required when app.set('trust proxy', true) is set
+    validate: { trustProxy: false },
     message: { success: false, message: 'Too many requests. Please slow down.' },
   });
   app.use('/api/', limiter);
@@ -106,9 +107,6 @@ const allowedOrigins = Array.from(new Set([
   'http://127.0.0.1:4173',
 ]));
 
-console.log('🌐 CORS configured allowed origins:', allowedOrigins);
-console.log('🌐 NODE_ENV:', process.env.NODE_ENV || 'development');
-
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, Postman, curl, server-to-server)
@@ -126,20 +124,24 @@ app.use(cors({
     // In development mode, dynamically allow local network origins (e.g. 192.168.x.x, 10.x.x.x)
     const isDev = process.env.NODE_ENV !== 'production';
     if (isDev && isLocalNetworkOrigin(origin)) {
-      console.log('🌐 CORS (Dev mode): Allowing local network origin:', origin);
       return callback(null, true);
     }
 
-    console.log('🌐 CORS blocked origin:', origin, 'Allowed:', normalizedAllowed);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
+  exposedHeaders: ['X-CSRF-Token'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
 }));
 
 // ── Body parsing ─────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
+
+// ── CSRF protection ──────────────────────────────────────────────────────────
+app.use(generateCsrfToken);       // attaches X-CSRF-Token header to every response
+app.use(doubleCsrfProtection);    // validates token on POST/PUT/PATCH/DELETE
 
 // ── Logging ──────────────────────────────────────────────────────────────────
 if (process.env.NODE_ENV !== 'test') {

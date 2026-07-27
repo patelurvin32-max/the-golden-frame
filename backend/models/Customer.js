@@ -38,7 +38,6 @@ const customerSchema = new mongoose.Schema(
 );
 
 // Indexes for performance
-customerSchema.index({ customerId: 1 }, { unique: true });
 customerSchema.index({ phone: 1 }, { unique: true });
 customerSchema.index({ name: 'text', phone: 'text', email: 'text' });
 customerSchema.index({ name: 1 });

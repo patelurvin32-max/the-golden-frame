@@ -24,6 +24,10 @@ const userSchema = new mongoose.Schema(
     passwordChangedAt: { type: Date },
     passwordResetToken: { type: String, select: false },
     passwordResetExpires: { type: Date },
+    // Account lockout fields
+    failedLoginAttempts: { type: Number, default: 0, select: false },
+    lockedUntil: { type: Date, default: null, select: false },
+    lastFailedLogin: { type: Date, default: null, select: false },
   },
   { timestamps: true }
 );
@@ -35,7 +39,6 @@ userSchema.pre('save', async function hashPassword(next) {
   next();
 });
 
-userSchema.index({ email: 1 }, { unique: true });
 
 userSchema.methods.comparePassword = function comparePassword(candidate) {
   return bcrypt.compare(candidate, this.password);
@@ -67,6 +70,9 @@ userSchema.methods.toSafeObject = function toSafeObject() {
   delete obj.refreshTokens;
   delete obj.passwordResetToken;
   delete obj.passwordResetExpires;
+  delete obj.failedLoginAttempts;
+  delete obj.lockedUntil;
+  delete obj.lastFailedLogin;
   return obj;
 };
 

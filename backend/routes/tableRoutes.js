@@ -4,6 +4,7 @@ const { protect, restrictTo, requirePermission } = require('../middleware/auth')
 const { ROLES } = require('../config/constants');
 const validate = require('../middleware/validate');
 const tableController = require('../controllers/tableController');
+const { cacheMiddleware } = require('../middleware/cache');
 
 const router = express.Router();
 
@@ -11,7 +12,7 @@ router.use(protect);
 
 router
   .route('/')
-  .get(requirePermission('tables:view'), tableController.getTables)
+  .get(requirePermission('tables:view'), cacheMiddleware(30), tableController.getTables)
   .post(
     restrictTo(ROLES.SUPER_ADMIN),
     [

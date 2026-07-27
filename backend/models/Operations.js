@@ -33,7 +33,6 @@ inventorySchema.index({ branch: 1, category: 1, isActive: 1 });
 inventorySchema.index({ branch: 1, isActive: 1, currentStock: 1 });
 inventorySchema.index({ category: 1 });
 inventorySchema.index({ name: 1 });
-inventorySchema.index({ sku: 1 });
 
 const expenseSchema = new mongoose.Schema(
   {

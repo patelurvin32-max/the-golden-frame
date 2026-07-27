@@ -4,6 +4,7 @@ const { protect, restrictTo } = require('../middleware/auth');
 const { ROLES } = require('../config/constants');
 const validate = require('../middleware/validate');
 const branchController = require('../controllers/branchController');
+const { cacheMiddleware } = require('../middleware/cache');
 
 const router = express.Router();
 
@@ -11,7 +12,7 @@ router.use(protect);
 
 router
   .route('/')
-  .get(branchController.getBranches)
+  .get(cacheMiddleware(300), branchController.getBranches)
   .post(
     restrictTo(ROLES.SUPER_ADMIN),
     [body('name').notEmpty(), body('code').notEmpty()],

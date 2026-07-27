@@ -53,8 +53,6 @@ const allowedOrigins = Array.from(new Set([
   'http://127.0.0.1:4173',
 ]));
 
-console.log('🔌 Socket.io configured allowed origins:', allowedOrigins);
-
 const io = new Server(server, {
   cors: {
     origin: (origin, callback) => {
@@ -82,28 +80,20 @@ const io = new Server(server, {
 app.set('io', io);
 
 io.on('connection', (socket) => {
-  console.log(`🔌 Socket connected: ${socket.id}`);
-
   // Clients join user/role/branch rooms for real-time updates
   socket.on('join:user', ({ userId, role, branchId }) => {
     if (userId) socket.join(`user:${userId}`);
     if (role) socket.join(`role:${role}`);
     if (branchId) socket.join(`branch:${branchId}`);
-    console.log(`   Socket ${socket.id} joined rooms: user:${userId}, role:${role}, branch:${branchId}`);
   });
 
   // Clients join a branch room to receive live table updates
   socket.on('join:branch', (branchId) => {
     if (branchId) socket.join(`branch:${branchId}`);
-    console.log(`   Socket ${socket.id} joined branch room: ${branchId}`);
   });
 
   socket.on('leave:branch', (branchId) => {
     if (branchId) socket.leave(`branch:${branchId}`);
-  });
-
-  socket.on('disconnect', () => {
-    console.log(`🔌 Socket disconnected: ${socket.id}`);
   });
 });
 
@@ -125,8 +115,11 @@ const start = async () => {
 
   await connectDB();
 
-  // Seed default data on first run
-  await seedDefaults();
+  // Only seed in development OR when explicitly enabled via env var.
+  // Without this gate, every production restart resets the super admin password.
+  if (process.env.ENABLE_DEFAULT_SEED === 'true' || process.env.NODE_ENV !== 'production') {
+    await seedDefaults();
+  }
 
   const HOST = process.env.HOST || '0.0.0.0';
 

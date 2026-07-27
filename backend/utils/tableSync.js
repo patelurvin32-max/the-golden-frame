@@ -96,7 +96,7 @@ const _doSync = async () => {
       { isActive: false }
     );
 
-    console.log(`[TableSync] Synced ${activeMenuItems.length} tables from PlayStation and Table categories.`);
+    // Silent sync completed
   } catch (err) {
     console.error('[TableSync] Error syncing tables with menu items:', err);
   }
