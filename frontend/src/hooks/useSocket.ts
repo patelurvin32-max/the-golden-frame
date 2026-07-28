@@ -56,5 +56,10 @@ export const useSocket = () => {
     return () => { socket?.off('notification:new', callback); };
   };
 
-  return { socket: socketRef.current, onTableUpdate, onNotification };
+  const onReservationChange = (callback: (data: { action: string; reservation: any }) => void) => {
+    socket?.on('reservation:changed', callback);
+    return () => { socket?.off('reservation:changed', callback); };
+  };
+
+  return { socket: socketRef.current, onTableUpdate, onNotification, onReservationChange };
 };

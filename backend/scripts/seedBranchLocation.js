@@ -15,9 +15,9 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const Branch = require('../models/Branch');
 
 const BRANCH_LOCATION = {
-  latitude: 20.2788807,
-  longitude: 73.0082888,
-  attendanceRadius: 100, // meters
+  latitude: 20.27857816,
+  longitude: 73.00845451,
+  attendanceRadius: 500, // meters
 };
 
 async function seed() {

@@ -70,6 +70,9 @@ module.exports = (err, req, res, next) => {
   if (error.name === 'ValidationError') error = handleValidationErrorDB(error);
   if (error.name === 'JsonWebTokenError') error = handleJWTError();
   if (error.name === 'TokenExpiredError') error = handleJWTExpiredError();
+  if (error.code === 'EBADCSRFTOKEN' || error.message === 'invalid csrf token') {
+    error = new AppError('Invalid or missing CSRF token. Please refresh the page and try again.', 403);
+  }
 
   sendErrorProd(error, res);
 };

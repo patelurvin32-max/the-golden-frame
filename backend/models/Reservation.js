@@ -47,6 +47,7 @@ reservationSchema.index({ reservationDate: 1, reservationTime: 1 });
 reservationSchema.index({ customerName: 'text', phoneNumber: 'text', reservationId: 'text' });
 reservationSchema.index({ status: 1 });
 reservationSchema.index({ createdAt: -1 });
+reservationSchema.index({ branch: 1, menuCategoryId: 1, reservationDate: 1, status: 1 });
 
 const { getBusinessDayCompactString, getBusinessDayStart } = require('../utils/businessDay');
 

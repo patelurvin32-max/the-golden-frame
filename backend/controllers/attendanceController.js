@@ -562,11 +562,11 @@ exports.checkInMyAttendance = asyncHandler(async (req, res, next) => {
       return next(new AppError('Branch location is not configured. Please contact your manager.', 400));
     }
     const distance = calculateDistance(branch.latitude, branch.longitude, latitude, longitude);
-    const radius = branch.attendanceRadius || 100;
+    const radius = branch.attendanceRadius || 500;
     if (distance > radius) {
       return res.status(200).json({
         success: false,
-        message: `\u274C You are outside the allowed attendance area. Please come within ${radius} meters of ${branch.name || 'the branch'} to mark your attendance.`,
+        message: 'You are outside the permitted attendance area (500 meters). Please contact your Branch Manager if you believe this is incorrect.',
       });
     }
     checkInLocation = { lat: latitude, lng: longitude };
@@ -644,11 +644,11 @@ exports.checkOutMyAttendance = asyncHandler(async (req, res, next) => {
       return next(new AppError('Branch location is not configured. Please contact your manager.', 400));
     }
     const distance = calculateDistance(branch.latitude, branch.longitude, latitude, longitude);
-    const radius = branch.attendanceRadius || 100;
+    const radius = branch.attendanceRadius || 500;
     if (distance > radius) {
       return res.status(200).json({
         success: false,
-        message: `\u274C You are outside the allowed attendance area. Please come within ${radius} meters of ${branch.name || 'the branch'} to mark your attendance.`,
+        message: 'You are outside the permitted attendance area (500 meters). Please contact your Branch Manager if you believe this is incorrect.',
       });
     }
     checkOutLocation = { lat: latitude, lng: longitude };

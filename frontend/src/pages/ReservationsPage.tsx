@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { reservationService, branchService, tableService, menuService } from '@/services';
 import { useAppStore, useAuthStore } from '@/store';
+import { useSocket } from '@/hooks/useSocket';
 import {
   Button, Card, CardContent, Input, Label, Select, Badge,
   Modal, PageHeader, Skeleton, EmptyState, useToast,
@@ -157,6 +158,23 @@ function ReservationForm({
   const qc = useQueryClient();
   const { user } = useAuthStore();
 
+  // ── Availability state ──────────────────────────────────────────────────
+  const [availabilityMap, setAvailabilityMap] = useState<Record<string, { available: boolean; conflictTime?: string; conflictEnd?: string }>>({}); 
+  const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
+  const availabilityVersionRef = useRef(0);
+
+  // Compute conflict error for the currently selected menu item
+  const conflictError = useMemo(() => {
+    if (!form.menuItemId) return '';
+    const info = availabilityMap[form.menuItemId];
+    if (info && !info.available) {
+      const itemName = info.conflictTime ? '' : 'This table';
+      // Find item name from availability map context or menu items
+      return `Already booked from ${info.conflictTime} to ${info.conflictEnd}. Please select another table or choose a different time.`;
+    }
+    return '';
+  }, [form.menuItemId, availabilityMap]);
+
   const { data: branches } = useQuery({
     queryKey: ['branches'],
     queryFn: () => branchService.getAll().then((r) => r.data.data.branches),
@@ -176,7 +194,13 @@ function ReservationForm({
     placeholderData: (prev) => prev,
   });
   const categories: any[] = categoriesData || [];
-  const reservationCategories = categories.filter((cat: any) => cat.name?.trim().toLowerCase() !== 'beverage');
+  const reservationCategories = useMemo(
+    () => categories.filter((cat: any) => {
+      const n = cat.name?.trim().toLowerCase();
+      return n !== 'beverage' && n !== 'beverages' && n !== 'accessory' && n !== 'accessories';
+    }),
+    [categories]
+  );
 
   // Fetch menu items filtered by category and branch
   const menuParams: Record<string, string> = { limit: '1000' };
@@ -215,7 +239,117 @@ function ReservationForm({
     }
   }, [qc, form.menuCategoryId, form.branch]);
 
+  // ── Debounced availability check ────────────────────────────────────────
+  const availabilityKey = useMemo(
+    () => `${form.branch}|${form.reservationDate}|${form.reservationTime}|${form.durationMinutes}|${form.menuCategoryId}`,
+    [form.branch, form.reservationDate, form.reservationTime, form.durationMinutes, form.menuCategoryId]
+  );
+
+  useEffect(() => {
+    // Only check when all required fields are present
+    if (!form.branch || !form.reservationDate || !form.reservationTime || !form.menuCategoryId) {
+      setAvailabilityMap({});
+      return;
+    }
+
+    const version = ++availabilityVersionRef.current;
+    setIsCheckingAvailability(true);
+
+    const timer = setTimeout(() => {
+      const params: Record<string, string> = {
+        branch: form.branch,
+        date: form.reservationDate,
+        time: form.reservationTime,
+        durationMinutes: String(form.durationMinutes),
+        menuCategoryId: form.menuCategoryId,
+      };
+      if (initial._id) params.excludeId = initial._id;
+
+      reservationService.checkAvailability(params)
+        .then((res: any) => {
+          // Only apply if this is still the latest request
+          if (version !== availabilityVersionRef.current) return;
+          const items: any[] = res.data?.data?.items || [];
+          const map: Record<string, { available: boolean; conflictTime?: string; conflictEnd?: string }> = {};
+          for (const item of items) {
+            map[item.menuItemId] = {
+              available: item.available,
+              ...(item.conflictTime ? { conflictTime: item.conflictTime, conflictEnd: item.conflictEnd } : {}),
+            };
+          }
+          setAvailabilityMap(map);
+        })
+        .catch(() => {
+          if (version === availabilityVersionRef.current) setAvailabilityMap({});
+        })
+        .finally(() => {
+          if (version === availabilityVersionRef.current) setIsCheckingAvailability(false);
+        });
+    }, 300); // 300ms debounce
+
+    return () => clearTimeout(timer);
+  }, [availabilityKey, initial._id]);
+
+  // ── Real-time socket sync for availability ──────────────────────────────
+  const { onReservationChange } = useSocket();
+
+  useEffect(() => {
+    const cleanup = onReservationChange((data) => {
+      // If the changed reservation matches our current form's branch, re-check availability
+      const changedBranch = data.reservation?.branch;
+      if (changedBranch && changedBranch.toString() === form.branch) {
+        // Bump the version to trigger a re-fetch
+        availabilityVersionRef.current++;
+        const version = availabilityVersionRef.current;
+
+        if (!form.reservationDate || !form.reservationTime || !form.menuCategoryId) return;
+
+        const params: Record<string, string> = {
+          branch: form.branch,
+          date: form.reservationDate,
+          time: form.reservationTime,
+          durationMinutes: String(form.durationMinutes),
+          menuCategoryId: form.menuCategoryId,
+        };
+        if (initial._id) params.excludeId = initial._id;
+
+        reservationService.checkAvailability(params)
+          .then((res: any) => {
+            if (version !== availabilityVersionRef.current) return;
+            const items: any[] = res.data?.data?.items || [];
+            const map: Record<string, { available: boolean; conflictTime?: string; conflictEnd?: string }> = {};
+            for (const item of items) {
+              map[item.menuItemId] = {
+                available: item.available,
+                ...(item.conflictTime ? { conflictTime: item.conflictTime, conflictEnd: item.conflictEnd } : {}),
+              };
+            }
+            setAvailabilityMap(map);
+          })
+          .catch(() => {});
+      }
+    });
+    return cleanup;
+  }, [onReservationChange, form.branch, form.reservationDate, form.reservationTime, form.durationMinutes, form.menuCategoryId, initial._id]);
+
   const set = (k: string, v: any) => setForm((p: any) => ({ ...p, [k]: v }));
+
+  // Check if the selected item is blocked
+  const isSelectedItemBlocked = form.menuItemId && availabilityMap[form.menuItemId] && !availabilityMap[form.menuItemId].available;
+  const hasAvailabilityData = Object.keys(availabilityMap).length > 0;
+
+  // Find the selected item name for the conflict message
+  const selectedItemName = useMemo(() => {
+    if (!form.menuItemId) return '';
+    const item = menuItems.find((i: any) => i._id === form.menuItemId);
+    return item?.name || '';
+  }, [form.menuItemId, menuItems]);
+
+  const conflictMessage = useMemo(() => {
+    if (!isSelectedItemBlocked) return '';
+    const info = availabilityMap[form.menuItemId];
+    return `${selectedItemName || 'This table'} is already booked from ${info.conflictTime} to ${info.conflictEnd}. Please select another table or choose a different time.`;
+  }, [isSelectedItemBlocked, availabilityMap, form.menuItemId, selectedItemName]);
 
   return (
     <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
@@ -260,7 +394,7 @@ function ReservationForm({
         </div>
       )}
 
-      {/* Date / Time / Duration / Guests */}
+      {/* Date & Time */}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
           <Label>Bookings  Date *</Label>
@@ -269,16 +403,6 @@ function ReservationForm({
         <div className="space-y-1.5">
           <Label>Bookings  Time *</Label>
           <Input type="time" value={form.reservationTime} onChange={(e) => set('reservationTime', e.target.value)} />
-        </div>
-        <div className="space-y-1.5">
-          <Label>Duration (minutes)</Label>
-          <Select value={form.durationMinutes} onChange={(e) => set('durationMinutes', Number(e.target.value))}>
-            {[30,60,90,120,150,180].map((m) => <option key={m} value={m}>{m} min</option>)}
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label>Number of Guests *</Label>
-          <Input type="number" min={1} max={20} value={form.numberOfGuests} onChange={(e) => set('numberOfGuests', Number(e.target.value))} />
         </div>
       </div>
 
@@ -311,18 +435,48 @@ function ReservationForm({
             disabled={!form.menuCategoryId || menuItems.length === 0}
           >
             <option value="">Select item</option>
-            {menuItems.map((item: any) => (
-              <option key={item._id} value={item._id}>
-                {item.name}
-              </option>
-            ))}
+            {menuItems.map((item: any) => {
+              const avail = availabilityMap[item._id];
+              const isBooked = avail && !avail.available;
+              const indicator = hasAvailabilityData ? (isBooked ? '🔴' : '🟢') : '';
+              const suffix = isBooked
+                ? ` — Booked (${avail.conflictTime} – ${avail.conflictEnd})`
+                : hasAvailabilityData ? ' — Available' : '';
+              return (
+                <option key={item._id} value={item._id}>
+                  {indicator} {item.name}{suffix}
+                </option>
+              );
+            })}
           </Select>
+          {isCheckingAvailability && (
+            <p className="text-xs text-muted-foreground">Checking availability...</p>
+          )}
           {showMenuItemsLoading && (
             <p className="text-xs text-muted-foreground">Loading available items...</p>
           )}
           {form.menuCategoryId && !showMenuItemsLoading && menuItems.length === 0 && (
             <p className="text-xs text-muted-foreground">No available items for this category</p>
           )}
+          {conflictMessage && (
+            <p className="text-xs text-red-400 mt-1 font-medium">
+              ⚠️ {conflictMessage}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Duration and Guests */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label>Duration (minutes)</Label>
+          <Select value={form.durationMinutes} onChange={(e) => set('durationMinutes', Number(e.target.value))}>
+            {[30,60,90,120,150,180].map((m) => <option key={m} value={m}>{m} min</option>)}
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Number of Guests *</Label>
+          <Input type="number" min={1} max={20} value={form.numberOfGuests} onChange={(e) => set('numberOfGuests', Number(e.target.value))} />
         </div>
       </div>
 
@@ -353,9 +507,11 @@ function ReservationForm({
       <div className="flex gap-2 pt-2 sticky bottom-0 bg-card pb-1">
         <Button variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
         <Button className="flex-1" loading={loading}
+          disabled={!!isSelectedItemBlocked}
           onClick={() => {
             if (!form.customerName || !form.phoneNumber || !form.menuCategoryId || !form.menuItemId || !form.reservationDate || !form.reservationTime) return;
             if (canSelectBranch && !form.branch) return;
+            if (isSelectedItemBlocked) return;
             onSubmit(form);
           }}
         >
@@ -453,6 +609,254 @@ function ViewModal({ res, onClose, onEdit, onStatusChange }: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Today's Live Table Availability Board
+// ─────────────────────────────────────────────────────────────────────────────
+function TodayTableAvailability({ branch }: { branch: string }) {
+  const qc = useQueryClient();
+  const { user } = useAuthStore();
+  const { onReservationChange } = useSocket();
+  const [statusFilter, setStatusFilter] = useState<'all' | 'available' | 'booked'>('all');
+  const [selectedCatId, setSelectedCatId] = useState<string>('all');
+  const [, setTick] = useState(0);
+
+  // Auto-detect user's assigned branch for Branch Manager / Staff
+  const userAssignedBranchId = useMemo(() => {
+    if (!user?.branches || user.branches.length === 0) return '';
+    const b = user.branches[0];
+    return typeof b === 'string' ? b : (b as any)?._id || '';
+  }, [user]);
+
+  const isSuperOrAdmin = user?.role === 'super_admin' || user?.role === 'admin';
+
+  // Branch Manager & Staff MUST automatically use their assigned branch
+  // Admin & Super Admin use the selected branch prop, or fallback to assigned branch if available
+  const effectiveBranch = isSuperOrAdmin
+    ? (branch || userAssignedBranchId || '')
+    : (userAssignedBranchId || branch || '');
+
+  // Auto-refresh remaining time every 30s
+  useEffect(() => {
+    const timer = setInterval(() => setTick((t) => t + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const queryKey = ['today-availability', effectiveBranch];
+
+  const { data: availabilityData, isLoading } = useQuery({
+    queryKey,
+    queryFn: () => reservationService.getTodayAvailability({ branch: effectiveBranch }).then((r) => (r.data as any).data),
+    enabled: !!effectiveBranch,
+    refetchInterval: 30000,
+    staleTime: 10000,
+  });
+
+  // Socket listener for real-time live sync
+  useEffect(() => {
+    const cleanup = onReservationChange((data) => {
+      if (!data?.reservation?.branch || data.reservation.branch.toString() === effectiveBranch) {
+        qc.invalidateQueries({ queryKey: ['today-availability'] });
+      }
+    });
+    return cleanup;
+  }, [onReservationChange, effectiveBranch, qc]);
+
+  const categories: any[] = availabilityData?.categories || [];
+
+  const filteredCategories = useMemo(() => {
+    return categories
+      .map((cat: any) => {
+        if (selectedCatId !== 'all' && cat.categoryId !== selectedCatId) {
+          return null;
+        }
+
+        const items = cat.items.filter((item: any) => {
+          if (statusFilter === 'available') return item.colorStatus === 'available';
+          if (statusFilter === 'booked') return item.colorStatus === 'booked' || item.colorStatus === 'upcoming';
+          return true;
+        });
+
+        if (items.length === 0 && selectedCatId !== 'all') return null;
+        return { ...cat, items };
+      })
+      .filter(Boolean);
+  }, [categories, selectedCatId, statusFilter]);
+
+  if (!effectiveBranch) {
+    return (
+      <Card className="border border-border/80 bg-card/60">
+        <CardContent className="p-4 text-center text-xs text-muted-foreground">
+          Please select a branch to view Today's Live Table Availability.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="border border-border/80 bg-card/60 backdrop-blur-sm">
+      <CardContent className="p-4 space-y-4">
+        {/* Title & Filters */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/50 pb-3">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+            </span>
+            <h2 className="text-base font-bold tracking-tight text-foreground">
+              Today's Table Availability
+            </h2>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Quick Status Filter Pills */}
+            <div className="flex items-center bg-muted/40 p-1 rounded-xl border border-border/40 text-xs">
+              <button
+                type="button"
+                onClick={() => setStatusFilter('all')}
+                className={cn(
+                  'px-2.5 py-1 rounded-lg font-medium transition-colors',
+                  statusFilter === 'all' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('available')}
+                className={cn(
+                  'px-2.5 py-1 rounded-lg font-medium transition-colors flex items-center gap-1',
+                  statusFilter === 'available' ? 'bg-background text-emerald-400 shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <span>🟢</span> Available
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('booked')}
+                className={cn(
+                  'px-2.5 py-1 rounded-lg font-medium transition-colors flex items-center gap-1',
+                  statusFilter === 'booked' ? 'bg-background text-red-400 shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <span>🔴</span> Booked
+              </button>
+            </div>
+
+            {/* Category Filter */}
+            {categories.length > 1 && (
+              <Select
+                value={selectedCatId}
+                onChange={(e) => setSelectedCatId(e.target.value)}
+                className="h-8 text-xs w-40"
+              >
+                <option value="all">All Categories</option>
+                {categories.map((cat: any) => (
+                  <option key={cat.categoryId} value={cat.categoryId}>
+                    {cat.categoryName}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </div>
+        </div>
+
+        {/* Content */}
+        {isLoading ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {[1, 2, 3, 4].map((n) => (
+              <Skeleton key={n} className="h-24 rounded-xl" />
+            ))}
+          </div>
+        ) : filteredCategories.length === 0 ? (
+          <div className="py-6 text-center text-xs text-muted-foreground">
+            No tables match the selected status or category filter.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {filteredCategories.map((cat: any) => (
+              <div key={cat.categoryId} className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                    {cat.categoryName}
+                  </span>
+                  <div className="h-px flex-1 bg-border/40" />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {cat.items.map((item: any) => {
+                    const isBooked = item.colorStatus === 'booked';
+                    const isUpcoming = item.colorStatus === 'upcoming';
+
+                    const cardBorder = isBooked
+                      ? 'border-red-500/30 bg-red-500/5'
+                      : isUpcoming
+                      ? 'border-amber-500/30 bg-amber-500/5'
+                      : 'border-emerald-500/20 bg-emerald-500/5 hover:border-emerald-500/40';
+
+                    const dotColor = isBooked ? '🔴' : isUpcoming ? '🟡' : '🟢';
+
+                    return (
+                      <div
+                        key={item.menuItemId}
+                        className={cn(
+                          'p-3 rounded-2xl border transition-all duration-200 flex flex-col justify-between space-y-2',
+                          cardBorder
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-1.5 font-semibold text-sm">
+                            <span>{dotColor}</span>
+                            <span className="truncate">{item.name}</span>
+                          </div>
+                          <span
+                            className={cn(
+                              'text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider',
+                              isBooked
+                                ? 'bg-red-500/15 text-red-400 border-red-500/30'
+                                : isUpcoming
+                                ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                                : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                            )}
+                          >
+                            {isBooked ? 'Booked' : isUpcoming ? 'Starts Soon' : 'Available'}
+                          </span>
+                        </div>
+
+                        {item.booking ? (
+                          <div className="text-xs space-y-1 bg-background/50 p-2 rounded-xl border border-border/30">
+                            <p className="font-semibold text-foreground truncate">
+                              Customer: {item.booking.customerName}
+                            </p>
+                            <p className="text-muted-foreground font-mono text-[11px]">
+                              {item.booking.startTime} – {item.booking.endTime}
+                            </p>
+                            {item.booking.remainingMinutes !== undefined && (
+                              <p className="text-[11px] font-medium text-amber-400">
+                                Remaining: {item.booking.remainingMinutes} minutes
+                              </p>
+                            )}
+                            {item.booking.startsInMinutes !== undefined && (
+                              <p className="text-[11px] font-medium text-amber-300">
+                                Starts in: {item.booking.startsInMinutes} minutes
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground/70 italic">Available</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN PAGE
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ReservationsPage() {
@@ -460,9 +864,19 @@ export default function ReservationsPage() {
   const toast = useToast();
   const { selectedBranch } = useAppStore();
   const { user } = useAuthStore();
+  const { onReservationChange } = useSocket();
 
   // Determine if user can select branch (Super Admin and Admin can)
   const canSelectBranch = user?.role === 'super_admin' || user?.role === 'admin';
+
+  // ── Real-time socket sync: invalidate caches when any reservation changes ──
+  useEffect(() => {
+    const cleanup = onReservationChange(() => {
+      qc.invalidateQueries({ queryKey: ['reservations'] });
+      qc.invalidateQueries({ queryKey: ['reservation-stats'] });
+    });
+    return cleanup;
+  }, [onReservationChange, qc]);
 
   // ── Pagination / filter state ─────────────────────────────────────────────
   const [page,      setPage]      = useState(1);
@@ -484,7 +898,13 @@ export default function ReservationsPage() {
   // Reset page on filter change
   useEffect(() => { setPage(1); }, [search, status, dateFrom, dateTo, branchFlt, menuCategoryFlt, sortBy, sortOrder]);
 
-  const branch = branchFlt || selectedBranch || '';
+  const userAssignedBranchId = useMemo(() => {
+    if (!user?.branches || user.branches.length === 0) return '';
+    const b = user.branches[0];
+    return typeof b === 'string' ? b : (b as any)?._id || '';
+  }, [user]);
+
+  const branch = branchFlt || selectedBranch || (!canSelectBranch ? userAssignedBranchId : '') || '';
   const reservationsQueryKey = ['reservations', page, pageSize, sortBy, sortOrder, branch, search, status, dateFrom, dateTo, tableFlt, menuCategoryFlt] as const;
   const reservationStatsKey = ['reservation-stats', branch] as const;
   const reservationCategoriesKey = ['menu-categories', 'active'] as const;
@@ -546,7 +966,13 @@ export default function ReservationsPage() {
     placeholderData: (prev) => prev,
   });
   const categories: any[] = categoriesData || [];
-  const reservationCategories = categories.filter((cat: any) => cat.name?.trim().toLowerCase() !== 'beverage');
+  const reservationCategories = useMemo(
+    () => categories.filter((cat: any) => {
+      const n = cat.name?.trim().toLowerCase();
+      return n !== 'beverage' && n !== 'beverages' && n !== 'accessory' && n !== 'accessories';
+    }),
+    [categories]
+  );
 
   const reservations: any[] = (listData as any)?.data || [];
   const totalRecords: number = (listData as any)?.totalRecords || 0;
@@ -711,6 +1137,9 @@ export default function ReservationsPage() {
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
         {STAT_CARDS.map((s) => <StatCard key={s.label} {...s} />)}
       </div>
+
+      {/* Today's Live Table Availability Timeline */}
+      <TodayTableAvailability branch={branch} />
 
       {/* Filters */}
       <Card>

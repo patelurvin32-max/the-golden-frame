@@ -13,6 +13,8 @@ const canDelete = requirePermission('bookings:delete');
 
 router.get('/stats', canView, rc.getStats);
 router.get('/available-tables', canView, rc.getAvailableTables);
+router.get('/check-availability', canView, rc.checkMenuItemAvailability);
+router.get('/today-availability', canView, rc.getTodayAvailability);
 router.get('/', canView, rc.getReservations);
 router.get('/:id', canView, rc.getReservation);
 

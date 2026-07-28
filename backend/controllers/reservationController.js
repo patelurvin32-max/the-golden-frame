@@ -6,6 +6,36 @@ const { logActivity } = require('../services/activityLogService');
 const { ROLES } = require('../config/constants');
 const { createBranchNotification } = require('../services/notificationService');
 
+// Helper: convert minutes-since-midnight to 12-hour AM/PM string
+function formatMinutesToTime(totalMinutes) {
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  const period = h >= 12 ? 'PM' : 'AM';
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${String(h12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
+}
+
+// Helper: emit reservation:changed socket event to branch room
+function emitReservationChanged(req, branchId, action, reservation) {
+  try {
+    req.app.get('io')?.to(`branch:${branchId}`).emit('reservation:changed', {
+      action,
+      reservation: {
+        _id: reservation._id,
+        branch: branchId,
+        menuItemId: reservation.menuItemId,
+        menuCategoryId: reservation.menuCategoryId,
+        reservationDate: reservation.reservationDate,
+        reservationTime: reservation.reservationTime,
+        durationMinutes: reservation.durationMinutes,
+        status: reservation.status,
+      },
+    });
+  } catch (err) {
+    console.error('[ReservationController] Socket emission error:', err.message);
+  }
+}
+
 const buildFilter = (query, user) => {
   const filter = {};
 
@@ -187,6 +217,188 @@ exports.getAvailableTables = asyncHandler(async (req, res, next) => {
   res.status(200).json({ success: true, data: { available, blocked: allTables.length - available.length } });
 });
 
+// ── Check menu item availability for a specific slot ─────────────────────────
+exports.checkMenuItemAvailability = asyncHandler(async (req, res, next) => {
+  const { branch, date, time, durationMinutes = 60, menuCategoryId, excludeId } = req.query;
+  if (!branch || !date || !time || !menuCategoryId) {
+    return next(new AppError('branch, date, time, and menuCategoryId are required.', 400));
+  }
+
+  const resDate = new Date(date);
+  resDate.setHours(0, 0, 0, 0);
+  const duration = parseInt(durationMinutes, 10);
+
+  const [reqH, reqM] = time.split(':').map(Number);
+  const reqStart = reqH * 60 + reqM;
+  const reqEnd = reqStart + duration;
+
+  const nextDay = new Date(resDate);
+  nextDay.setDate(resDate.getDate() + 1);
+
+  // Fetch bookings and menu items in parallel
+  const MenuItem = require('mongoose').model('MenuItem');
+  const [bookings, menuItems] = await Promise.all([
+    Reservation.find({
+      branch,
+      menuCategoryId,
+      reservationDate: { $gte: resDate, $lt: nextDay },
+      status: { $nin: ['cancelled', 'no_show', 'completed'] },
+      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+    }).select('menuItemId reservationTime durationMinutes').lean(),
+    MenuItem.find({ category: menuCategoryId, isActive: true }).select('name price').lean(),
+  ]);
+
+  // Build conflict map: menuItemId -> { conflictStart, conflictEnd } (first conflict)
+  const conflictMap = new Map();
+  for (const r of bookings) {
+    if (!r.menuItemId) continue;
+    const [h, m] = r.reservationTime.split(':').map(Number);
+    const start = h * 60 + m;
+    const end = start + (r.durationMinutes || 60);
+    if (reqStart < end && start < reqEnd) {
+      const key = r.menuItemId.toString();
+      if (!conflictMap.has(key)) {
+        conflictMap.set(key, { conflictTime: formatMinutesToTime(start), conflictEnd: formatMinutesToTime(end) });
+      }
+    }
+  }
+
+  // Build response items
+  const items = menuItems.map((item) => {
+    const conflict = conflictMap.get(item._id.toString());
+    return {
+      menuItemId: item._id,
+      name: item.name,
+      price: item.price,
+      available: !conflict,
+      ...(conflict || {}),
+    };
+  });
+
+  res.status(200).json({ success: true, data: { items } });
+});
+
+// ── Today's live table availability (grouped by category) ────────────────
+exports.getTodayAvailability = asyncHandler(async (req, res, next) => {
+  let { branch } = req.query;
+
+  if (!branch && req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
+    const userBranch = req.user.branches[0];
+    branch = typeof userBranch === 'string' ? userBranch : (userBranch._id || userBranch).toString();
+  }
+
+  if (!branch) return next(new AppError('branch is required.', 400));
+
+  const now = new Date();
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date(now);
+  todayEnd.setDate(todayEnd.getDate() + 1);
+
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+  const { MenuCategory, MenuItem } = require('../models/Operations');
+
+  // Fetch categories, menu items, and today's active bookings in parallel
+  const [categories, menuItems, bookings] = await Promise.all([
+    MenuCategory.find({ status: 'Active' }).select('name').lean(),
+    MenuItem.find({ branch, status: 'Active' }).select('name category price').lean(),
+    Reservation.find({
+      branch,
+      reservationDate: { $gte: todayStart, $lt: todayEnd },
+      status: { $nin: ['cancelled', 'no_show', 'completed'] },
+    }).select('menuItemId menuCategoryId reservationTime durationMinutes customerName phoneNumber status').lean(),
+  ]);
+
+  // Build booking lookup: menuItemId -> array of bookings
+  const bookingsByItem = new Map();
+  for (const b of bookings) {
+    if (!b.menuItemId) continue;
+    const key = b.menuItemId.toString();
+    if (!bookingsByItem.has(key)) bookingsByItem.set(key, []);
+    bookingsByItem.get(key).push(b);
+  }
+
+  // Filter out "beverage" and "accessories" categories from bookings timeline
+  const filteredCategories = categories.filter((c) => {
+    const n = c.name?.trim().toLowerCase();
+    return n !== 'beverage' && n !== 'beverages' && n !== 'accessory' && n !== 'accessories';
+  });
+
+  // Group items by category
+  const result = filteredCategories.map((cat) => {
+    const catItems = menuItems.filter(
+      (item) => item.category?.toString() === cat._id.toString()
+    );
+
+    const items = catItems.map((item) => {
+      const itemBookings = bookingsByItem.get(item._id.toString()) || [];
+
+      // Find the current/next overlapping booking at this moment
+      let currentBooking = null;
+      let upcomingBooking = null;
+
+      for (const bk of itemBookings) {
+        const [h, m] = bk.reservationTime.split(':').map(Number);
+        const start = h * 60 + m;
+        const end = start + (bk.durationMinutes || 60);
+
+        if (nowMinutes >= start && nowMinutes < end) {
+          // Currently active booking
+          currentBooking = {
+            customerName: bk.customerName,
+            phoneNumber: bk.phoneNumber,
+            startTime: formatMinutesToTime(start),
+            endTime: formatMinutesToTime(end),
+            remainingMinutes: Math.max(0, end - nowMinutes),
+            status: bk.status,
+          };
+        } else if (start > nowMinutes && start - nowMinutes <= 15) {
+          // Booking starts within next 15 minutes
+          if (!upcomingBooking || start < upcomingBooking._start) {
+            upcomingBooking = {
+              customerName: bk.customerName,
+              phoneNumber: bk.phoneNumber,
+              startTime: formatMinutesToTime(start),
+              endTime: formatMinutesToTime(end),
+              startsInMinutes: start - nowMinutes,
+              status: bk.status,
+              _start: start,
+            };
+          }
+        }
+      }
+
+      // Determine color status
+      let colorStatus = 'available'; // green
+      if (currentBooking) {
+        colorStatus = 'booked'; // red
+      } else if (upcomingBooking) {
+        colorStatus = 'upcoming'; // yellow
+      }
+
+      const booking = currentBooking || (upcomingBooking ? { ...upcomingBooking, _start: undefined } : null);
+      if (booking) delete booking._start;
+
+      return {
+        menuItemId: item._id,
+        name: item.name,
+        price: item.price,
+        colorStatus,
+        booking,
+      };
+    });
+
+    return {
+      categoryId: cat._id,
+      categoryName: cat.name,
+      items,
+    };
+  }).filter((cat) => cat.items.length > 0);
+
+  res.status(200).json({ success: true, data: { categories: result, serverTime: now.toISOString() } });
+});
+
 exports.createReservation = asyncHandler(async (req, res, next) => {
   const {
     customerName, phoneNumber, email, branch, table,
@@ -213,8 +425,17 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     if (!finalTable) return next(new AppError('No available table for this reservation slot.', 409));
   }
 
-  const clash = await checkDoubleBooking({ branch: finalBranch, table: finalTable, reservationDate, reservationTime, durationMinutes });
-  if (clash) return next(new AppError(`Table is already reserved at this time (conflict with ${clash.reservationId}).`, 409));
+  const clash = await checkDoubleBooking({ branch: finalBranch, table: finalTable, reservationDate, reservationTime, durationMinutes, menuItemId });
+  if (clash) {
+    const itemName = clash.menuItemName || 'This table';
+    const [cH, cM] = clash.reservationTime.split(':').map(Number);
+    const cStart = cH * 60 + cM;
+    const cEnd = cStart + (clash.durationMinutes || 60);
+    return next(new AppError(
+      `${itemName} is already booked from ${formatMinutesToTime(cStart)} to ${formatMinutesToTime(cEnd)}. Please select another table or choose a different time.`,
+      409
+    ));
+  }
 
   const reservation = await Reservation.create({
     customerName,
@@ -242,6 +463,8 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     .populate('menuItemId', 'name price');
 
   res.status(201).json({ success: true, data: { reservation: populated } });
+
+  emitReservationChanged(req, finalBranch, 'create', reservation);
 
   void createBranchNotification({
     branchId: finalBranch,
@@ -290,9 +513,19 @@ exports.updateReservation = asyncHandler(async (req, res, next) => {
       reservationDate: reservationDate || reservation.reservationDate,
       reservationTime: reservationTime || reservation.reservationTime,
       durationMinutes: durationMinutes || reservation.durationMinutes,
+      menuItemId: menuItemId || reservation.menuItemId,
       excludeId: reservation._id,
     });
-    if (clash) return next(new AppError(`Table conflict with ${clash.reservationId}.`, 409));
+    if (clash) {
+      const itemName = clash.menuItemName || 'This table';
+      const [cH, cM] = clash.reservationTime.split(':').map(Number);
+      const cStart = cH * 60 + cM;
+      const cEnd = cStart + (clash.durationMinutes || 60);
+      return next(new AppError(
+        `${itemName} is already booked from ${formatMinutesToTime(cStart)} to ${formatMinutesToTime(cEnd)}. Please select another table or choose a different time.`,
+        409
+      ));
+    }
   }
 
   if (req.body.status && req.body.status !== reservation.status) {
@@ -322,6 +555,8 @@ exports.updateReservation = asyncHandler(async (req, res, next) => {
 
   res.status(200).json({ success: true, data: { reservation: populated } });
 
+  emitReservationChanged(req, reservation.branch, 'update', reservation);
+
   void logActivity({
     userId: req.user._id,
     branchId: reservation.branch,
@@ -347,6 +582,8 @@ exports.changeStatus = asyncHandler(async (req, res, next) => {
 
   res.status(200).json({ success: true, data: { reservation } });
 
+  emitReservationChanged(req, reservation.branch, 'status', reservation);
+
   void logActivity({
     userId: req.user._id,
     branchId: reservation.branch,
@@ -369,6 +606,8 @@ exports.deleteReservation = asyncHandler(async (req, res, next) => {
 
   res.status(200).json({ success: true, message: 'Reservation deleted.' });
 
+  emitReservationChanged(req, reservation.branch, 'delete', reservation);
+
   void logActivity({
     userId: req.user._id,
     branchId: reservation.branch,
@@ -380,7 +619,7 @@ exports.deleteReservation = asyncHandler(async (req, res, next) => {
   });
 });
 
-async function checkDoubleBooking({ branch, table, reservationDate, reservationTime, durationMinutes = 60, excludeId }) {
+async function checkDoubleBooking({ branch, table, reservationDate, reservationTime, durationMinutes = 60, menuItemId, excludeId }) {
   const d = new Date(reservationDate);
   const nextDay = new Date(d);
   nextDay.setDate(d.getDate() + 1);
@@ -395,13 +634,18 @@ async function checkDoubleBooking({ branch, table, reservationDate, reservationT
     reservationDate: { $gte: d, $lt: nextDay },
     status: { $nin: ['cancelled', 'no_show', 'completed'] },
     ...(excludeId ? { _id: { $ne: excludeId } } : {}),
-  }).select('reservationTime durationMinutes reservationId');
+  }).select('reservationTime durationMinutes reservationId menuItemId').populate('menuItemId', 'name').lean();
 
   for (const r of same) {
     const [h, m] = r.reservationTime.split(':').map(Number);
     const start = h * 60 + m;
     const end = start + (r.durationMinutes || 60);
-    if (reqStart < end && start < reqEnd) return r;
+    if (reqStart < end && start < reqEnd) {
+      return {
+        ...r,
+        menuItemName: (typeof r.menuItemId === 'object' && r.menuItemId?.name) ? r.menuItemId.name : null,
+      };
+    }
   }
   return null;
 }

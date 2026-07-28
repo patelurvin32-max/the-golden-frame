@@ -178,10 +178,6 @@ notifRouter.get('/', asyncHandler(async (req, res) => {
     },
   });
 }));
-notifRouter.patch('/:id/read', asyncHandler(async (req, res) => {
-  await Notification.findByIdAndUpdate(req.params.id, { isRead: true });
-  res.status(200).json({ success: true });
-}));
 notifRouter.patch('/read-all', asyncHandler(async (req, res) => {
   const filter = { $or: [{ targetUser: req.user._id }, { targetRoles: { $in: [req.user.role] } }], isRead: false };
   if (req.user.role !== ROLES.SUPER_ADMIN) {
@@ -189,6 +185,10 @@ notifRouter.patch('/read-all', asyncHandler(async (req, res) => {
     filter.branch = { $in: branches };
   }
   await Notification.updateMany(filter, { isRead: true });
+  res.status(200).json({ success: true });
+}));
+notifRouter.patch('/:id/read', asyncHandler(async (req, res) => {
+  await Notification.findByIdAndUpdate(req.params.id, { isRead: true });
   res.status(200).json({ success: true });
 }));
 

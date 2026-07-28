@@ -19,7 +19,10 @@ const { doubleCsrfProtection, generateCsrfToken: generateTokenFn } = doubleCsrf(
   },
   size: 64,
   ignoredMethods: ['GET', 'HEAD', 'OPTIONS'],
-  skipCsrfProtection: (req) => req.path.endsWith('/auth/login') || req.path.endsWith('/auth/refresh'),
+  skipCsrfProtection: (req) =>
+    req.path.endsWith('/auth/login') ||
+    req.path.endsWith('/auth/refresh') ||
+    Boolean(req.headers.authorization?.startsWith('Bearer ')),
 });
 
 // Middleware to generate + attach CSRF token to every response
