@@ -6,7 +6,7 @@ const { ROLE_LIST, ROLES } = require('../config/constants');
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
-    email: { type: String, required: true, trim: true, lowercase: true, unique: true, index: true },
+    email: { type: String, required: true, trim: true, lowercase: true, unique: true },
     phone: { type: String, trim: true },
     address: { type: String, trim: true },
     salary: { type: Number, min: 0 },

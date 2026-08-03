@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
@@ -8,17 +9,19 @@ const { ROLES } = require('../config/constants');
 exports.getUsers = asyncHandler(async (req, res) => {
   const filter = {};
 
+  const isValidObjectId = (val) => Boolean(val && val !== 'all' && mongoose.Types.ObjectId.isValid(val));
+
   if (req.user.role === ROLES.SUPER_ADMIN || req.user.role === ROLES.ADMIN) {
     // Super Admin & Admin can view all users from every branch
-    if (req.query.role) filter.role = req.query.role;
-    if (req.query.branch) filter.branches = req.query.branch;
+    if (req.query.role && req.query.role !== 'all') filter.role = req.query.role;
+    if (isValidObjectId(req.query.branch)) filter.branches = req.query.branch;
   } else if (req.user.role === ROLES.BRANCH_MANAGER || req.user.role === ROLES.BRANCH_ADMIN) {
     // Branch Manager & Branch Admin can view only users assigned to their own branch
     // Must NOT see Super Admin, Admin, or Branch Admin
     const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
     if (userBranchIds.length === 0) {
       filter.branches = { $in: [] };
-    } else if (req.query.branch) {
+    } else if (isValidObjectId(req.query.branch)) {
       if (userBranchIds.includes(req.query.branch.toString())) {
         filter.branches = req.query.branch;
       } else {
