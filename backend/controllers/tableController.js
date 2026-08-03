@@ -11,11 +11,17 @@ exports.getTables = asyncHandler(async (req, res) => {
   await syncTablesWithMenuItems();
 
   const filter = { isActive: true };
-
-  if (req.user.role !== ROLES.SUPER_ADMIN) {
-    filter.branch = { $in: req.user.branches };
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      filter.branch = req.query.branch;
+    } else {
+      filter.branch = { $in: userBranchIds };
+    }
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
   }
-  if (req.query.branch) filter.branch = req.query.branch;
   if (req.query.type) filter.type = { $regex: new RegExp(`^${req.query.type}$`, 'i') };
   if (req.query.status) filter.status = req.query.status;
 
@@ -49,6 +55,14 @@ exports.getTable = asyncHandler(async (req, res, next) => {
       ]
     });
   if (!table) return next(new AppError('Table not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(table.branch?._id?.toString() || table.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+  
   res.status(200).json({ success: true, data: { table } });
 });
 
@@ -78,20 +92,39 @@ exports.updateTable = asyncHandler(async (req, res, next) => {
     delete req.body.hourlyRate;
   }
 
-  const table = await Table.findByIdAndUpdate(req.params.id, req.body, {
+  const table = await Table.findById(req.params.id);
+  if (!table) return next(new AppError('Table not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(table.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
+  const updatedTable = await Table.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
     runValidators: true,
   });
-  if (!table) return next(new AppError('Table not found.', 404));
+  if (!updatedTable) return next(new AppError('Table not found.', 404));
 
-  req.app.get('io')?.to(`branch:${table.branch}`).emit('table:updated', table);
+  req.app.get('io')?.to(`branch:${updatedTable.branch}`).emit('table:updated', updatedTable);
 
-  res.status(200).json({ success: true, data: { table } });
+  res.status(200).json({ success: true, data: { table: updatedTable } });
 });
 
 // DELETE /api/tables/:id (super admin only - soft delete)
 exports.deleteTable = asyncHandler(async (req, res, next) => {
-  const table = await Table.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
+  const table = await Table.findById(req.params.id);
   if (!table) return next(new AppError('Table not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(table.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
+  await Table.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
   res.status(200).json({ success: true, message: 'Table removed.' });
 });

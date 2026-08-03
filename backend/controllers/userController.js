@@ -7,18 +7,39 @@ const { ROLES } = require('../config/constants');
 // GET /api/users
 exports.getUsers = asyncHandler(async (req, res) => {
   const filter = {};
-  if (req.query.role) filter.role = req.query.role;
-  
-  // Branch filtering logic
+
   if (req.user.role === ROLES.SUPER_ADMIN || req.user.role === ROLES.ADMIN) {
-    if (req.query.branch) {
-      filter.branches = req.query.branch;
+    // Super Admin & Admin can view all users from every branch
+    if (req.query.role) filter.role = req.query.role;
+    if (req.query.branch) filter.branches = req.query.branch;
+  } else if (req.user.role === ROLES.BRANCH_MANAGER || req.user.role === ROLES.BRANCH_ADMIN) {
+    // Branch Manager & Branch Admin can view only users assigned to their own branch
+    // Must NOT see Super Admin, Admin, or Branch Admin
+    const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
+    if (userBranchIds.length === 0) {
+      filter.branches = { $in: [] };
+    } else if (req.query.branch) {
+      if (userBranchIds.includes(req.query.branch.toString())) {
+        filter.branches = req.query.branch;
+      } else {
+        filter.branches = { $in: [] };
+      }
+    } else {
+      filter.branches = { $in: userBranchIds };
     }
-  } else if (req.user.branches && req.user.branches.length > 0) {
-    const branchId = req.user.branches[0]._id || req.user.branches[0];
-    filter.branches = { $in: [branchId] };
+
+    if (req.query.role) {
+      if (req.query.role === ROLES.SUPER_ADMIN || req.query.role === ROLES.ADMIN || req.query.role === ROLES.BRANCH_ADMIN) {
+        filter.role = { $in: [] };
+      } else {
+        filter.role = req.query.role;
+      }
+    } else {
+      filter.role = { $nin: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_ADMIN] };
+    }
   } else {
-    filter.branches = { $in: [] };
+    // Staff, Cashier, and other roles can only view their own profile
+    filter._id = req.user._id;
   }
 
   const users = await User.find(filter).populate('branches', 'name code').sort('-createdAt');
@@ -31,10 +52,20 @@ exports.getUser = asyncHandler(async (req, res, next) => {
   if (!user) return next(new AppError('User not found.', 404));
 
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
-    const userBranchId = (req.user.branches?.[0]?._id || req.user.branches?.[0])?.toString();
-    const targetBranchIds = (user.branches || []).map((b) => (b._id || b).toString());
-    if (!userBranchId || !targetBranchIds.includes(userBranchId)) {
-      return next(new AppError('You do not have permission to view staff outside your branch.', 403));
+    if (req.user.role === ROLES.BRANCH_MANAGER || req.user.role === ROLES.BRANCH_ADMIN) {
+      if (user.role === ROLES.SUPER_ADMIN || user.role === ROLES.ADMIN || user.role === ROLES.BRANCH_ADMIN) {
+        return next(new AppError('You do not have permission to view staff outside your branch.', 403));
+      }
+      const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
+      const targetBranchIds = (user.branches || []).map((b) => (b._id || b).toString());
+      const hasOverlap = targetBranchIds.some((id) => userBranchIds.includes(id));
+      if (!hasOverlap) {
+        return next(new AppError('You do not have permission to view staff outside your branch.', 403));
+      }
+    } else {
+      if (req.user._id.toString() !== user._id.toString()) {
+        return next(new AppError('You do not have permission to view other staff profiles.', 403));
+      }
     }
   }
 
@@ -55,6 +86,7 @@ exports.createUser = asyncHandler(async (req, res, next) => {
     password,
     role,
     branches,
+    permissions,
     isActive,
   } = req.body;
 
@@ -65,7 +97,17 @@ exports.createUser = asyncHandler(async (req, res, next) => {
     if (!userBranchId) {
       return next(new AppError('You do not have an assigned branch to create staff.', 400));
     }
+    if (role === ROLES.SUPER_ADMIN || role === ROLES.ADMIN || role === ROLES.BRANCH_ADMIN) {
+      return next(new AppError('You cannot create admin users.', 403));
+    }
     assignedBranches = [userBranchId];
+  }
+
+  // A Branch Admin must always be assigned to exactly one branch during creation
+  if (role === ROLES.BRANCH_ADMIN) {
+    if (!assignedBranches || assignedBranches.length !== 1) {
+      return next(new AppError('A Branch Admin must always be assigned to exactly one branch during creation.', 400));
+    }
   }
 
   const user = await User.create({
@@ -80,6 +122,7 @@ exports.createUser = asyncHandler(async (req, res, next) => {
     password,
     role,
     branches: assignedBranches,
+    permissions: role === ROLES.BRANCH_ADMIN ? (permissions || []) : undefined,
     isActive,
   });
 
@@ -112,6 +155,7 @@ exports.updateUser = asyncHandler(async (req, res, next) => {
     'branches',
     'isActive',
     'avatar',
+    'permissions',
   ];
 
   const updateData = {};
@@ -125,12 +169,38 @@ exports.updateUser = asyncHandler(async (req, res, next) => {
   if (!user) return next(new AppError('User not found.', 404));
 
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
-    const userBranchId = (req.user.branches?.[0]?._id || req.user.branches?.[0])?.toString();
-    const targetBranchIds = (user.branches || []).map((b) => (b._id || b).toString());
-    if (!userBranchId || !targetBranchIds.includes(userBranchId)) {
+    if (user.role === ROLES.SUPER_ADMIN || user.role === ROLES.ADMIN || user.role === ROLES.BRANCH_ADMIN) {
       return next(new AppError('You do not have permission to edit staff outside your branch.', 403));
     }
+    const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
+    const targetBranchIds = (user.branches || []).map((b) => (b._id || b).toString());
+    const hasOverlap = targetBranchIds.some((id) => userBranchIds.includes(id));
+    if (!hasOverlap) {
+      return next(new AppError('You do not have permission to edit staff outside your branch.', 403));
+    }
+    if (updateData.role && (updateData.role === ROLES.SUPER_ADMIN || updateData.role === ROLES.ADMIN || updateData.role === ROLES.BRANCH_ADMIN)) {
+      return next(new AppError('You cannot assign admin roles.', 403));
+    }
     delete updateData.branches;
+  }
+
+  if (req.user.role !== ROLES.SUPER_ADMIN) {
+    // Only Super Admin can modify permissions
+    delete updateData.permissions;
+  }
+
+  // Ensure Branch Admin is always assigned to exactly one branch
+  const newRole = updateData.role || user.role;
+  if (newRole === ROLES.BRANCH_ADMIN) {
+    const branchesToCheck = updateData.branches !== undefined ? updateData.branches : user.branches;
+    if (!branchesToCheck || branchesToCheck.length !== 1) {
+      return next(new AppError('A Branch Admin must always be assigned to exactly one branch.', 400));
+    }
+  }
+
+  // If the role changes away from Branch Admin, clear permissions
+  if (updateData.role && updateData.role !== ROLES.BRANCH_ADMIN) {
+    user.permissions = [];
   }
 
   Object.assign(user, updateData);
@@ -157,9 +227,13 @@ exports.deactivateUser = asyncHandler(async (req, res, next) => {
   if (!user) return next(new AppError('User not found.', 404));
 
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
-    const userBranchId = (req.user.branches?.[0]?._id || req.user.branches?.[0])?.toString();
+    if (user.role === ROLES.SUPER_ADMIN || user.role === ROLES.ADMIN || user.role === ROLES.BRANCH_ADMIN) {
+      return next(new AppError('You do not have permission to deactivate staff outside your branch.', 403));
+    }
+    const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
     const targetBranchIds = (user.branches || []).map((b) => (b._id || b).toString());
-    if (!userBranchId || !targetBranchIds.includes(userBranchId)) {
+    const hasOverlap = targetBranchIds.some((id) => userBranchIds.includes(id));
+    if (!hasOverlap) {
       return next(new AppError('You do not have permission to deactivate staff outside your branch.', 403));
     }
   }

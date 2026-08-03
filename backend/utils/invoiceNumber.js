@@ -1,18 +1,30 @@
-/**
- * Generates a unique invoice number in the format: INV-YYYYMMDD-XXXX
- * Uses a counter padded to 4 digits based on today's bill count.
- */
 const { Bill } = require('../models/Billing');
 
-const { getBusinessDayCompactString, getBusinessDayStart } = require('./businessDay');
+const { getBusinessDayCompactString, getBusinessDayStart, getBusinessDayNextStart } = require('./businessDay');
 
-const generateInvoiceNumber = async () => {
-  const today = new Date();
-  const dateStr = getBusinessDayCompactString(today);
-  const businessDayStart = getBusinessDayStart(today);
-  const count = await Bill.countDocuments({ createdAt: { $gte: businessDayStart } });
-  const seq = String(count + 1).padStart(4, '0');
-  return `INV-${dateStr}-${seq}`;
+const generateInvoiceNumber = async (branchId) => {
+  const now = new Date();
+  const dateStr = getBusinessDayCompactString(now);  // e.g. "20260730"
+  const start = getBusinessDayStart(now);
+  const nextStart = getBusinessDayNextStart(now);
+  
+  let count = await Bill.countDocuments({ branch: branchId, createdAt: { $gte: start, $lt: nextStart } });
+  
+  let attempts = 0;
+  while (attempts < 50) {
+    const seq = String(count + 1).padStart(4, '0');
+    const invoiceNumber = `INV-${dateStr}-${seq}`;  // e.g. "INV-20260730-0001"
+    
+    const exists = await Bill.findOne({ branch: branchId, invoiceNumber });
+    if (!exists) {
+      return invoiceNumber;
+    }
+    count++;
+    attempts++;
+  }
+  
+  return `INV-${dateStr}-${Date.now()}`;
 };
+
 
 module.exports = { generateInvoiceNumber };

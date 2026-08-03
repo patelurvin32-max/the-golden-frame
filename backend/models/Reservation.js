@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { PAYMENT_METHODS } = require('../config/constants');
 
 const statusHistorySchema = new mongoose.Schema(
   {
@@ -12,7 +13,7 @@ const statusHistorySchema = new mongoose.Schema(
 
 const reservationSchema = new mongoose.Schema(
   {
-    reservationId: { type: String, unique: true, index: true },
+    reservationId: { type: String },
     customerName: { type: String, required: true, trim: true },
     phoneNumber: { type: String, required: true, trim: true },
     email: { type: String, trim: true, lowercase: true, default: '' },
@@ -32,11 +33,31 @@ const reservationSchema = new mongoose.Schema(
     specialRequests: { type: String, trim: true, default: '' },
     notes: { type: String, trim: true, default: '' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    paymentStatus: { type: String, enum: ['paid', 'partial', 'unpaid', 'refunded'], default: 'unpaid' },
+    paymentMethod: { type: String, enum: [...PAYMENT_METHODS, 'n/a', 'N/A', null, ''], default: null },
+    cashAmount: { type: Number, default: 0 },
+    onlineAmount: { type: Number, default: 0 },
+    walletAmount: { type: Number, default: 0 },
+    amountReceived: { type: Number, default: 0 },
+    totalPaid: { type: Number, default: 0 },
+    billAmount: { type: Number, default: 0 },
+    pendingPaymentAmount: { type: Number, default: 0 },
+    pendingPlayers: [
+      {
+        name: { type: String, trim: true },
+        mobile: { type: String, trim: true },
+        amount: { type: Number, min: 0 },
+        playerName: { type: String, trim: true },
+        mobileNumber: { type: String, trim: true },
+        pendingAmount: { type: Number, min: 0 },
+      }
+    ],
     statusHistory: [statusHistorySchema],
   },
   { timestamps: true }
 );
 
+reservationSchema.index({ branch: 1, reservationId: 1 }, { unique: true });
 reservationSchema.index({ branch: 1, reservationDate: 1 });
 reservationSchema.index({ branch: 1, status: 1 });
 reservationSchema.index({ table: 1, reservationDate: 1, status: 1 });
@@ -48,17 +69,44 @@ reservationSchema.index({ customerName: 'text', phoneNumber: 'text', reservation
 reservationSchema.index({ status: 1 });
 reservationSchema.index({ createdAt: -1 });
 reservationSchema.index({ branch: 1, menuCategoryId: 1, reservationDate: 1, status: 1 });
+reservationSchema.index({ branch: 1, menuItemId: 1, reservationDate: 1, status: 1 });
 
-const { getBusinessDayCompactString, getBusinessDayStart } = require('../utils/businessDay');
+const { getBusinessDayCompactString, getBusinessDayStart, getBusinessDayNextStart } = require('../utils/businessDay');
 
 reservationSchema.pre('save', async function generateId(next) {
   if (this.reservationId) return next();
 
-  const dateStr = getBusinessDayCompactString(new Date());
-  const businessDayStart = getBusinessDayStart(new Date());
-  const count = await mongoose.model('Reservation').countDocuments({ createdAt: { $gte: businessDayStart } });
-  this.reservationId = `RES-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+  const now = new Date();
+  const dateStr = getBusinessDayCompactString(now);
+  const start = getBusinessDayStart(now);
+  const nextStart = getBusinessDayNextStart(now);
+  
+  let count = await mongoose.model('Reservation').countDocuments({
+    branch: this.branch,
+    createdAt: { $gte: start, $lt: nextStart }
+  });
+  
+  let attempts = 0;
+  while (attempts < 50) {
+    const seq = String(count + 1).padStart(4, '0');
+    const reservationId = `RES-${dateStr}-${seq}`;
+    
+    const exists = await mongoose.model('Reservation').findOne({
+      branch: this.branch,
+      reservationId
+    });
+    
+    if (!exists) {
+      this.reservationId = reservationId;
+      return next();
+    }
+    count++;
+    attempts++;
+  }
+  
+  this.reservationId = `RES-${dateStr}-${Date.now()}`;
   next();
 });
+
 
 module.exports = mongoose.model('Reservation', reservationSchema);

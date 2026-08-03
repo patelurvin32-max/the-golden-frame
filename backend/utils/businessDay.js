@@ -1,3 +1,13 @@
+/**
+ * Utility functions for calculating Business Day (5:00 AM reset).
+ *
+ * Rules:
+ * - A business day starts at 05:00:00.000 AM on calendar day D.
+ * - A business day ends at 04:59:59.999 AM on calendar day D+1.
+ * - Any timestamp between 00:00:00 AM and 04:59:59 AM belongs to the previous business day (day D-1).
+ * - At 05:00:00 AM, the business date rolls over to day D.
+ */
+
 const getBusinessDayDate = (date = new Date()) => {
   const d = new Date(date);
   if (d.getHours() < 5) {
@@ -29,9 +39,26 @@ const getBusinessDayStart = (date = new Date()) => {
   return businessDate;
 };
 
+const getBusinessDayNextStart = (date = new Date()) => {
+  const start = getBusinessDayStart(date);
+  const next = new Date(start);
+  next.setDate(next.getDate() + 1);
+  return next;
+};
+
+const getBusinessDayRange = (date = new Date()) => {
+  const start = getBusinessDayStart(date);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  end.setMilliseconds(-1);
+  return { start, end };
+};
+
 module.exports = {
   getBusinessDayDate,
   getBusinessDayDateString,
   getBusinessDayCompactString,
   getBusinessDayStart,
+  getBusinessDayNextStart,
+  getBusinessDayRange,
 };

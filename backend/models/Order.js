@@ -3,12 +3,12 @@ const { PAYMENT_METHODS } = require('../config/constants');
 
 const orderSchema = new mongoose.Schema(
   {
-    orderId: { type: String, required: true, unique: true },
+    orderId: { type: String, required: true },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     // Menu Management fields
-    menuCategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuCategory', required: true },
-    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: true },
+    menuCategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuCategory' },
+    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem' },
     startTime: { type: Date },
     endTime: { type: Date },
     paymentStatus: { type: String, enum: ['paid', 'partial', 'unpaid', 'refunded'], required: true },
@@ -21,6 +21,24 @@ const orderSchema = new mongoose.Schema(
     totalPaid: { type: Number, default: 0 },
     billAmount: { type: Number, required: true }, // Manually entered bill/total amount
     additionalPlayers: { type: String, trim: true },
+    notes: { type: String, trim: true },
+    parentOrder: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
+    parentOrderId: { type: String, trim: true },
+    pendingPlayers: [
+      {
+        id: { type: String },
+        playerName: { type: String, trim: true },
+        mobileNumber: { type: String, trim: true },
+        pendingAmount: { type: Number },
+        name: { type: String, trim: true },
+        mobile: { type: String, trim: true },
+        amount: { type: Number },
+        orderId: { type: String, trim: true },
+        customerId: { type: String, trim: true }
+      }
+    ],
+    table: { type: mongoose.Schema.Types.ObjectId, ref: 'Table' },
+    session: { type: mongoose.Schema.Types.ObjectId, ref: 'Session' },
     isActive: { type: Boolean, default: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
@@ -28,6 +46,7 @@ const orderSchema = new mongoose.Schema(
 );
 
 // Indexes for performance
+orderSchema.index({ branch: 1, orderId: 1 }, { unique: true });
 orderSchema.index({ customer: 1 });
 orderSchema.index({ branch: 1 });
 orderSchema.index({ menuCategoryId: 1 });
@@ -47,5 +66,6 @@ orderSchema.index({ billAmount: -1 });
 orderSchema.index({ createdAt: -1, paymentStatus: 1 });
 orderSchema.index({ branch: 1, createdAt: -1, customer: 1 });
 orderSchema.index({ branch: 1, createdAt: -1, menuItemId: 1 });
+orderSchema.index({ 'customer.name': 1 });
 
 module.exports = mongoose.model('Order', orderSchema);

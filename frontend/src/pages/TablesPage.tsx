@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { tableService, sessionService, customerService, billingService, menuService } from '@/services';
-import { useAppStore } from '@/store';
+import { useAppStore, useAuthStore } from '@/store';
 import { useSocket } from '@/hooks/useSocket';
 import type { Table, Customer, MenuCategoryDoc, MenuItem, SessionItem } from '@/types';
 import {
@@ -58,15 +58,20 @@ function formatElapsedTime(seconds: number): string {
 function useRunningTimer(session: any) {
   const [seconds, setSeconds] = useState(0);
 
+  // Serialize pauses to a string so any mutation (new pause entry, resumeTime added)
+  // is detected immediately — not just array-length changes.
+  const pausesKey = JSON.stringify(session?.pauses ?? []);
+
   useEffect(() => {
     if (!session) {
       setSeconds(0);
       return;
     }
     if (session.status === 'paused') {
+      // Timer is frozen — compute the elapsed time at the moment of pause and hold it
       const pausedSecs = getElapsedSeconds(session.startTime, session.pauses || []);
       setSeconds(pausedSecs);
-      return;
+      return; // No interval — timer stays frozen
     }
     const tick = () => {
       setSeconds(getElapsedSeconds(session.startTime, session.pauses || []));
@@ -74,13 +79,14 @@ function useRunningTimer(session: any) {
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [session?.startTime, session?.status, session?.pauses?.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.startTime, session?.status, pausesKey]);
 
   return seconds;
 }
 
 // ── Individual Table Card ─────────────────────────────────────────────────────
-function TableCard({ table, onAction }: { table: Table; onAction: (action: string, table: Table) => void }) {
+function TableCard({ table, onAction, isPauseLoading, isResumeLoading }: { table: Table; onAction: (action: string, table: Table) => void; isPauseLoading?: boolean; isResumeLoading?: boolean }) {
   const session = table.currentSession as any;
   const seconds = useRunningTimer(session);
   const minutes = Math.ceil(seconds / 60);
@@ -160,31 +166,31 @@ function TableCard({ table, onAction }: { table: Table; onAction: (action: strin
                 ▶ Start
               </Button>
             )}
-            {table.status === 'running' && !isPaused && (
+            {table.status === 'running' && session && session.status === 'running' && (
               <>
-                <Button size="sm" variant="outline" className="flex-1" onClick={() => onAction('pause', table)}>
+                <Button size="sm" variant="outline" className="flex-1" loading={isPauseLoading} disabled={isPauseLoading} onClick={() => onAction('pause', table)}>
                   ⏸
                 </Button>
-                <Button size="sm" variant="outline" className="flex-1" onClick={() => onAction('extend', table)}>
+                <Button size="sm" variant="outline" className="flex-1" disabled={isPauseLoading} onClick={() => onAction('extend', table)}>
                   +
                 </Button>
-                <Button size="sm" variant="outline" className="flex-1" onClick={() => onAction('edit', table)}>
+                <Button size="sm" variant="outline" className="flex-1" disabled={isPauseLoading} onClick={() => onAction('edit', table)}>
                   Edit
                 </Button>
-                <Button size="sm" variant="destructive" className="flex-1" onClick={() => onAction('stop', table)}>
+                <Button size="sm" variant="destructive" className="flex-1" disabled={isPauseLoading} onClick={() => onAction('stop', table)}>
                   ■ Stop
                 </Button>
               </>
             )}
-            {table.status === 'running' && isPaused && (
+            {table.status === 'running' && session && session.status === 'paused' && (
               <>
-                <Button size="sm" className="flex-1" onClick={() => onAction('resume', table)}>
+                <Button size="sm" className="flex-1" loading={isResumeLoading} disabled={isResumeLoading} onClick={() => onAction('resume', table)}>
                   ▶ Resume
                 </Button>
-                <Button size="sm" variant="outline" className="flex-1" onClick={() => onAction('edit', table)}>
+                <Button size="sm" variant="outline" className="flex-1" disabled={isResumeLoading} onClick={() => onAction('edit', table)}>
                   Edit
                 </Button>
-                <Button size="sm" variant="destructive" className="flex-1" onClick={() => onAction('stop', table)}>
+                <Button size="sm" variant="destructive" className="flex-1" disabled={isResumeLoading} onClick={() => onAction('stop', table)}>
                   ■ Stop
                 </Button>
               </>
@@ -207,6 +213,7 @@ export default function TablesPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const { selectedBranch } = useAppStore();
+  const { user } = useAuthStore();
   const { onTableUpdate } = useSocket();
 
   const [filterType, setFilterType] = useState('all');
@@ -244,7 +251,7 @@ export default function TablesPage() {
 
   const { data: editMenuItemsData, isFetching: isEditMenuItemsLoading } = useQuery({
     queryKey: ['edit-menu-items', editForm.menuCategoryId, branchToFetch],
-    queryFn: () => menuService.getAll({ category: editForm.menuCategoryId, branch: branchToFetch, limit: '1000' }).then((r) => r.data),
+    queryFn: () => menuService.getAll({ category: editForm.menuCategoryId, branch: branchToFetch, limit: '1000', activeOnly: 'true' }).then((r) => r.data),
     enabled: !!editForm.menuCategoryId && modal === 'editSession',
   });
 
@@ -300,11 +307,16 @@ export default function TablesPage() {
   const [stopForm, setStopForm] = useState<PaymentFormValues & { notes: string }>(emptyStopForm);
   const [stopLoading, setStopLoading] = useState(false);
 
+  // Determine branch context for tables
+  const tableBranch = selectedBranch || (user?.role !== 'super_admin' && user?.role !== 'admin' 
+    ? (typeof user?.branches?.[0] === 'string' ? user.branches[0] : user?.branches?.[0]?._id)
+    : undefined);
+
   const params: Record<string, string> = {};
-  if (selectedBranch) params.branch = selectedBranch;
+  if (tableBranch) params.branch = tableBranch;
 
   const { data, isLoading } = useQuery({
-    queryKey: ['tables', selectedBranch],
+    queryKey: ['tables', tableBranch],
     queryFn: () => tableService.getAll(params).then((r) => r.data.data.tables),
     refetchInterval: 5 * 60_000,  // 5min safety fallback poll; socket handles real-time
     staleTime: Infinity,          // Socket.io pushes updates — don't mark stale between polls
@@ -312,15 +324,32 @@ export default function TablesPage() {
 
   const availableTypes = useMemo(() => Array.from(new Set((data || []).map((t: Table) => t.type.toLowerCase()))), [data]);
 
-  // Real-time socket updates
+  // Real-time socket updates — patch whichever cache keys contain this table
   useEffect(() => {
     const off = onTableUpdate((updatedTable) => {
-      qc.setQueryData(['tables', selectedBranch], (old: Table[] | undefined) =>
-        old ? old.map((t) => (t._id === updatedTable._id ? updatedTable : t)) : old
-      );
+      console.log('[TablesPage] Received socket update:', updatedTable);
+
+      const patchCache = (key: (string | undefined)[]) => {
+        qc.setQueryData(key, (old: Table[] | undefined) => {
+          if (!old) return old;
+          // If this table exists in this cache, update it
+          const exists = old.some((t) => t._id === updatedTable._id);
+          if (!exists) return old;
+          return old.map((t) => (t._id === updatedTable._id ? updatedTable : t));
+        });
+      };
+
+      // Always patch the current view's cache key
+      patchCache(['tables', tableBranch]);
+
+      // Also patch the "all branches" cache (tableBranch = undefined) so super_admin
+      // switching between "all" and a specific branch always sees fresh data
+      if (tableBranch !== undefined) {
+        patchCache(['tables', undefined]);
+      }
     });
     return off;
-  }, [selectedBranch]);
+  }, [tableBranch]);
 
   const tables = useMemo(() => (data || []).filter((t: Table) => {
     if (filterType !== 'all' && t.type.toLowerCase() !== filterType.toLowerCase()) return false;
@@ -333,32 +362,48 @@ export default function TablesPage() {
   const startMutation = useMutation({
     mutationFn: (data: { tableId: string; customerId?: string; customerName: string; phoneNumber: string; extraPlayers: string[] }) =>
       sessionService.start(data.tableId, data.customerId, data.customerName, data.phoneNumber, data.extraPlayers),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tables'] }); toast.success('Session started!'); setModal(null); setStartForm({ customerId: '', customerSearch: '', customerName: '', phoneNumber: '', extraPlayers: '' }); setPhoneError(''); },
+    onSuccess: (res) => {
+      // Close modal immediately — socket will update the table card in real-time.
+      // Also kick off a background refetch as a safety net.
+      toast.success('Session started!');
+      setModal(null);
+      setStartForm({ customerId: '', customerSearch: '', customerName: '', phoneNumber: '', extraPlayers: '' });
+      setPhoneError('');
+      // Background refetch — don't block UI
+      qc.refetchQueries({ queryKey: ['tables', tableBranch] });
+    },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to start session'),
   });
 
   const pauseMutation = useMutation({
     mutationFn: (sessionId: string) => sessionService.pause(sessionId),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tables'] }); toast.info('Session paused'); },
+    onSuccess: () => {
+      // Socket (table:updated) handles cache update — no refetch needed here.
+      // Calling refetchQueries races the socket push and can revert state.
+      toast.info('Session paused');
+    },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed'),
   });
 
   const resumeMutation = useMutation({
     mutationFn: (sessionId: string) => sessionService.resume(sessionId),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tables'] }); toast.success('Session resumed'); },
+    onSuccess: () => {
+      // Socket (table:updated) handles cache update — no refetch needed here.
+      toast.success('Session resumed');
+    },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed'),
   });
 
   const extendMutation = useMutation({
     mutationFn: ({ sessionId, minutes }: { sessionId: string; minutes: number }) =>
       sessionService.extend(sessionId, minutes),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tables'] }); toast.success(`Extended by ${extendMinutes} minutes`); setModal(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tables', tableBranch] }); toast.success(`Extended by ${extendMinutes} minutes`); setModal(null); },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed'),
   });
 
   const updateTableMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => tableService.update(id, { status } as any),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tables'] }); toast.success('Table updated'); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tables', tableBranch] }); toast.success('Table updated'); },
   });
 
   const searchCustomers = useCallback(async (query: string) => {
@@ -442,6 +487,19 @@ export default function TablesPage() {
       const stopRes = await sessionService.stop(session._id);
       const stoppedSession = stopRes.data.data.session;
 
+      // Optimistically mark the table as available in the cache immediately —
+      // don't wait for socket or refetch; this makes the UI instant.
+      const optimisticallyFreeTable = (old: Table[] | undefined) => {
+        if (!old) return old;
+        return old.map((t) =>
+          t._id === activeTable._id
+            ? { ...t, status: 'available' as const, currentSession: null }
+            : t
+        );
+      };
+      qc.setQueryData(['tables', tableBranch], optimisticallyFreeTable);
+      qc.setQueryData(['tables', undefined], optimisticallyFreeTable);
+
       // 2. Create Official Bill using billingService (initialize as 'unpaid' so receivePayment can record payment receipt)
       const billRes = await billingService.create({
         sessionId: stoppedSession._id,
@@ -489,13 +547,15 @@ export default function TablesPage() {
       }
 
       toast.success(`Session completed & Invoice ${bill?.invoiceNumber ? '#' + bill.invoiceNumber : ''} generated!`);
-      qc.invalidateQueries({ queryKey: ['tables'] });
+      setModal(null);
+      setActiveTable(null);
+
+      // Refetch in background to sync any server-side differences
+      qc.refetchQueries({ queryKey: ['tables', tableBranch] });
       qc.invalidateQueries({ queryKey: ['bills'] });
       qc.invalidateQueries({ queryKey: ['customers'] });
       qc.invalidateQueries({ queryKey: ['pending-payments'] });
       qc.invalidateQueries({ queryKey: ['dashboard-stats'] });
-      setModal(null);
-      setActiveTable(null);
     } catch (err: any) {
       toast.error(err?.response?.data?.message || 'Failed to complete stop and payment');
     } finally {
@@ -513,7 +573,7 @@ export default function TablesPage() {
     if (isRefreshing) return;
     setIsRefreshing(true);
     try {
-      await qc.refetchQueries({ queryKey: ['tables', selectedBranch] });
+      await qc.refetchQueries({ queryKey: ['tables', tableBranch] });
       toast.success('Live tables refreshed successfully');
     } catch (error) {
       toast.error('Failed to refresh live tables');
@@ -574,7 +634,13 @@ export default function TablesPage() {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
           <AnimatePresence>
             {tables.map((table: Table) => (
-              <TableCard key={table._id} table={table} onAction={handleAction} />
+                <TableCard
+                  key={table._id}
+                  table={table}
+                  onAction={handleAction}
+                  isPauseLoading={pauseMutation.isPending && (activeTable?._id === table._id)}
+                  isResumeLoading={resumeMutation.isPending && (activeTable?._id === table._id)}
+                />
             ))}
           </AnimatePresence>
         </div>
@@ -588,7 +654,10 @@ export default function TablesPage() {
             <Input
               placeholder="Enter customer name"
               value={startForm.customerName}
-              onChange={(e) => setStartForm((f) => ({ ...f, customerName: e.target.value }))}
+              onChange={(e) => {
+                const filtered = e.target.value.replace(/[^A-Za-z\s'-]/g, '');
+                setStartForm((f) => ({ ...f, customerName: filtered }));
+              }}
             />
           </div>
           <div className="space-y-1.5">
@@ -614,7 +683,10 @@ export default function TablesPage() {
             <Input
               placeholder="Enter player names separated by commas"
               value={startForm.extraPlayers}
-              onChange={(e) => setStartForm((f) => ({ ...f, extraPlayers: e.target.value }))}
+              onChange={(e) => {
+                const filtered = e.target.value.replace(/[^A-Za-z\s',-]/g, '');
+                setStartForm((f) => ({ ...f, extraPlayers: filtered }));
+              }}
             />
           </div>
           <div className="flex gap-2 pt-2">
@@ -623,14 +695,32 @@ export default function TablesPage() {
               loading={startMutation.isPending}
               onClick={() => {
                 if (!startForm.customerName) { toast.error('Customer Name is required'); return; }
+                const trimmedName = startForm.customerName.trim();
+                if (!trimmedName) { toast.error('Customer Name cannot be empty or whitespace only'); return; }
+                
+                const nameRegex = /^[A-Za-z\s'-]+$/;
+                if (!nameRegex.test(trimmedName)) {
+                  toast.error("Customer Name must only contain letters, spaces, hyphens (-), and apostrophes (')");
+                  return;
+                }
+                
                 if (!startForm.phoneNumber) { toast.error('Mobile Number is required'); return; }
                 if (startForm.phoneNumber.length !== 10) { toast.error('Mobile Number must be exactly 10 digits'); return; }
+                
+                const players = startForm.extraPlayers.split(',').map(p => p.trim()).filter(p => p);
+                for (const p of players) {
+                  if (!nameRegex.test(p)) {
+                    toast.error(`Extra Player name "${p}" must only contain letters, spaces, hyphens (-), and apostrophes (')`);
+                    return;
+                  }
+                }
+                
                 if (activeTable) startMutation.mutate({ 
                   tableId: activeTable._id, 
                   customerId: startForm.customerId, 
-                  customerName: startForm.customerName, 
+                  customerName: trimmedName, 
                   phoneNumber: startForm.phoneNumber, 
-                  extraPlayers: startForm.extraPlayers.split(',').map(p => p.trim()).filter(p => p) 
+                  extraPlayers: players
                 });
               }}
             >

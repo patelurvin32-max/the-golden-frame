@@ -2,7 +2,7 @@
 // Shared TypeScript types for The Golden Frame frontend
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type Role = 'super_admin' | 'admin' | 'branch_manager' | 'staff' | 'cashier';
+export type Role = 'super_admin' | 'admin' | 'branch_admin' | 'branch_manager' | 'staff' | 'cashier';
 export type TableType = string;
 export type TableStatus = 'available' | 'running' | 'reserved' | 'maintenance';
 export type SessionStatus = 'running' | 'paused' | 'completed' | 'cancelled';
@@ -25,6 +25,7 @@ export interface User {
   notes?: string;
   role: Role;
   branches: Branch[];
+  permissions?: string[];
   avatar?: string;
   isActive: boolean;
   lastLogin?: string;
@@ -53,6 +54,37 @@ export interface Table {
   notes?: string;
   isActive: boolean;
   currentSession?: Session;
+}
+
+export interface Reservation {
+  _id: string;
+  reservationId: string;
+  customerName: string;
+  phoneNumber: string;
+  email?: string;
+  branch: Branch;
+  table: Table;
+  menuCategoryId?: any;
+  menuItemId?: any;
+  reservationDate: string;
+  reservationTime: string;
+  durationMinutes: number;
+  numberOfGuests: number;
+  status: 'pending' | 'confirmed' | 'seated' | 'completed' | 'cancelled' | 'no_show';
+  specialRequests?: string;
+  notes?: string;
+  createdBy: User;
+  createdAt: string;
+  statusHistory?: any[];
+  paymentStatus?: 'paid' | 'partial' | 'unpaid' | 'refunded';
+  paymentMethod?: 'cash' | 'upi' | 'mixed' | 'wallet' | '';
+  cashAmount?: number;
+  onlineAmount?: number;
+  walletAmount?: number;
+  totalPaid?: number;
+  billAmount?: number;
+  pendingPaymentAmount?: number;
+  additionalPlayers?: any[];
 }
 
 export interface SessionItem {
@@ -111,7 +143,7 @@ export interface Customer {
   menuItemId: string;
   startTime: string;
   endTime?: string;
-  paymentStatus: 'paid' | 'unpaid' | 'refunded';
+  paymentStatus: 'paid' | 'partial' | 'unpaid' | 'refunded';
   paymentMethod?: PaymentMethod;
   numberOfPlayers?: number;
   billAmount: number;
@@ -126,12 +158,25 @@ export interface BillItem {
   type: 'table_time' | 'inventory' | 'other';
 }
 
+export interface PendingPlayer {
+  id?: string;
+  playerName?: string;
+  mobileNumber?: string;
+  pendingAmount?: number;
+  name?: string;
+  mobile?: string;
+  amount?: number;
+  orderId?: string;
+  customerId?: string;
+}
+
 export interface Bill {
   _id: string;
   invoiceNumber: string;
   branch: Branch;
   customer?: Customer;
   session?: Session;
+  order?: any;
   items: BillItem[];
   subtotal: number;
   discountType?: 'flat' | 'percent';
@@ -143,6 +188,20 @@ export interface Bill {
   paymentStatus: PaymentStatus;
   createdBy: User;
   createdAt: string;
+  // Payment details stored directly on Bill
+  paymentMethod?: PaymentMethod;
+  cashAmount?: number;
+  onlineAmount?: number;
+  walletAmount?: number;
+  amountReceived?: number;
+  pendingPaymentAmount?: number;
+  pendingPlayers?: PendingPlayer[];
+  notes?: string;
+  // Menu category/item from session for Live Tables billing
+  menuCategoryId?: string | { _id: string; name: string };
+  menuItemId?: string | { _id: string; name: string };
+  menuCategory?: string;
+  menuItem?: string;
 }
 
 export interface Expense {
@@ -155,6 +214,12 @@ export interface Expense {
   notes?: string;
   createdBy: User;
   createdAt: string;
+  paymentStatus?: 'paid' | 'partial' | 'unpaid' | 'refunded';
+  paymentMethod?: 'cash' | 'upi' | 'mixed' | 'wallet' | '';
+  cashAmount?: number;
+  onlineAmount?: number;
+  walletAmount?: number;
+  pendingAmount?: number;
 }
 
 export interface InventoryCategoryDoc {

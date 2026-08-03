@@ -1,13 +1,59 @@
 const { Expense } = require('../models/Operations');
+const PaymentHistory = require('../models/PaymentHistory');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ROLES } = require('../config/constants');
 const { createBranchNotification } = require('../services/notificationService');
 
+exports.getExpenseStats = asyncHandler(async (req, res) => {
+  const filter = {};
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    filter.branch = { $in: userBranchIds };
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
+  }
+
+  // Get date ranges
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekStart = new Date(todayStart);
+  weekStart.setDate(weekStart.getDate() - weekStart.getDay()); // Start of week (Sunday)
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  // Get counts
+  const [todayCount, weekCount, monthCount, totalCount] = await Promise.all([
+    Expense.countDocuments({ ...filter, date: { $gte: todayStart } }),
+    Expense.countDocuments({ ...filter, date: { $gte: weekStart } }),
+    Expense.countDocuments({ ...filter, date: { $gte: monthStart } }),
+    Expense.countDocuments(filter),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      today: todayCount,
+      week: weekCount,
+      month: monthCount,
+      total: totalCount,
+    },
+  });
+});
+
 exports.getExpenses = asyncHandler(async (req, res) => {
   const filter = {};
-  if (req.user.role !== ROLES.SUPER_ADMIN) filter.branch = { $in: req.user.branches };
-  if (req.query.branch) filter.branch = req.query.branch;
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      filter.branch = req.query.branch;
+    } else {
+      filter.branch = { $in: userBranchIds };
+    }
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
+  }
   if (req.query.category) filter.category = req.query.category;
   if (req.query.from || req.query.to) {
     filter.date = {};
@@ -33,11 +79,38 @@ exports.getExpenses = asyncHandler(async (req, res) => {
 exports.createExpense = asyncHandler(async (req, res, next) => {
   // For Branch Manager and Staff, auto-assign branch from their assigned branches
   let finalBranch = req.body.branch;
-  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN && req.user.branches && req.user.branches.length > 0) {
     finalBranch = req.user.branches[0];
   }
 
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!finalBranch || !userBranchIds.includes(finalBranch.toString())) {
+      return next(new AppError('You do not have access to this branch.', 403));
+    }
+  }
+
+  const { paymentStatus, paymentMethod, cashAmount, onlineAmount, walletAmount, totalPaid, pendingAmount } = req.body;
+
   const expense = await Expense.create({ ...req.body, branch: finalBranch, createdBy: req.user._id });
+
+  if (paymentStatus || paymentMethod) {
+    await PaymentHistory.create({
+      expense: expense._id,
+      branch: finalBranch,
+      paymentMethod: paymentMethod || null,
+      cashAmount: cashAmount || 0,
+      onlineAmount: onlineAmount || 0,
+      walletAmount: walletAmount || 0,
+      totalPaid: totalPaid || 0,
+      billAmount: expense.amount,
+      pendingAmount: pendingAmount || 0,
+      paymentStatus: paymentStatus || 'paid',
+      notes: req.body.notes || '',
+      createdBy: req.user._id,
+      paymentNumber: 1,
+    });
+  }
 
   createBranchNotification({
     branchId: finalBranch,
@@ -51,13 +124,78 @@ exports.createExpense = asyncHandler(async (req, res, next) => {
 });
 
 exports.updateExpense = asyncHandler(async (req, res, next) => {
-  const expense = await Expense.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  const expense = await Expense.findById(req.params.id);
   if (!expense) return next(new AppError('Expense not found.', 404));
-  res.status(200).json({ success: true, data: { expense } });
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(expense.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+    if (req.body.branch && !userBranchIds.includes(req.body.branch.toString())) {
+      return next(new AppError('You cannot assign to this branch.', 403));
+    }
+  }
+
+  const updatedExpense = await Expense.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  if (!updatedExpense) return next(new AppError('Expense not found.', 404));
+
+  const { paymentStatus, paymentMethod, cashAmount, onlineAmount, walletAmount, totalPaid, pendingAmount } = req.body;
+
+  if (paymentStatus || paymentMethod) {
+    let paymentHistory = await PaymentHistory.findOne({ expense: updatedExpense._id });
+    if (paymentHistory) {
+      paymentHistory.paymentMethod = paymentMethod || null;
+      paymentHistory.cashAmount = cashAmount || 0;
+      paymentHistory.onlineAmount = onlineAmount || 0;
+      paymentHistory.walletAmount = walletAmount || 0;
+      paymentHistory.totalPaid = totalPaid || 0;
+      paymentHistory.billAmount = updatedExpense.amount;
+      paymentHistory.pendingAmount = pendingAmount || 0;
+      paymentHistory.paymentStatus = paymentStatus || 'paid';
+      paymentHistory.notes = req.body.notes || '';
+      await paymentHistory.save();
+    } else {
+      await PaymentHistory.create({
+        expense: updatedExpense._id,
+        branch: updatedExpense.branch,
+        paymentMethod: paymentMethod || null,
+        cashAmount: cashAmount || 0,
+        onlineAmount: onlineAmount || 0,
+        walletAmount: walletAmount || 0,
+        totalPaid: totalPaid || 0,
+        billAmount: updatedExpense.amount,
+        pendingAmount: pendingAmount || 0,
+        paymentStatus: paymentStatus || 'paid',
+        notes: req.body.notes || '',
+        createdBy: req.user._id,
+        paymentNumber: 1,
+      });
+    }
+  }
+
+  createBranchNotification({
+    branchId: updatedExpense.branch,
+    actor: req.user,
+    title: 'Expense Updated',
+    message: `${req.user.name} updated expense (${updatedExpense.title || updatedExpense.category || 'Expense'}).`,
+    req,
+  }).catch((err) => console.error('Error creating expense notification:', err));
+
+  res.status(200).json({ success: true, data: { expense: updatedExpense } });
 });
 
 exports.deleteExpense = asyncHandler(async (req, res, next) => {
-  const expense = await Expense.findByIdAndDelete(req.params.id);
+  const expense = await Expense.findById(req.params.id);
   if (!expense) return next(new AppError('Expense not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(expense.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
+  await expense.deleteOne();
   res.status(204).json({ success: true, data: null });
 });

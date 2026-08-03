@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { billingService, menuService } from '@/services';
-import { useAppStore } from '@/store';
+import { useAppStore, useAuthStore } from '@/store';
 import type { Bill, MenuCategoryDoc, MenuItem, SessionItem } from '@/types';
 import {
   Button, Card, Badge, PageHeader, Input, Label, Select, Modal,
@@ -18,6 +18,7 @@ export default function BillingPage() {
   const qc = useQueryClient();
   const toast = useToast();
   const { selectedBranch } = useAppStore();
+  const { user } = useAuthStore();
 
   const [statusFilter, setStatusFilter] = useState('all');
   const [page, setPage] = useState(1);
@@ -33,7 +34,7 @@ export default function BillingPage() {
 
   const emptyPaymentValues: PaymentFormValues = {
     paymentStatus: 'paid',
-    paymentMethod: 'cash',
+    paymentMethod: '' as 'cash' | 'upi' | 'mixed' | 'wallet' | '',
     cashAmount: '',
     onlineAmount: '',
     walletAmount: '',
@@ -83,6 +84,16 @@ export default function BillingPage() {
     ? (categoriesData as any).data.categories
     : [];
 
+  // Fetch billing statistics for Super Admin and Branch Admin
+  const { data: statsData } = useQuery({
+    queryKey: ['bill-stats', selectedBranch],
+    queryFn: () => billingService.getStats(selectedBranch ? { branch: selectedBranch } : undefined).then((r) => r.data),
+    enabled: user?.role === 'super_admin' || user?.role === 'branch_admin',
+    staleTime: 60_000,
+  });
+
+  const stats = (statsData as any)?.data || { today: 0, week: 0, month: 0, total: 0 };
+
   const allowedEditCategories = useMemo(() => {
     const allowedNames = ['beverage', 'beverages', 'accessory', 'accessories'];
     return categories.filter((cat) => allowedNames.includes(cat.name?.toLowerCase().trim()));
@@ -92,7 +103,7 @@ export default function BillingPage() {
 
   const { data: menuItemsData, isFetching: isMenuItemsLoading } = useQuery({
     queryKey: ['edit-bill-menu-items', newItemCatId, branchToFetch],
-    queryFn: () => menuService.getAll({ category: newItemCatId, branch: branchToFetch, limit: '1000' }).then((r) => r.data),
+    queryFn: () => menuService.getAll({ category: newItemCatId, branch: branchToFetch, limit: '1000', activeOnly: 'true' }).then((r) => r.data),
     enabled: !!newItemCatId && editModalOpen,
   });
 
@@ -142,23 +153,101 @@ export default function BillingPage() {
     setNewItemCatId('');
     setNewItemId('');
     setNewItemQty(1);
-    setNotes('');
+    const order = (bill.order as any) || {};
+
+    setNotes(order.notes || (bill as any).notes || '');
+
+    // Helper to get pending players from either order or bill
+    const getPendingPlayers = (source: any) => {
+      if (!source || !Array.isArray(source.pendingPlayers)) return [];
+      return source.pendingPlayers.map((p: any) => ({
+        id: p.id || p._id || '',
+        name: p.name || p.playerName || '',
+        mobile: p.mobile || p.mobileNumber || '',
+        amount: String(p.amount || p.pendingAmount || ''),
+      }));
+    };
+
+    const existingPendingPlayers = getPendingPlayers(order).length > 0 
+      ? getPendingPlayers(order)
+      : getPendingPlayers(bill);
+
+    // Helper to get amount received from either order or bill
+    const getAmountReceived = (order: any, bill: any) => {
+      if (order.amountReceived !== undefined && order.amountReceived !== null && order.amountReceived !== '') {
+        return String(order.amountReceived);
+      }
+      if (bill.amountReceived !== undefined && bill.amountReceived !== null && bill.amountReceived !== '') {
+        return String(bill.amountReceived);
+      }
+      return '';
+    };
+
+    const initialAmountReceived = getAmountReceived(order, bill);
+
+    // Helper to get payment values from either order or bill
+    const getPaymentValue = (orderValue: any, billValue: any) => {
+      if (orderValue !== undefined && orderValue !== null) return orderValue;
+      if (billValue !== undefined && billValue !== null) return billValue;
+      return undefined;
+    };
+
+    const paymentMethodValue = getPaymentValue(order.paymentMethod, (bill as any).paymentMethod);
+    const cashAmountValue = getPaymentValue(order.cashAmount, (bill as any).cashAmount);
+    const onlineAmountValue = getPaymentValue(order.onlineAmount, (bill as any).onlineAmount);
+    const walletAmountValue = getPaymentValue(order.walletAmount, (bill as any).walletAmount);
+    const pendingPaymentAmountValue = getPaymentValue(order.pendingPaymentAmount, (bill as any).pendingPaymentAmount);
 
     setPaymentValues({
       paymentStatus: (bill.paymentStatus as any) || 'paid',
-      paymentMethod: bill.paymentStatus === 'unpaid' ? null : 'cash',
-      cashAmount: '',
-      onlineAmount: '',
-      walletAmount: '',
-      amountReceived: '',
-      pendingPaymentAmount: '0',
+      paymentMethod: paymentMethodValue !== undefined ? paymentMethodValue : (bill.paymentStatus === 'unpaid' ? null : ''),
+      cashAmount: cashAmountValue !== undefined && cashAmountValue !== null ? String(cashAmountValue) : '',
+      onlineAmount: onlineAmountValue !== undefined && onlineAmountValue !== null ? String(onlineAmountValue) : '',
+      walletAmount: walletAmountValue !== undefined && walletAmountValue !== null ? String(walletAmountValue) : '',
+      amountReceived: initialAmountReceived,
+      pendingPaymentAmount: String(pendingPaymentAmountValue !== undefined ? pendingPaymentAmountValue : 0),
       billAmount: String(bill.total || 0),
       addToWallet: false,
       extraAmount: '0',
       walletBalance: (bill.customer as any)?.walletBalance || 0,
+      pendingPlayers: existingPendingPlayers,
     });
 
     setEditModalOpen(true);
+
+    // Fetch fresh bill & order data to ensure latest pendingPlayers and amounts are loaded
+    billingService.getOne(bill._id).then((res) => {
+      const freshBill = res.data.data.bill;
+      if (freshBill) {
+        const freshOrder = (freshBill.order as any) || {};
+
+        const freshAmountReceived = getAmountReceived(freshOrder, freshBill);
+        const freshPendingPlayers = getPendingPlayers(freshOrder).length > 0
+          ? getPendingPlayers(freshOrder)
+          : getPendingPlayers(freshBill);
+
+        const freshPaymentMethod = getPaymentValue(freshOrder.paymentMethod, (freshBill as any).paymentMethod);
+        const freshCashAmount = getPaymentValue(freshOrder.cashAmount, (freshBill as any).cashAmount);
+        const freshOnlineAmount = getPaymentValue(freshOrder.onlineAmount, (freshBill as any).onlineAmount);
+        const freshWalletAmount = getPaymentValue(freshOrder.walletAmount, (freshBill as any).walletAmount);
+        const freshPendingPaymentAmount = getPaymentValue(freshOrder.pendingPaymentAmount, (freshBill as any).pendingPaymentAmount);
+
+        setPaymentValues((prev) => ({
+          ...prev,
+          paymentMethod: freshPaymentMethod !== undefined ? freshPaymentMethod : prev.paymentMethod,
+          cashAmount: freshCashAmount !== undefined && freshCashAmount !== null ? String(freshCashAmount) : prev.cashAmount,
+          onlineAmount: freshOnlineAmount !== undefined && freshOnlineAmount !== null ? String(freshOnlineAmount) : prev.onlineAmount,
+          walletAmount: freshWalletAmount !== undefined && freshWalletAmount !== null ? String(freshWalletAmount) : prev.walletAmount,
+          amountReceived: freshAmountReceived !== '' ? freshAmountReceived : prev.amountReceived,
+          pendingPaymentAmount: freshPendingPaymentAmount !== undefined ? String(freshPendingPaymentAmount) : prev.pendingPaymentAmount,
+          pendingPlayers: freshPendingPlayers,
+          walletBalance: (freshBill.customer as any)?.walletBalance || prev.walletBalance,
+        }));
+        if (freshOrder.notes || (freshBill as any).notes) {
+          setNotes(freshOrder.notes || (freshBill as any).notes);
+        }
+      }
+    }).catch(() => {/* ignore error */});
   };
 
   // Calculate base Game Amount (table session cost)
@@ -303,6 +392,14 @@ export default function BillingPage() {
       subtotal: computedGrandTotal,
       total: computedGrandTotal,
       paymentStatus: paymentValues.paymentStatus,
+      paymentMethod: paymentValues.paymentMethod,
+      cashAmount: paymentValues.cashAmount,
+      onlineAmount: paymentValues.onlineAmount,
+      walletAmount: paymentValues.walletAmount,
+      amountReceived: paymentValues.amountReceived,
+      pendingPaymentAmount: paymentValues.pendingPaymentAmount,
+      pendingPlayers: paymentValues.pendingPlayers || [],
+      notes: notes,
       addedItems: editItems,
     };
 
@@ -322,6 +419,56 @@ export default function BillingPage() {
   return (
     <div className="space-y-5 animate-fade-in">
       <PageHeader title="Billing" />
+
+      {/* Statistics Cards - Only for Super Admin and Branch Admin */}
+      {(user?.role === 'super_admin' || user?.role === 'branch_admin') && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-blue-500/5 to-blue-600/5 hover:from-blue-500/10 hover:to-blue-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Today</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.today}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-lg">
+                📅
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-green-500/5 to-green-600/5 hover:from-green-500/10 hover:to-green-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Week</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.week}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-green-500/10 flex items-center justify-center text-lg">
+                📊
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-purple-500/5 to-purple-600/5 hover:from-purple-500/10 hover:to-purple-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Month</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.month}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-purple-500/10 flex items-center justify-center text-lg">
+                📈
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-amber-500/5 to-amber-600/5 hover:from-amber-500/10 hover:to-amber-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Total</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.total}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-amber-500/10 flex items-center justify-center text-lg">
+                🧾
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* Search and Page Length */}
       <div className="flex gap-3">
@@ -383,9 +530,9 @@ export default function BillingPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Invoice #</TableHead>
-                <TableHead>Customer Name</TableHead>
-                <TableHead>Menu Category</TableHead>
-                <TableHead>Menu Item</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Item</TableHead>
                 <TableHead>Total Amount</TableHead>
                 <TableHead>Payment Status</TableHead>
                 <TableHead>Date & Time</TableHead>
@@ -406,10 +553,10 @@ export default function BillingPage() {
                     )}
                   </TableCell>
                   <TableCell className="text-sm">
-                    {(bill.session as any)?.menuCategoryId?.name || (bill.session as any)?.menuCategory || '—'}
+                    {(typeof bill.menuCategoryId === 'object' && bill.menuCategoryId !== null ? (bill.menuCategoryId as any).name : '') || bill.menuCategory || '—'}
                   </TableCell>
                   <TableCell className="text-sm">
-                    {(bill.session as any)?.menuItemId?.name || (bill.session as any)?.menuItem || '—'}
+                    {(typeof bill.menuItemId === 'object' && bill.menuItemId !== null ? (bill.menuItemId as any).name : '') || bill.menuItem || '—'}
                   </TableCell>
                   <TableCell className="font-bold text-emerald-400">
                     {formatCurrency(bill.total)}

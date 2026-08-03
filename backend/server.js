@@ -115,6 +115,46 @@ const start = async () => {
 
   await connectDB();
 
+  try {
+    const mongoose = require('mongoose');
+    await mongoose.connection.collection('ordercounters').dropIndex('date_1');
+    console.log('Successfully dropped old date_1 index from ordercounters');
+  } catch (err) {
+    // ignore
+  }
+
+  try {
+    const mongoose = require('mongoose');
+    await mongoose.connection.collection('orders').dropIndex('orderId_1');
+    console.log('Successfully dropped old orderId_1 index from orders');
+  } catch (err) {
+    // ignore
+  }
+
+  try {
+    const mongoose = require('mongoose');
+    await mongoose.connection.collection('bills').dropIndex('invoiceNumber_1');
+    console.log('Successfully dropped old invoiceNumber_1 index from bills');
+  } catch (err) {
+    // ignore
+  }
+
+  try {
+    const mongoose = require('mongoose');
+    await mongoose.connection.collection('reservations').dropIndex('reservationId_1');
+    console.log('Successfully dropped old reservationId_1 index from reservations');
+  } catch (err) {
+    // ignore
+  }
+
+  try {
+    const mongoose = require('mongoose');
+    await mongoose.connection.collection('customers').dropIndex('customerId_1');
+    console.log('Successfully dropped old customerId_1 index from customers');
+  } catch (err) {
+    // ignore
+  }
+
   // Only seed in development OR when explicitly enabled via env var.
   // Without this gate, every production restart resets the super admin password.
   if (process.env.ENABLE_DEFAULT_SEED === 'true' || process.env.NODE_ENV !== 'production') {
@@ -124,8 +164,7 @@ const start = async () => {
   const HOST = process.env.HOST || '0.0.0.0';
 
   server.listen(PORT, HOST, () => {
-    console.log(`\n🎱 The Golden Frame API running on http://${HOST === '0.0.0.0' ? '0.0.0.0' : HOST}:${PORT} (${process.env.NODE_ENV || 'development'})`);
-    console.log(`   Health: http://localhost:${PORT}/api/health\n`);
+    console.log(`Server running on port ${PORT}`);
   });
 };
 
@@ -142,44 +181,33 @@ const seedDefaults = async () => {
   const settingsCount = await Settings.countDocuments();
   if (!settingsCount) {
     await Settings.create({ businessName: 'The Golden Frame', currency: 'INR', currencySymbol: '₹' });
-    console.log('⚙️  Default settings created.');
   }
 
-  // Create default branches and remove any that are not in DEFAULT_BRANCHES
+  // Create default branches if not present
   for (const branchName of DEFAULT_BRANCHES) {
     const code = branchName.toUpperCase().replace(/\s+/g, '');
     const exists = await Branch.findOne({ code });
     if (!exists) {
       try {
         await Branch.create({ name: branchName, code });
-        console.log(`🏢 Branch created: ${branchName}`);
       } catch (err) {
-        if (err.code === 11000) {
-          console.log(`⚠️  Branch already exists: ${branchName}`);
-        } else {
-          throw err;
-        }
+        if (err.code !== 11000) throw err;
       }
-    } else {
-      console.log(`✅ Branch already exists: ${branchName} (${code})`);
     }
   }
 
-  // Remove branches that are not in DEFAULT_BRANCHES (only in development)
-  // In production, we trust the database as the source of truth
+  // Remove extra branches in dev if any exist
   if (process.env.NODE_ENV !== 'production') {
     const defaultCodes = DEFAULT_BRANCHES.map(name => name.toUpperCase().replace(/\s+/g, ''));
     const extraBranches = await Branch.find({ code: { $nin: defaultCodes } });
     if (extraBranches.length > 0) {
-      console.log(`🗑️  Removing ${extraBranches.length} extra branch(es) not in DEFAULT_BRANCHES...`);
       for (const branch of extraBranches) {
         await Branch.findByIdAndDelete(branch._id);
-        console.log(`   Removed branch: ${branch.name} (${branch.code})`);
       }
     }
   }
 
-  // Super admin account (always recreated for local dev)
+  // Super admin account
   const adminEmail = process.env.SUPER_ADMIN_EMAIL || 'admin@thegoldenframe.app';
   const adminPassword = process.env.SUPER_ADMIN_PASSWORD || 'Admin@123456';
   
@@ -199,7 +227,6 @@ const seedDefaults = async () => {
       isActive: true,
     });
   }
-  console.log(`👑 Super admin recreated: ${adminEmail}`);
 
   // Seed default categories
   const InventoryCategory = require('./models/InventoryCategory');
@@ -221,14 +248,12 @@ const seedDefaults = async () => {
     const exists = await InventoryCategory.findOne({ name: catName });
     if (!exists) {
       await InventoryCategory.create({ name: catName, status: 'Active' });
-      console.log(`🏷️  Category created: ${catName}`);
     }
   }
 
   // Auto-migrate old string-based categories to dynamic category refs
   const itemsWithOldCategory = await Inventory.find({ category: { $not: { $type: 'objectId' } } });
   if (itemsWithOldCategory.length > 0) {
-    console.log(`🔄 Migrating ${itemsWithOldCategory.length} inventory items to dynamic category refs...`);
     for (const item of itemsWithOldCategory) {
       let mappedName = 'Other';
       const rawCategory = String(item.category || '');
@@ -250,7 +275,6 @@ const seedDefaults = async () => {
       item.category = catDoc._id;
       await item.save();
     }
-    console.log('✅ Inventory migration completed.');
   }
 };
 

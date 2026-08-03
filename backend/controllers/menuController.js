@@ -5,6 +5,7 @@ const { ROLES } = require('../config/constants');
 const mongoose = require('mongoose');
 const { syncTablesWithMenuItems } = require('../utils/tableSync');
 const { createBranchNotification } = require('../services/notificationService');
+const { clearCache } = require('../middleware/cache');
 
 // GET /api/menu
 exports.getMenuItems = asyncHandler(async (req, res) => {
@@ -12,17 +13,22 @@ exports.getMenuItems = asyncHandler(async (req, res) => {
   const limit = parseInt(req.query.limit, 10) || 10;
   const skip = (page - 1) * limit;
 
-  const filter = { status: 'Active' };
+  const filter = {};
+  if (req.query.status && req.query.status !== 'all') {
+    filter.status = req.query.status;
+  } else if (req.query.activeOnly === 'true') {
+    filter.status = 'Active';
+  }
   
   // Apply branch filter based on user role
   // Super Admin can see all branches (or filter by explicit branch parameter)
   // Branch Managers and Staff can only see their assigned branches
-  if (req.user.role !== ROLES.SUPER_ADMIN) {
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
     const userBranches = (req.user.branches || []).map(b => new mongoose.Types.ObjectId(b._id || b));
     filter.branch = { $in: userBranches };
   }
-  // Super Admin can optionally filter by specific branch
-  if (req.query.branch && req.user.role === ROLES.SUPER_ADMIN) {
+  // Super Admin / Admin can optionally filter by specific branch
+  if (req.query.branch && (req.user.role === ROLES.SUPER_ADMIN || req.user.role === ROLES.ADMIN)) {
     filter.branch = new mongoose.Types.ObjectId(req.query.branch);
   }
   
@@ -46,11 +52,22 @@ exports.getMenuItems = asyncHandler(async (req, res) => {
         as: 'category'
       }
     },
-    { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } },
+    { $unwind: { path: '$category', preserveNullAndEmptyArrays: true } }
+  ];
+
+  if (req.query.activeOnly === 'true') {
+    pipeline.push({
+      $match: {
+        'category.status': 'Active'
+      }
+    });
+  }
+
+  pipeline.push(
     { $sort: { 'category.name': 1, name: 1 } },
     { $skip: skip },
     { $limit: limit }
-  ];
+  );
 
   const [items, total] = await Promise.all([
     MenuItem.aggregate(pipeline),
@@ -81,8 +98,9 @@ exports.getMenuCategories = asyncHandler(async (req, res) => {
 
   // Build branch filter for item counts
   let branchFilter = {};
-  if (req.user.role !== ROLES.SUPER_ADMIN) {
-    branchFilter = { branch: { $in: req.user.branches } };
+  const userBranchIds = (req.user.branches || []).map(b => new mongoose.Types.ObjectId(b._id || b));
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    branchFilter = { branch: { $in: userBranchIds } };
   } else if (req.query.branch) {
     branchFilter = { branch: new mongoose.Types.ObjectId(req.query.branch) };
   }
@@ -126,6 +144,10 @@ exports.createMenuCategory = asyncHandler(async (req, res, next) => {
     name: name.trim(),
     status: status || 'Active'
   });
+
+  clearCache('/menu');
+  req.app.get('io')?.emit('menu:updated', { categoryId: category._id });
+
   res.status(201).json({ success: true, data: { category } });
 });
 
@@ -135,6 +157,10 @@ exports.updateMenuCategory = asyncHandler(async (req, res, next) => {
 
   const category = await MenuCategory.findById(req.params.id);
   if (!category) return next(new AppError('Category not found.', 404));
+
+  if (status && status !== category.status && req.user.role === ROLES.BRANCH_MANAGER) {
+    return next(new AppError('Branch Managers are not allowed to activate or deactivate categories.', 403));
+  }
 
   if (name) {
     const exists = await MenuCategory.findOne({
@@ -152,11 +178,19 @@ exports.updateMenuCategory = asyncHandler(async (req, res, next) => {
   }
 
   await category.save();
+
+  clearCache('/menu');
+  req.app.get('io')?.emit('menu:updated', { categoryId: category._id });
+
   res.status(200).json({ success: true, data: { category } });
 });
 
 // DELETE /api/menu/categories/:id
 exports.deleteMenuCategory = asyncHandler(async (req, res, next) => {
+  if (req.user.role === ROLES.BRANCH_MANAGER) {
+    return next(new AppError('Branch Managers are not allowed to delete categories.', 403));
+  }
+
   const categoryId = req.params.id;
 
   const category = await MenuCategory.findById(categoryId);
@@ -168,6 +202,10 @@ exports.deleteMenuCategory = asyncHandler(async (req, res, next) => {
   }
 
   await MenuCategory.findByIdAndDelete(categoryId);
+
+  clearCache('/menu');
+  req.app.get('io')?.emit('menu:updated', { categoryId });
+
   res.status(200).json({ success: true, message: 'Category deleted successfully.' });
 });
 
@@ -212,6 +250,10 @@ exports.createMenuItem = asyncHandler(async (req, res, next) => {
     branch: finalBranch
   });
 
+  clearCache('/menu');
+  req.app.get('io')?.to(`branch:${finalBranch}`).emit('menu:updated', { itemId: item._id, branch: finalBranch });
+  req.app.get('io')?.emit('menu:updated', { itemId: item._id, branch: finalBranch });
+
   createBranchNotification({
     branchId: finalBranch,
     actor: req.user,
@@ -253,6 +295,10 @@ exports.updateMenuItem = asyncHandler(async (req, res, next) => {
 
   const updatedItem = await MenuItem.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true }).populate('category');
 
+  clearCache('/menu');
+  req.app.get('io')?.to(`branch:${updatedItem.branch}`).emit('menu:updated', { itemId: updatedItem._id, branch: updatedItem.branch });
+  req.app.get('io')?.emit('menu:updated', { itemId: updatedItem._id, branch: updatedItem.branch });
+
   createBranchNotification({
     branchId: updatedItem.branch,
     actor: req.user,
@@ -266,9 +312,20 @@ exports.updateMenuItem = asyncHandler(async (req, res, next) => {
 
 // DELETE /api/menu/:id
 exports.deleteMenuItem = asyncHandler(async (req, res, next) => {
+  if (req.user.role === ROLES.BRANCH_MANAGER) {
+    return next(new AppError('Branch Managers are not allowed to delete menu items.', 403));
+  }
+
   const item = await MenuItem.findById(req.params.id).populate('category');
   if (!item) return next(new AppError('Item not found.', 404));
 
   await MenuItem.findByIdAndUpdate(req.params.id, { status: 'Inactive' }, { new: true });
+
+  clearCache('/menu');
+  req.app.get('io')?.to(`branch:${item.branch}`).emit('menu:updated', { itemId: item._id, branch: item.branch });
+  req.app.get('io')?.emit('menu:updated', { itemId: item._id, branch: item.branch });
+
   res.status(200).json({ success: true, message: 'Item deleted successfully.' });
 });
+
+

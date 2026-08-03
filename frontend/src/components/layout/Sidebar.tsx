@@ -1,42 +1,84 @@
 import { Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, ChevronRight } from 'lucide-react';
-import { cn } from '@/utils';
+import { useQuery } from '@tanstack/react-query';
+import { ChevronDown, ChevronRight, LogOut } from 'lucide-react';
+import { cn, hasPermission } from '@/utils';
 import { useAuthStore, useAppStore } from '@/store';
+import { settingsService } from '@/services';
 
 const NAV_ITEMS = [
-  { path: '/', label: 'Dashboard', icon: '📊', roles: ['super_admin', 'admin', 'branch_manager', 'cashier'] },
-  { path: '/tables', label: 'Live Tables', icon: '🎱', roles: ['super_admin', 'admin', 'branch_manager', 'staff', 'cashier'] },
-  { path: '/billing', label: 'Billing', icon: '🧾', roles: ['super_admin', 'admin', 'branch_manager', 'staff', 'cashier'] },
-  { path: '/reservations', label: 'Bookings', icon: '🗓️', roles: ['super_admin', 'admin', 'branch_manager', 'staff', 'cashier'] },
-  { path: '/customers', label: 'Customers', icon: '👥', roles: ['super_admin', 'admin', 'branch_manager', 'staff', 'cashier'] },
-  { path: '/menu', label: 'Menu', icon: '🎯', roles: ['super_admin', 'admin', 'branch_manager'], parent: 'master' },
-  { path: '/inventory', label: 'Inventory', icon: '📦', roles: ['super_admin', 'admin', 'branch_manager'], parent: 'master' },
-  { path: '/pending-payments', label: 'Pending Payments', icon: '💳', roles: ['super_admin', 'admin', 'branch_manager', 'staff', 'cashier'] },
-  { path: '/expenses', label: 'Expenses', icon: '💸', roles: ['super_admin', 'admin', 'branch_manager'] },
-  { path: '/attendance', label: 'Attendance', icon: '✅', roles: ['super_admin', 'admin', 'branch_manager'] },
+  { path: '/', label: 'Dashboard', icon: '📊', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'cashier'], permission: 'dashboard:view' },
+  { path: '/tables', label: 'Live Tables', icon: '🎱', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'tables:view' },
+  { path: '/billing', label: 'Billing', icon: '🧾', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'billing:manage' },
+  { path: '/reservations', label: 'Bookings', icon: '🗓️', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'bookings:manage' },
+  { path: '/customers', label: 'Customers', icon: '👥', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'customers:view' },
+  { path: '/menu', label: 'Menu', icon: '🎯', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], parent: 'master', permission: 'menu:view' },
+  { path: '/inventory', label: 'Inventory', icon: '📦', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], parent: 'master', permission: 'inventory:manage' },
+  { path: '/pending-payments', label: 'Pending Payments', icon: '💳', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'customers:view' },
+  { path: '/expenses', label: 'Expenses', icon: '💸', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], permission: 'expenses:manage' },
+  { path: '/attendance', label: 'Attendance', icon: '✅', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], permission: 'attendance:manage' },
   { path: '/my-attendance', label: 'My Attendance', icon: '🕒', roles: ['staff'] },
-  { path: '/reports', label: 'Reports', icon: '📈', roles: ['super_admin', 'admin'] },
-  { path: '/users', label: 'Staff', icon: '👤', roles: ['super_admin', 'admin', 'branch_manager'], parent: 'master' },
+  { path: '/reports', label: 'Reports', icon: '📈', roles: ['super_admin', 'admin', 'branch_admin'], permission: 'reports:view' },
+  { path: '/users', label: 'Staff', icon: '👤', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], parent: 'master', permission: 'staff:view' },
   { path: '/branches', label: 'Branches', icon: '🏢', roles: ['super_admin'], parent: 'master' },
-  { path: '/settings', label: 'Settings', icon: '⚙️', roles: ['super_admin'], parent: 'master' },
+  { path: '/settings', label: 'Settings', icon: '⚙️', roles: ['super_admin', 'branch_admin'], parent: 'master' },
   { path: '/logs', label: 'Audit Logs', icon: '📋', roles: ['super_admin'], parent: 'master' },
-  { id: 'master', label: 'Master', icon: '⚙️', roles: ['super_admin', 'admin', 'branch_manager'], isParent: true },
+  { id: 'master', label: 'Master', icon: '⚙️', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], isParent: true },
 ];
 
 export const Sidebar = () => {
   const { pathname } = useLocation();
   const { user, logout } = useAuthStore();
-  const { sidebarOpen, setSidebarOpen, masterMenuOpen, toggleMasterMenu } = useAppStore();
+  const { sidebarOpen, setSidebarOpen, masterMenuOpen, toggleMasterMenu, selectedBranch } = useAppStore();
   const role = user?.role || 'staff';
 
-  const filtered = NAV_ITEMS.filter((item) => item.roles.includes(role));
+  // Fetch branch-specific settings for logo
+  const settingsBranch: string | undefined = selectedBranch || (user?.role === 'super_admin' ? undefined : (typeof user?.branches?.[0] === 'string' ? user.branches[0] : user?.branches?.[0]?._id));
+  const { data: settingsData } = useQuery({
+    queryKey: ['settings', settingsBranch],
+    queryFn: () => settingsService.get(settingsBranch ? { branch: settingsBranch } : undefined).then((r) => r.data),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Only use custom logo if it's from a branch-specific setting
+  // Global settings (no branch) use default logo to avoid 404 errors from old logo URLs
+  const logoUrl = settingsBranch
+    ? ((settingsData as any)?.data?.settings?.logoUrl || '/assets/tgf.jpg')
+    : '/assets/tgf.jpg';
+
+  const handleLogoError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+    (e.target as HTMLImageElement).src = '/assets/tgf.jpg';
+  };
+
+  const filtered = NAV_ITEMS.filter((item) => {
+    // If it's the master parent item, show if they can see any of its children
+    if (item.id === 'master') {
+      const children = NAV_ITEMS.filter((c) => c.parent === 'master');
+      return children.some((c) => {
+        if (c.roles.includes(role)) {
+          if (c.permission) {
+            return hasPermission(user, c.permission);
+          }
+          return true;
+        }
+        return false;
+      });
+    }
+
+    if (item.roles.includes(role)) {
+      if (item.permission) {
+        return hasPermission(user, item.permission);
+      }
+      return true;
+    }
+    return false;
+  });
 
   // Custom ordering for Staff role
   const staffOrder = ['customers', 'reservations', 'pending-payments', 'tables', 'billing', 'my-attendance'];
-  // Custom ordering for Branch Manager role
-  const branchManagerOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'master'];
-  // Custom ordering for Super Admin role
+  // Custom ordering for Branch Manager / Branch Admin role
+  const branchManagerOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master'];
+  // Custom ordering for Super Admin / Admin role
   const superAdminOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master'];
   // Custom ordering for Master children
   const masterChildOrder = ['menu', 'users', 'inventory', 'branches', 'settings', 'logs'];
@@ -49,9 +91,9 @@ export const Sidebar = () => {
         const indexB = staffOrder.indexOf(pathB || 'dashboard');
         return indexA - indexB;
       })
-    : (role === 'branch_manager' || role === 'admin' || role === 'super_admin')
+    : (role === 'branch_manager' || role === 'branch_admin' || role === 'admin' || role === 'super_admin')
     ? filtered.sort((a, b) => {
-        const orderMap = role === 'branch_manager' ? branchManagerOrder : superAdminOrder;
+        const orderMap = (role === 'branch_manager' || role === 'branch_admin') ? branchManagerOrder : superAdminOrder;
         const keyA = a.isParent ? a.id : a.path?.replace('/', '') || '';
         const keyB = b.isParent ? b.id : b.path?.replace('/', '') || '';
         const indexA = orderMap.indexOf(keyA || 'dashboard');
@@ -75,7 +117,7 @@ export const Sidebar = () => {
         >
           {/* Logo */}
           <div className="flex items-center gap-3 px-6 py-5 border-b border-border">
-            <img src="/assets/tgf.jpg" alt="The Golden Frame" className="h-9 w-9 rounded-xl object-contain" />
+            <img src={logoUrl} alt="The Golden Frame" className="h-9 w-9 rounded-xl object-contain" onError={handleLogoError} />
             <div>
               <p className="font-bold text-foreground leading-none">The Golden Frame</p>
             </div>
@@ -176,8 +218,9 @@ export const Sidebar = () => {
                 <p className="text-xs text-muted-foreground capitalize">{role.replace('_', ' ')}</p>
               </div>
             </div>
-            <button onClick={() => logout()} className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors">
-              <span>🚪</span> Sign out
+            <button onClick={() => logout()} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors group">
+              <LogOut className="h-4 w-4 text-muted-foreground group-hover:text-red-400 transition-colors" />
+              <span>Sign out</span>
             </button>
           </div>
         </motion.aside>

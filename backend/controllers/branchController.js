@@ -7,8 +7,9 @@ const { logActivity } = require('../services/activityLogService');
 exports.getBranches = asyncHandler(async (req, res) => {
   const { ROLES } = require('../config/constants');
   let filter = {};
+  const userBranchIds = (req.user.branches || []).map(b => b._id || b);
   if (req.user.role !== ROLES.SUPER_ADMIN) {
-    filter = { _id: { $in: req.user.branches } };
+    filter = { _id: { $in: userBranchIds } };
   }
   
   const branches = await Branch.find(filter)

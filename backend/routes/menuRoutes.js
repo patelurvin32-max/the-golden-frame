@@ -12,7 +12,7 @@ const router = express.Router();
 router.get('/categories', protect, requirePermission('menu:view'), cacheMiddleware(600), menuController.getMenuCategories);
 router.post('/categories', protect, requirePermission('menu:manage'), [body('name').notEmpty()], validate, menuController.createMenuCategory);
 router.patch('/categories/:id', protect, requirePermission('menu:manage'), menuController.updateMenuCategory);
-router.delete('/categories/:id', protect, requirePermission('menu:manage'), menuController.deleteMenuCategory);
+router.delete('/categories/:id', protect, requirePermission('menu:delete'), menuController.deleteMenuCategory);
 
 // Menu Item Routes - GET uses menu:view, others use menu:manage
 router.get('/', protect, requirePermission('menu:view'), cacheMiddleware(300), menuController.getMenuItems);
@@ -24,6 +24,7 @@ router.post('/', protect, requirePermission('menu:manage'), [
 ], validate, menuController.createMenuItem);
 router.get('/:id', protect, requirePermission('menu:view'), menuController.getMenuItem);
 router.patch('/:id', protect, requirePermission('menu:manage'), menuController.updateMenuItem);
-router.delete('/:id', protect, requirePermission('menu:manage'), menuController.deleteMenuItem);
+router.delete('/:id', protect, requirePermission('menu:delete'), menuController.deleteMenuItem);
+
 
 module.exports = router;

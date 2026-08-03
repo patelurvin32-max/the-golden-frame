@@ -1,10 +1,31 @@
 const Reservation = require('../models/Reservation');
 const Table = require('../models/Table');
+const Customer = require('../models/Customer');
+const Order = require('../models/Order');
+const PaymentHistory = require('../models/PaymentHistory');
+const WalletTransaction = require('../models/WalletTransaction');
+const OrderCounter = require('../models/OrderCounter');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { logActivity } = require('../services/activityLogService');
 const { ROLES } = require('../config/constants');
 const { createBranchNotification } = require('../services/notificationService');
+const { generateOrderId, generateCustomerId } = require('./customerController');
+const {
+  getBusinessDayDate,
+  getBusinessDayRange,
+  getBusinessDayStart,
+  getBusinessDayNextStart,
+  getBusinessDayDateString,
+} = require('../utils/businessDay');
+
+const parseCurrencyValue = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return num;
+};
+
+
 
 // Helper: convert minutes-since-midnight to 12-hour AM/PM string
 function formatMinutesToTime(totalMinutes) {
@@ -15,55 +36,103 @@ function formatMinutesToTime(totalMinutes) {
   return `${String(h12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
 }
 
+// Helper: convert HH:MM time string to business day minutes relative to 05:00 AM start
+function timeToBusinessMinutes(timeStr) {
+  if (!timeStr) return 0;
+  const [h, m] = timeStr.split(':').map(Number);
+  const minutesFromMidnight = h * 60 + m;
+  if (minutesFromMidnight < 300) {
+    return minutesFromMidnight + 1440 - 300;
+  }
+  return minutesFromMidnight - 300;
+}
+
+// Helper: convert business day minutes back to 12-hour AM/PM string
+function formatBusinessMinutesToTime(businessMinutes) {
+  const minutesFromMidnight = (businessMinutes + 300) % 1440;
+  return formatMinutesToTime(minutesFromMidnight);
+}
+
+
 // Helper: emit reservation:changed socket event to branch room
 function emitReservationChanged(req, branchId, action, reservation) {
   try {
-    req.app.get('io')?.to(`branch:${branchId}`).emit('reservation:changed', {
-      action,
-      reservation: {
-        _id: reservation._id,
-        branch: branchId,
-        menuItemId: reservation.menuItemId,
-        menuCategoryId: reservation.menuCategoryId,
-        reservationDate: reservation.reservationDate,
-        reservationTime: reservation.reservationTime,
-        durationMinutes: reservation.durationMinutes,
-        status: reservation.status,
-      },
-    });
+    const io = req.app.get('io');
+    if (io) {
+      const payload = {
+        action,
+        reservation: {
+          _id: reservation._id,
+          branch: branchId,
+          table: reservation.table,
+          reservationDate: reservation.reservationDate,
+          reservationTime: reservation.reservationTime,
+          status: reservation.status,
+        },
+      };
+      io.to(`branch:${branchId}`).emit('reservation:changed', payload);
+      io.to(`role:${ROLES.SUPER_ADMIN}`).emit('reservation:changed', payload);
+    }
   } catch (err) {
-    console.error('[ReservationController] Socket emission error:', err.message);
+    console.error('Socket broadcast failed:', err.message);
   }
 }
 
+// Helper: emit availability:changed socket event to branch room
+function emitAvailabilityChanged(req, branchId) {
+  try {
+    const io = req.app.get('io');
+    if (io) {
+      const payload = {
+        branch: branchId,
+        timestamp: new Date().toISOString(),
+      };
+      io.to(`branch:${branchId}`).emit('availability:changed', payload);
+      io.to(`role:${ROLES.SUPER_ADMIN}`).emit('availability:changed', payload);
+    }
+  } catch (err) {
+    console.error('[emitAvailabilityChanged] Error:', err.message);
+  }
+}
+
+// ── Private Filter Builder ───────────────────────────────────────────────────
 const buildFilter = (query, user) => {
   const filter = {};
 
-  if (user.role !== ROLES.SUPER_ADMIN) {
-    filter.branch = { $in: user.branches };
+  if (user.role !== ROLES.SUPER_ADMIN && user.role !== ROLES.ADMIN) {
+    const userBranchIds = (user.branches || []).map(b => (b._id || b).toString());
+    if (query.branch && userBranchIds.includes(query.branch.toString())) {
+      filter.branch = query.branch;
+    } else {
+      filter.branch = { $in: user.branches };
+    }
+  } else if (query.branch) {
+    filter.branch = query.branch;
   }
-  if (query.branch) filter.branch = query.branch;
-  if (query.status) filter.status = query.status;
-  if (query.table) filter.table = query.table;
-  if (query.menuCategoryId) filter.menuCategoryId = query.menuCategoryId;
+
+  if (query.status) {
+    filter.status = query.status;
+  }
+
+  if (query.table) {
+    filter.table = query.table;
+  }
 
   if (query.dateFrom || query.dateTo) {
     filter.reservationDate = {};
     if (query.dateFrom && query.dateTo) {
-      // Range filter: both dateFrom and dateTo provided
       filter.reservationDate.$gte = new Date(query.dateFrom);
       const end = new Date(query.dateTo);
       end.setHours(23, 59, 59, 999);
       filter.reservationDate.$lte = end;
     } else if (query.dateFrom) {
-      // Single date filter: only dateFrom provided, filter for that specific date
-      const d = new Date(query.dateFrom);
+      const d = getBusinessDayDate(new Date(query.dateFrom));
       const next = new Date(d);
       next.setDate(d.getDate() + 1);
       filter.reservationDate = { $gte: d, $lt: next };
     }
   } else if (query.date) {
-    const d = new Date(query.date);
+    const d = getBusinessDayDate(new Date(query.date));
     const next = new Date(d);
     next.setDate(d.getDate() + 1);
     filter.reservationDate = { $gte: d, $lt: next };
@@ -126,26 +195,38 @@ exports.getReservations = asyncHandler(async (req, res) => {
   });
 });
 
-exports.getStats = asyncHandler(async (req, res) => {
-  const branchFilter = req.user.role !== ROLES.SUPER_ADMIN
-    ? { branch: { $in: req.user.branches } }
-    : req.query.branch ? { branch: req.query.branch } : {};
+exports.getStats = asyncHandler(async (req, res, next) => {
+  if (req.user.role !== ROLES.SUPER_ADMIN) {
+    return next(new AppError('Forbidden. Only Super Admin can access these statistics.', 403));
+  }
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const todayEnd = new Date();
-  todayEnd.setHours(23, 59, 59, 999);
+  const mongoose = require('mongoose');
+  let branchFilter = {};
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => new mongoose.Types.ObjectId(b._id || b));
+    if (req.query.branch && userBranchIds.some(id => id.toString() === req.query.branch.toString())) {
+      branchFilter = { branch: new mongoose.Types.ObjectId(req.query.branch) };
+    } else {
+      branchFilter = { branch: { $in: userBranchIds } };
+    }
+  } else if (req.query.branch) {
+    branchFilter = { branch: new mongoose.Types.ObjectId(req.query.branch) };
+  }
 
-  const [total, todayCount, statusGroups] = await Promise.all([
-    Reservation.countDocuments(branchFilter),
-    Reservation.countDocuments({ ...branchFilter, reservationDate: { $gte: todayStart, $lte: todayEnd } }),
-    Reservation.aggregate([
-      { $match: branchFilter },
-      { $group: { _id: '$status', count: { $sum: 1 } } },
-    ]),
+  const { start: todayStart, end: todayEnd } = getBusinessDayRange(new Date());
+
+  const [result] = await Reservation.aggregate([
+    { $match: branchFilter },
+    {
+      $facet: {
+        total:    [{ $count: 'n' }],
+        today:    [{ $match: { reservationDate: { $gte: todayStart, $lte: todayEnd } } }, { $count: 'n' }],
+        byStatus: [{ $group: { _id: '$status', count: { $sum: 1 } } }],
+      },
+    },
   ]);
 
-  const byStatus = statusGroups.reduce((acc, g) => {
+  const byStatus = (result?.byStatus || []).reduce((acc, g) => {
     acc[g._id] = g.count;
     return acc;
   }, {});
@@ -153,14 +234,14 @@ exports.getStats = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     data: {
-      total,
-      today: todayCount,
+      total:     result?.total[0]?.n || 0,
+      today:     result?.today[0]?.n || 0,
       confirmed: byStatus.confirmed || 0,
-      pending: byStatus.pending || 0,
-      seated: byStatus.seated || 0,
+      pending:   byStatus.pending   || 0,
+      seated:    byStatus.seated    || 0,
       completed: byStatus.completed || 0,
       cancelled: byStatus.cancelled || 0,
-      no_show: byStatus.no_show || 0,
+      no_show:   byStatus.no_show   || 0,
     },
   });
 });
@@ -171,143 +252,213 @@ exports.getReservation = asyncHandler(async (req, res, next) => {
     .populate('table', 'name type hourlyRate')
     .populate('menuCategoryId', 'name')
     .populate('menuItemId', 'name price')
-    .populate('createdBy', 'name email');
+    .populate('createdBy', 'name email')
+    .lean();
 
   if (!reservation) return next(new AppError('Reservation not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(reservation.branch?._id?.toString() || reservation.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
   res.status(200).json({ success: true, data: { reservation } });
 });
 
 exports.getAvailableTables = asyncHandler(async (req, res, next) => {
-  const { branch, date, time, durationMinutes = 60, excludeId } = req.query;
-  if (!branch || !date || !time) return next(new AppError('branch, date and time are required.', 400));
+  const { branch, reservationDate, reservationTime, durationMinutes } = req.query;
 
-  const resDate = new Date(date);
-  resDate.setHours(0, 0, 0, 0);
-  const duration = parseInt(durationMinutes, 10);
+  if (!branch || !reservationDate || !reservationTime) {
+    return next(new AppError('branch, reservationDate, and reservationTime are required.', 400));
+  }
 
-  const [reqH, reqM] = time.split(':').map(Number);
-  const reqStart = reqH * 60 + reqM;
-  const reqEnd = reqStart + duration;
-
-  const nextDay = new Date(resDate);
-  nextDay.setDate(resDate.getDate() + 1);
-
-  const [overlapping, allTables] = await Promise.all([
-    Reservation.find({
-      branch,
-      reservationDate: { $gte: resDate, $lt: nextDay },
-      status: { $nin: ['cancelled', 'no_show', 'completed'] },
-      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
-    }).select('table reservationTime durationMinutes').lean(),
-    Table.find({ branch, isActive: true }).select('name type hourlyRate status').lean(),
-  ]);
-
-  const blockedTableIds = new Set();
-  for (const r of overlapping) {
-    const [h, m] = r.reservationTime.split(':').map(Number);
-    const start = h * 60 + m;
-    const end = start + (r.durationMinutes || 60);
-    if (reqStart < end && start < reqEnd) {
-      blockedTableIds.add(r.table.toString());
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(branch.toString())) {
+      return next(new AppError('You do not have access to this branch.', 403));
     }
   }
 
-  const available = allTables.filter((t) => !blockedTableIds.has(t._id.toString()));
+  const duration = parseInt(durationMinutes, 10) || 60;
+  const targetDate = new Date(reservationDate);
+  const targetNext = new Date(targetDate);
+  targetNext.setDate(targetDate.getDate() + 1);
 
-  res.status(200).json({ success: true, data: { available, blocked: allTables.length - available.length } });
+  const [tables, existingReservations] = await Promise.all([
+    Table.find({ branch, isActive: true }).select('name type hourlyRate minCapacity maxCapacity').lean(),
+    Reservation.find({
+      branch,
+      reservationDate: { $gte: targetDate, $lt: targetNext },
+      status: { $nin: ['cancelled', 'no_show'] },
+    }).select('table reservationTime durationMinutes').lean(),
+  ]);
+
+  const timeToMinutes = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+  const reqStart = timeToMinutes(reservationTime);
+  const reqEnd = reqStart + duration;
+
+  const availableTables = tables.filter((tbl) => {
+    const tblReservations = existingReservations.filter(
+      (r) => r.table && r.table.toString() === tbl._id.toString()
+    );
+
+    for (const r of tblReservations) {
+      const rStart = timeToMinutes(r.reservationTime);
+      const rEnd = rStart + (r.durationMinutes || 60);
+      if (reqStart < rEnd && reqEnd > rStart) {
+        return false; // Overlap detected
+      }
+    }
+    return true;
+  });
+
+  res.status(200).json({ success: true, data: { availableTables } });
 });
 
 // ── Check menu item availability for a specific slot ─────────────────────────
 exports.checkMenuItemAvailability = asyncHandler(async (req, res, next) => {
-  const { branch, date, time, durationMinutes = 60, menuCategoryId, excludeId } = req.query;
-  if (!branch || !date || !time || !menuCategoryId) {
-    return next(new AppError('branch, date, time, and menuCategoryId are required.', 400));
-  }
-
-  const resDate = new Date(date);
-  resDate.setHours(0, 0, 0, 0);
-  const duration = parseInt(durationMinutes, 10);
-
-  const [reqH, reqM] = time.split(':').map(Number);
-  const reqStart = reqH * 60 + reqM;
-  const reqEnd = reqStart + duration;
-
-  const nextDay = new Date(resDate);
-  nextDay.setDate(resDate.getDate() + 1);
-
-  // Fetch bookings and menu items in parallel
-  const MenuItem = require('mongoose').model('MenuItem');
-  const [bookings, menuItems] = await Promise.all([
-    Reservation.find({
-      branch,
-      menuCategoryId,
-      reservationDate: { $gte: resDate, $lt: nextDay },
-      status: { $nin: ['cancelled', 'no_show', 'completed'] },
-      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
-    }).select('menuItemId reservationTime durationMinutes').lean(),
-    MenuItem.find({ category: menuCategoryId, isActive: true }).select('name price').lean(),
-  ]);
-
-  // Build conflict map: menuItemId -> { conflictStart, conflictEnd } (first conflict)
-  const conflictMap = new Map();
-  for (const r of bookings) {
-    if (!r.menuItemId) continue;
-    const [h, m] = r.reservationTime.split(':').map(Number);
-    const start = h * 60 + m;
-    const end = start + (r.durationMinutes || 60);
-    if (reqStart < end && start < reqEnd) {
-      const key = r.menuItemId.toString();
-      if (!conflictMap.has(key)) {
-        conflictMap.set(key, { conflictTime: formatMinutesToTime(start), conflictEnd: formatMinutesToTime(end) });
-      }
-    }
-  }
-
-  // Build response items
-  const items = menuItems.map((item) => {
-    const conflict = conflictMap.get(item._id.toString());
-    return {
-      menuItemId: item._id,
-      name: item.name,
-      price: item.price,
-      available: !conflict,
-      ...(conflict || {}),
-    };
-  });
-
-  res.status(200).json({ success: true, data: { items } });
-});
-
-// ── Today's live table availability (grouped by category) ────────────────
-exports.getTodayAvailability = asyncHandler(async (req, res, next) => {
-  let { branch } = req.query;
+  let { branch, menuItemId, menuCategoryId, date, reservationDate, time, reservationTime, durationMinutes = 60, excludeId } = req.query;
 
   if (!branch && req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
     const userBranch = req.user.branches[0];
     branch = typeof userBranch === 'string' ? userBranch : (userBranch._id || userBranch).toString();
   }
 
+  const targetDate = reservationDate || date;
+  const targetTime = reservationTime || time;
+
+  if (!branch || !targetDate || !targetTime) {
+    return next(new AppError('branch, date (or reservationDate), and time (or reservationTime) are required.', 400));
+  }
+
+  const MenuItem = require('../models/Operations').MenuItem;
+
+  // Single menuItemId check
+  if (menuItemId) {
+    const clash = await checkDoubleBooking({
+      branch,
+      menuItemId,
+      reservationDate: targetDate,
+      reservationTime: targetTime,
+      durationMinutes: Number(durationMinutes),
+      excludeId,
+    });
+
+    const isAvailable = !clash;
+    const conflictTime = clash?.reservationTime || clash?.conflictTime;
+    const conflictEnd = clash?.conflictEnd;
+
+    return res.status(200).json({
+      success: true,
+      available: isAvailable,
+      clashReservation: clash || null,
+      data: {
+        items: [
+          {
+            menuItemId,
+            available: isAvailable,
+            ...(conflictTime ? { conflictTime, conflictEnd } : {}),
+          },
+        ],
+      },
+    });
+  }
+
+  // Batch menuCategoryId check
+  if (menuCategoryId) {
+    const menuItems = await MenuItem.find({ category: menuCategoryId, isActive: true }).select('_id').lean();
+    const items = await Promise.all(
+      menuItems.map(async (item) => {
+        const itemId = item._id.toString();
+        const clash = await checkDoubleBooking({
+          branch,
+          menuItemId: itemId,
+          reservationDate: targetDate,
+          reservationTime: targetTime,
+          durationMinutes: Number(durationMinutes),
+          excludeId,
+        });
+
+        const isAvailable = !clash;
+        const conflictTime = clash?.reservationTime || clash?.conflictTime;
+        const conflictEnd = clash?.conflictEnd;
+
+        return {
+          menuItemId: itemId,
+          available: isAvailable,
+          ...(conflictTime ? { conflictTime, conflictEnd } : {}),
+        };
+      })
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: { items },
+    });
+  }
+
+  return res.status(200).json({
+    success: true,
+    data: { items: [] },
+  });
+});
+
+// ── Today's live table availability (grouped by category) ────────────────
+exports.getTodayAvailability = asyncHandler(async (req, res, next) => {
+  let { branch, date } = req.query;
+
+  if (!branch && req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN && req.user.branches && req.user.branches.length > 0) {
+    const userBranch = req.user.branches[0];
+    branch = typeof userBranch === 'string' ? userBranch : (userBranch._id || userBranch).toString();
+  }
+
   if (!branch) return next(new AppError('branch is required.', 400));
 
-  const now = new Date();
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-  const todayEnd = new Date(now);
-  todayEnd.setDate(todayEnd.getDate() + 1);
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(branch.toString())) {
+      return next(new AppError('You do not have access to this branch.', 403));
+    }
+  }
 
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const now = new Date();
+
+  // Target date range calculation using Business Day logic
+  let targetDate = now;
+  if (date) {
+    const parsed = new Date(date);
+    if (!isNaN(parsed.getTime())) {
+      targetDate = parsed;
+    }
+  }
+
+  const { start: targetStart, end: targetEnd } = getBusinessDayRange(targetDate);
+  const targetBusinessDate = getBusinessDayDate(targetDate);
+  const targetNextDate = new Date(targetBusinessDate);
+  targetNextDate.setDate(targetNextDate.getDate() + 1);
+
+  // Minutes since 05:00 AM business day start for current time
+  const nowTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const nowBusinessMinutes = timeToBusinessMinutes(nowTimeStr);
 
   const { MenuCategory, MenuItem } = require('../models/Operations');
 
-  // Fetch categories, menu items, and today's active bookings in parallel
+  // Fetch categories, menu items, and active bookings for the selected date
+  // ONLY include active statuses: pending, confirmed, seated. EXCLUDE: cancelled, completed, no_show
   const [categories, menuItems, bookings] = await Promise.all([
     MenuCategory.find({ status: 'Active' }).select('name').lean(),
     MenuItem.find({ branch, status: 'Active' }).select('name category price').lean(),
     Reservation.find({
       branch,
-      reservationDate: { $gte: todayStart, $lt: todayEnd },
-      status: { $nin: ['cancelled', 'no_show', 'completed'] },
-    }).select('menuItemId menuCategoryId reservationTime durationMinutes customerName phoneNumber status').lean(),
+      $or: [
+        { reservationDate: { $gte: targetBusinessDate, $lt: targetNextDate } },
+        { createdAt: { $gte: targetStart, $lt: targetEnd } }
+      ],
+      status: { $in: ['pending', 'confirmed', 'seated'] },
+    })
+      .select('menuItemId menuCategoryId reservationTime durationMinutes customerName phoneNumber status reservationDate reservationId')
+      .lean(),
   ]);
 
   // Build booking lookup: menuItemId -> array of bookings
@@ -332,53 +483,106 @@ exports.getTodayAvailability = asyncHandler(async (req, res, next) => {
     );
 
     const items = catItems.map((item) => {
-      const itemBookings = bookingsByItem.get(item._id.toString()) || [];
-
-      // Find the current/next overlapping booking at this moment
-      let currentBooking = null;
-      let upcomingBooking = null;
-
-      for (const bk of itemBookings) {
-        const [h, m] = bk.reservationTime.split(':').map(Number);
-        const start = h * 60 + m;
+      // Map every booking's reservationTime into Business Day Minutes (relative to 05:00 AM)
+      // and sort chronologically by start business minutes
+      const itemBookings = (bookingsByItem.get(item._id.toString()) || []).map((bk) => {
+        const start = timeToBusinessMinutes(bk.reservationTime);
         const end = start + (bk.durationMinutes || 60);
+        return { ...bk, start, end };
+      }).sort((a, b) => a.start - b.start);
 
-        if (nowMinutes >= start && nowMinutes < end) {
-          // Currently active booking
+      let currentBooking = null;
+
+      // Find currently active booking
+      for (const bk of itemBookings) {
+        if (nowBusinessMinutes >= bk.start && nowBusinessMinutes < bk.end) {
           currentBooking = {
+            _id: bk._id,
+            reservationId: bk.reservationId,
             customerName: bk.customerName,
             phoneNumber: bk.phoneNumber,
-            startTime: formatMinutesToTime(start),
-            endTime: formatMinutesToTime(end),
-            remainingMinutes: Math.max(0, end - nowMinutes),
+            startTime: formatBusinessMinutesToTime(bk.start),
+            endTime: formatBusinessMinutesToTime(bk.end),
+            remainingMinutes: Math.max(0, bk.end - nowBusinessMinutes),
             status: bk.status,
+            _start: bk.start,
+            _end: bk.end,
           };
-        } else if (start > nowMinutes && start - nowMinutes <= 15) {
-          // Booking starts within next 15 minutes
-          if (!upcomingBooking || start < upcomingBooking._start) {
-            upcomingBooking = {
-              customerName: bk.customerName,
-              phoneNumber: bk.phoneNumber,
-              startTime: formatMinutesToTime(start),
-              endTime: formatMinutesToTime(end),
-              startsInMinutes: start - nowMinutes,
-              status: bk.status,
-              _start: start,
-            };
-          }
+          break;
         }
       }
+
+      // Filter all upcoming bookings after current moment / current booking
+      const upcomingList = itemBookings.filter((bk) => {
+        if (currentBooking) {
+          return bk.start >= currentBooking._end;
+        }
+        return bk.start > nowBusinessMinutes;
+      });
+
+      let nextBooking = null;
+      if (upcomingList.length > 0) {
+        const nbk = upcomingList[0];
+        nextBooking = {
+          _id: nbk._id,
+          reservationId: nbk.reservationId,
+          customerName: nbk.customerName,
+          phoneNumber: nbk.phoneNumber,
+          startTime: formatBusinessMinutesToTime(nbk.start),
+          endTime: formatBusinessMinutesToTime(nbk.end),
+          startsInMinutes: nbk.start - nowBusinessMinutes,
+          status: nbk.status,
+          _start: nbk.start,
+          _end: nbk.end,
+        };
+      }
+
+      // Queue of all upcoming bookings
+      const upcomingBookings = upcomingList.map((bk) => ({
+        _id: bk._id,
+        reservationId: bk.reservationId,
+        customerName: bk.customerName,
+        phoneNumber: bk.phoneNumber,
+        startTime: formatBusinessMinutesToTime(bk.start),
+        endTime: formatBusinessMinutesToTime(bk.end),
+        startsInMinutes: bk.start - nowBusinessMinutes,
+        status: bk.status,
+      }));
+
+      // Queue of ALL valid bookings for this item today
+      const allBookings = itemBookings.map((bk) => ({
+        _id: bk._id,
+        reservationId: bk.reservationId,
+        customerName: bk.customerName,
+        phoneNumber: bk.phoneNumber,
+        startTime: formatBusinessMinutesToTime(bk.start),
+        endTime: formatBusinessMinutesToTime(bk.end),
+        durationMinutes: bk.durationMinutes,
+        startsInMinutes: bk.start - nowBusinessMinutes,
+        remainingMinutes: (nowBusinessMinutes >= bk.start && nowBusinessMinutes < bk.end) ? Math.max(0, bk.end - nowBusinessMinutes) : null,
+        isCurrent: (nowBusinessMinutes >= bk.start && nowBusinessMinutes < bk.end),
+        status: bk.status,
+      }));
+
 
       // Determine color status
       let colorStatus = 'available'; // green
       if (currentBooking) {
         colorStatus = 'booked'; // red
-      } else if (upcomingBooking) {
+      } else if (nextBooking && nextBooking.startsInMinutes <= 15) {
         colorStatus = 'upcoming'; // yellow
       }
 
-      const booking = currentBooking || (upcomingBooking ? { ...upcomingBooking, _start: undefined } : null);
-      if (booking) delete booking._start;
+      const booking = currentBooking
+        ? {
+            customerName: currentBooking.customerName,
+            phoneNumber: currentBooking.phoneNumber,
+            startTime: currentBooking.startTime,
+            endTime: currentBooking.endTime,
+            remainingMinutes: currentBooking.remainingMinutes,
+            status: currentBooking.status,
+          }
+        : null;
 
       return {
         menuItemId: item._id,
@@ -386,6 +590,9 @@ exports.getTodayAvailability = asyncHandler(async (req, res, next) => {
         price: item.price,
         colorStatus,
         booking,
+        nextBooking,
+        upcomingBookings,
+        allBookings,
       };
     });
 
@@ -399,18 +606,32 @@ exports.getTodayAvailability = asyncHandler(async (req, res, next) => {
   res.status(200).json({ success: true, data: { categories: result, serverTime: now.toISOString() } });
 });
 
+
+
 exports.createReservation = asyncHandler(async (req, res, next) => {
   const {
     customerName, phoneNumber, email, branch, table,
     reservationDate, reservationTime, durationMinutes = 60,
     numberOfGuests, specialRequests, notes, status = 'pending',
     menuCategoryId, menuItemId,
+    paymentStatus = 'unpaid', paymentMethod, cashAmount, onlineAmount,
+    walletAmount, amountReceived, pendingPlayers, billAmount
   } = req.body;
 
-  // For Branch Manager and Staff, auto-assign branch from their assigned branches
+  // For Branch Manager and Staff, validate they have access to the requested branch
   let finalBranch = branch;
-  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
-    finalBranch = req.user.branches[0];
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    
+    // If no branch provided, use first assigned branch
+    if (!finalBranch && req.user.branches && req.user.branches.length > 0) {
+      finalBranch = req.user.branches[0];
+    }
+    
+    // Validate access to the branch
+    if (!finalBranch || !userBranchIds.includes(finalBranch.toString())) {
+      return next(new AppError('You do not have access to this branch.', 403));
+    }
   }
 
   let finalTable = table;
@@ -437,6 +658,37 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     ));
   }
 
+  let customer = await Customer.findOne({ phone: phoneNumber, isActive: true });
+  if (!customer) {
+    const customerId = await generateCustomerId(finalBranch);
+    customer = await Customer.create({
+      customerId, name: customerName, phone: phoneNumber, email, branch: finalBranch,
+    });
+  }
+
+  const pCash = parseCurrencyValue(cashAmount);
+  const pOnline = parseCurrencyValue(onlineAmount);
+  const pWallet = parseCurrencyValue(walletAmount);
+  const pReceived = parseCurrencyValue(amountReceived);
+  const pBill = parseCurrencyValue(billAmount);
+
+  if (pWallet > 0 && customer.walletBalance < pWallet) {
+    return next(new AppError(`Insufficient wallet balance. Available: ₹${customer.walletBalance}, Required: ₹${pWallet}`, 400));
+  }
+
+  let totalPaid = pCash + pOnline + pWallet;
+  
+  if (paymentMethod === 'cash' && pCash === 0 && pReceived > 0) {
+    totalPaid = pReceived + pWallet;
+  } else if (paymentMethod === 'upi' && pOnline === 0 && pReceived > 0) {
+    totalPaid = pReceived + pWallet;
+  }
+
+  let pendingPaymentAmount = 0;
+  if (Array.isArray(pendingPlayers)) {
+    pendingPaymentAmount = pendingPlayers.reduce((sum, p) => sum + parseCurrencyValue(p.amount), 0);
+  }
+
   const reservation = await Reservation.create({
     customerName,
     phoneNumber,
@@ -453,6 +705,16 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     notes,
     status,
     createdBy: req.user._id,
+    paymentStatus,
+    paymentMethod,
+    cashAmount: pCash,
+    onlineAmount: pOnline,
+    walletAmount: pWallet,
+    totalPaid,
+    billAmount: pBill,
+    amountReceived: pReceived,
+    pendingPaymentAmount,
+    pendingPlayers: Array.isArray(pendingPlayers) ? pendingPlayers : [],
     statusHistory: [{ status, changedBy: req.user._id, note: 'Reservation created' }],
   });
 
@@ -464,7 +726,169 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
 
   res.status(201).json({ success: true, data: { reservation: populated } });
 
+  const writePromises = [];
+  if (pWallet > 0) {
+    customer.walletBalance -= pWallet;
+    customer.walletTransactions.push({
+      type: 'debit', amount: pWallet, balance: customer.walletBalance,
+      billAmount: pBill, paymentMethod, description: `Payment for reservation ${reservation.reservationId}`,
+      createdBy: req.user._id,
+    });
+    writePromises.push(WalletTransaction.create({
+      customer: customer._id, customerName: customer.name, customerPhone: customer.phone,
+      reservation: reservation._id, branch: finalBranch, type: 'debit',
+      amount: pWallet, balance: customer.walletBalance, billAmount: pBill, walletAmountUsed: pWallet,
+      paymentMethod, description: `Payment for reservation ${reservation.reservationId}`, createdBy: req.user._id,
+    }));
+    writePromises.push(customer.save());
+  }
+
+  if (totalPaid > 0 || paymentStatus === 'paid' || paymentStatus === 'partial') {
+    writePromises.push(PaymentHistory.create({
+      reservation: reservation._id,
+      customer: customer._id, customerName: customer.name, customerPhone: customer.phone,
+      branch: finalBranch, paymentMethod, cashAmount: pCash, onlineAmount: pOnline, walletAmount: pWallet,
+      totalPaid, billAmount: pBill, pendingAmount: pendingPaymentAmount, paymentStatus,
+      notes, createdBy: req.user._id, paymentNumber: 1
+    }));
+  }
+
+  if (paymentStatus === 'unpaid' || paymentStatus === 'partial') {
+    const sumPending = Array.isArray(pendingPlayers) ? pendingPlayers.reduce((s, p) => s + (parseCurrencyValue(p.amount) || 0), 0) : 0;
+    const mainPending = Math.max(0, pBill - totalPaid - sumPending);
+
+    if (mainPending > 0 || (Array.isArray(pendingPlayers) && pendingPlayers.length > 0)) {
+      const parentOrderId = await generateOrderId(finalBranch);
+      const parentOrder = await Order.create({
+        orderId: parentOrderId,
+        customer: customer._id,
+        branch: finalBranch,
+        menuCategoryId,
+        menuItemId,
+        table: finalTable || undefined,
+        paymentStatus,
+        paymentMethod: paymentMethod || null,
+        cashAmount: pCash,
+        onlineAmount: pOnline,
+        walletAmount: pWallet,
+        pendingPaymentAmount: mainPending,
+        amountReceived: pReceived,
+        totalPaid,
+        billAmount: pBill,
+        notes: notes || `Pending payment for reservation ${reservation.reservationId}`,
+        createdBy: req.user._id,
+      });
+
+      if (mainPending > 0) {
+        customer.outstandingBalance = (customer.outstandingBalance || 0) + mainPending;
+        writePromises.push(customer.save());
+
+        writePromises.push(PaymentHistory.create({
+          order: parentOrder._id,
+          orderId: parentOrder.orderId,
+          customer: customer._id,
+          customerName: customer.name,
+          customerPhone: customer.phone,
+          branch: finalBranch,
+          paymentMethod: paymentMethod || null,
+          cashAmount: pCash,
+          onlineAmount: pOnline,
+          walletAmount: pWallet,
+          totalPaid,
+          billAmount: pBill,
+          pendingAmount: mainPending,
+          paymentStatus,
+          notes: notes || `Pending payment for reservation ${reservation.reservationId}`,
+          createdBy: req.user._id,
+          paymentNumber: 1,
+        }));
+      }
+
+      if (Array.isArray(pendingPlayers) && pendingPlayers.length > 0) {
+        const savedPendingPlayersList = [];
+        for (const player of pendingPlayers) {
+          const pAmt = parseCurrencyValue(player.amount);
+          if (pAmt > 0 && player.mobile) {
+            let pCustomer = await Customer.findOne({ phone: player.mobile, isActive: true });
+            if (!pCustomer) {
+              const pCustId = await generateCustomerId(finalBranch);
+              pCustomer = await Customer.create({
+                customerId: pCustId,
+                name: player.name || `Player (${player.mobile})`,
+                phone: player.mobile,
+                branch: finalBranch
+              });
+            } else {
+              if (player.name && player.name.trim() !== '' && (pCustomer.name.startsWith('Player (') || !pCustomer.name)) {
+                pCustomer.name = player.name.trim();
+                await pCustomer.save();
+              }
+            }
+
+            const pOrderId = `${parentOrder.orderId}-P${savedPendingPlayersList.length + 1}`;
+            const pOrder = await Order.create({
+              orderId: pOrderId,
+              customer: pCustomer._id,
+              parentOrder: parentOrder._id,
+              parentOrderId: parentOrder.orderId,
+              branch: finalBranch,
+              menuCategoryId,
+              menuItemId,
+              table: finalTable || undefined,
+              paymentStatus: 'unpaid',
+              pendingPaymentAmount: pAmt,
+              billAmount: pAmt,
+              notes: `Pending player payment for reservation ${reservation.reservationId}`,
+              createdBy: req.user._id
+            });
+
+            pCustomer.outstandingBalance = (pCustomer.outstandingBalance || 0) + pAmt;
+            writePromises.push(pCustomer.save());
+
+            writePromises.push(PaymentHistory.create({
+              order: pOrder._id,
+              orderId: pOrder.orderId,
+              customer: pCustomer._id,
+              customerName: pCustomer.name,
+              customerPhone: pCustomer.phone,
+              branch: finalBranch,
+              totalPaid: 0,
+              billAmount: pAmt,
+              pendingAmount: pAmt,
+              paymentStatus: 'unpaid',
+              notes: `Pending player payment for reservation ${reservation.reservationId}`,
+              createdBy: req.user._id,
+              paymentNumber: 1
+            }));
+
+            savedPendingPlayersList.push({
+              id: pOrder._id.toString(),
+              playerName: pCustomer.name,
+              name: pCustomer.name,
+              mobileNumber: pCustomer.phone,
+              mobile: pCustomer.phone,
+              pendingAmount: pAmt,
+              amount: pAmt,
+              orderId: pOrderId,
+              customerId: pCustomer._id.toString(),
+            });
+          }
+        }
+
+        if (savedPendingPlayersList.length > 0) {
+          parentOrder.pendingPlayers = savedPendingPlayersList;
+          await parentOrder.save();
+        }
+      }
+    }
+  }
+
+  if (writePromises.length > 0) {
+    Promise.all(writePromises).catch(err => console.error('Error saving reservation payment records:', err));
+  }
+
   emitReservationChanged(req, finalBranch, 'create', reservation);
+  emitAvailabilityChanged(req, finalBranch);
 
   void createBranchNotification({
     branchId: finalBranch,
@@ -488,6 +912,16 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
 exports.updateReservation = asyncHandler(async (req, res, next) => {
   const reservation = await Reservation.findById(req.params.id);
   if (!reservation) return next(new AppError('Reservation not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(reservation.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+    if (req.body.branch && !userBranchIds.includes(req.body.branch.toString())) {
+      return next(new AppError('You cannot assign to this branch.', 403));
+    }
+  }
 
   const { table, reservationDate, reservationTime, durationMinutes, menuItemId } = req.body;
 
@@ -541,10 +975,277 @@ exports.updateReservation = asyncHandler(async (req, res, next) => {
     'customerName', 'phoneNumber', 'email', 'table', 'reservationDate', 'reservationTime',
     'durationMinutes', 'numberOfGuests', 'specialRequests', 'notes', 'status',
     'menuCategoryId', 'menuItemId',
+    'paymentStatus', 'paymentMethod', 'cashAmount', 'onlineAmount', 'walletAmount',
+    'billAmount', 'amountReceived', 'totalPaid', 'pendingPaymentAmount', 'pendingPlayers'
   ];
   allowed.forEach((key) => {
     if (req.body[key] !== undefined) reservation[key] = req.body[key];
   });
+
+  // Synchronise Orders and Pending Payments for reservation on update
+  if (req.body.paymentStatus === 'unpaid' || req.body.paymentStatus === 'partial' || reservation.paymentStatus === 'unpaid' || reservation.paymentStatus === 'partial') {
+    const finalBranch = reservation.branch;
+    const pBill = req.body.billAmount !== undefined ? parseCurrencyValue(req.body.billAmount) : reservation.billAmount;
+    const pCash = req.body.cashAmount !== undefined ? parseCurrencyValue(req.body.cashAmount) : reservation.cashAmount;
+    const pOnline = req.body.onlineAmount !== undefined ? parseCurrencyValue(req.body.onlineAmount) : reservation.onlineAmount;
+    const pWallet = req.body.walletAmount !== undefined ? parseCurrencyValue(req.body.walletAmount) : reservation.walletAmount;
+    const pReceived = req.body.amountReceived !== undefined ? parseCurrencyValue(req.body.amountReceived) : reservation.amountReceived;
+    const totalPaid = pCash + pOnline + pWallet;
+    
+    const incomingPlayers = req.body.pendingPlayers !== undefined ? req.body.pendingPlayers : (reservation.pendingPlayers || []);
+    const sumPending = Array.isArray(incomingPlayers) ? incomingPlayers.reduce((s, p) => s + (parseCurrencyValue(p.amount || p.pendingAmount) || 0), 0) : 0;
+    const mainPending = Math.max(0, pBill - totalPaid - sumPending);
+
+    const menuCategoryId = req.body.menuCategoryId || reservation.menuCategoryId;
+    const menuItemId = req.body.menuItemId || reservation.menuItemId;
+    const finalTable = req.body.table || reservation.table;
+
+    // Find the main customer
+    const customer = await Customer.findOne({ phone: req.body.phoneNumber || reservation.phoneNumber, isActive: true });
+
+    if (customer && (mainPending > 0 || (Array.isArray(incomingPlayers) && incomingPlayers.length > 0))) {
+      let parentOrder = await Order.findOne({
+        customer: customer._id,
+        branch: finalBranch,
+        $or: [
+          { orderId: reservation.reservationId },
+          { notes: new RegExp(reservation.reservationId) }
+        ],
+        parentOrder: null,
+        isActive: true
+      });
+
+      if (!parentOrder) {
+        // Create parent order if it didn't exist before
+        const parentOrderId = await generateOrderId(finalBranch);
+        parentOrder = await Order.create({
+          orderId: parentOrderId,
+          customer: customer._id,
+          branch: finalBranch,
+          menuCategoryId,
+          menuItemId,
+          table: finalTable || undefined,
+          paymentStatus: req.body.paymentStatus || reservation.paymentStatus,
+          paymentMethod: req.body.paymentMethod || reservation.paymentMethod || null,
+          cashAmount: pCash,
+          onlineAmount: pOnline,
+          walletAmount: pWallet,
+          pendingPaymentAmount: mainPending,
+          amountReceived: pReceived,
+          totalPaid,
+          billAmount: pBill,
+          notes: req.body.notes || reservation.notes || `Pending payment for reservation ${reservation.reservationId}`,
+          createdBy: req.user._id,
+        });
+
+        if (mainPending > 0) {
+          customer.outstandingBalance = (customer.outstandingBalance || 0) + mainPending;
+          await customer.save();
+
+          await PaymentHistory.create({
+            order: parentOrder._id,
+            orderId: parentOrder.orderId,
+            customer: customer._id,
+            customerName: customer.name,
+            customerPhone: customer.phone,
+            branch: finalBranch,
+            paymentMethod: req.body.paymentMethod || reservation.paymentMethod || null,
+            cashAmount: pCash,
+            onlineAmount: pOnline,
+            walletAmount: pWallet,
+            totalPaid,
+            billAmount: pBill,
+            pendingAmount: mainPending,
+            paymentStatus: req.body.paymentStatus || reservation.paymentStatus,
+            notes: req.body.notes || reservation.notes || `Pending payment for reservation ${reservation.reservationId}`,
+            createdBy: req.user._id,
+            paymentNumber: 1,
+          });
+        }
+      } else {
+        // Update existing parent order
+        const oldPending = parentOrder.pendingPaymentAmount || 0;
+        const diff = mainPending - oldPending;
+        
+        parentOrder.menuCategoryId = menuCategoryId;
+        parentOrder.menuItemId = menuItemId;
+        parentOrder.table = finalTable || undefined;
+        parentOrder.paymentStatus = req.body.paymentStatus || reservation.paymentStatus;
+        parentOrder.paymentMethod = req.body.paymentMethod || reservation.paymentMethod || null;
+        parentOrder.cashAmount = pCash;
+        parentOrder.onlineAmount = pOnline;
+        parentOrder.walletAmount = pWallet;
+        parentOrder.pendingPaymentAmount = mainPending;
+        parentOrder.amountReceived = pReceived;
+        parentOrder.totalPaid = totalPaid;
+        parentOrder.billAmount = pBill;
+        parentOrder.notes = req.body.notes || reservation.notes || parentOrder.notes;
+        await parentOrder.save();
+
+        if (diff !== 0) {
+          customer.outstandingBalance = (customer.outstandingBalance || 0) + diff;
+          await customer.save();
+        }
+      }
+
+      // Synchronise split pending players
+      const existingSubOrders = await Order.find({
+        parentOrder: parentOrder._id,
+        isActive: true
+      }).populate('customer');
+
+      const updatedPendingPlayersList = [];
+      const processedSubOrderIds = new Set();
+
+      if (Array.isArray(incomingPlayers)) {
+        for (const p of incomingPlayers) {
+          const playerMobile = String(p.mobile || p.mobileNumber || p.phone || '').replace(/\D/g, '').slice(0, 10);
+          const playerAmount = parseCurrencyValue(p.amount || p.pendingAmount) || 0;
+          const playerName = (p.name || p.playerName || '').trim() || `Player (${playerMobile})`;
+          const targetId = p.id || p._id;
+
+          if (playerMobile.length === 10 && playerAmount > 0) {
+            let matchedSub = targetId ? existingSubOrders.find(so => so._id.toString() === targetId.toString()) : null;
+
+            if (matchedSub) {
+              processedSubOrderIds.add(matchedSub._id.toString());
+              
+              const oldSubPending = matchedSub.pendingPaymentAmount || 0;
+              const subDiff = playerAmount - oldSubPending;
+
+              matchedSub.billAmount = playerAmount;
+              matchedSub.pendingPaymentAmount = playerAmount;
+              matchedSub.menuCategoryId = menuCategoryId;
+              matchedSub.menuItemId = menuItemId;
+              matchedSub.branch = finalBranch;
+              matchedSub.table = finalTable || undefined;
+              await matchedSub.save();
+
+              if (matchedSub.customer) {
+                const pc = await Customer.findById(matchedSub.customer);
+                if (pc) {
+                  if (playerName && playerName !== pc.name) {
+                    pc.name = playerName;
+                  }
+                  if (subDiff !== 0) {
+                    pc.outstandingBalance = (pc.outstandingBalance || 0) + subDiff;
+                  }
+                  await pc.save();
+                }
+              }
+
+              updatedPendingPlayersList.push({
+                id: matchedSub._id.toString(),
+                playerName,
+                name: playerName,
+                mobileNumber: playerMobile,
+                mobile: playerMobile,
+                pendingAmount: playerAmount,
+                amount: playerAmount,
+                orderId: matchedSub.orderId,
+                customerId: matchedSub.customer ? (matchedSub.customer._id || matchedSub.customer).toString() : '',
+              });
+            } else {
+              // Create new sub-order
+              let pCustomer = await Customer.findOne({ phone: playerMobile, isActive: true });
+              if (!pCustomer) {
+                const pCustId = await generateCustomerId(finalBranch);
+                pCustomer = await Customer.create({
+                  customerId: pCustId,
+                  name: playerName,
+                  phone: playerMobile,
+                  branch: finalBranch
+                });
+              } else {
+                if (playerName && (pCustomer.name.startsWith('Player (') || !pCustomer.name)) {
+                  pCustomer.name = playerName;
+                  await pCustomer.save();
+                }
+              }
+
+              const pOrderId = `${parentOrder.orderId}-P${updatedPendingPlayersList.length + 1}`;
+              const pOrder = await Order.create({
+                orderId: pOrderId,
+                customer: pCustomer._id,
+                parentOrder: parentOrder._id,
+                parentOrderId: parentOrder.orderId,
+                branch: finalBranch,
+                menuCategoryId,
+                menuItemId,
+                table: finalTable || undefined,
+                paymentStatus: 'unpaid',
+                pendingPaymentAmount: playerAmount,
+                billAmount: playerAmount,
+                notes: `Pending player payment for reservation ${reservation.reservationId}`,
+                createdBy: req.user._id
+              });
+
+              pCustomer.outstandingBalance = (pCustomer.outstandingBalance || 0) + playerAmount;
+              await pCustomer.save();
+
+              await PaymentHistory.create({
+                order: pOrder._id,
+                orderId: pOrder.orderId,
+                customer: pCustomer._id,
+                customerName: pCustomer.name,
+                customerPhone: pCustomer.phone,
+                branch: finalBranch,
+                totalPaid: 0,
+                billAmount: playerAmount,
+                pendingAmount: playerAmount,
+                paymentStatus: 'unpaid',
+                notes: `Pending player payment for reservation ${reservation.reservationId}`,
+                createdBy: req.user._id,
+                paymentNumber: 1
+              });
+
+              updatedPendingPlayersList.push({
+                id: pOrder._id.toString(),
+                playerName,
+                name: playerName,
+                mobileNumber: playerMobile,
+                mobile: playerMobile,
+                pendingAmount: playerAmount,
+                amount: playerAmount,
+                orderId: pOrderId,
+                customerId: pCustomer._id.toString(),
+              });
+            }
+          }
+        }
+      }
+
+      // Soft delete removed player sub-orders
+      for (const existingSub of existingSubOrders) {
+        if (!processedSubOrderIds.has(existingSub._id.toString())) {
+          existingSub.isActive = false;
+          await existingSub.save();
+          
+          if (existingSub.customer) {
+            const pc = await Customer.findById(existingSub.customer);
+            if (pc) {
+              pc.outstandingBalance = Math.max(0, (pc.outstandingBalance || 0) - (existingSub.pendingPaymentAmount || 0));
+              await pc.save();
+            }
+          }
+        }
+      }
+
+      parentOrder.pendingPlayers = updatedPendingPlayersList;
+      await parentOrder.save();
+
+      // Synchronize back to reservation document
+      reservation.pendingPlayers = updatedPendingPlayersList.map(p => ({
+        name: p.name,
+        mobile: p.mobile,
+        amount: p.amount,
+        playerName: p.playerName,
+        mobileNumber: p.mobileNumber,
+        pendingAmount: p.pendingAmount
+      }));
+    }
+  }
+
   await reservation.save();
 
   const populated = await Reservation.findById(reservation._id)
@@ -556,6 +1257,7 @@ exports.updateReservation = asyncHandler(async (req, res, next) => {
   res.status(200).json({ success: true, data: { reservation: populated } });
 
   emitReservationChanged(req, reservation.branch, 'update', reservation);
+  emitAvailabilityChanged(req, reservation.branch);
 
   void logActivity({
     userId: req.user._id,
@@ -576,6 +1278,13 @@ exports.changeStatus = asyncHandler(async (req, res, next) => {
   const reservation = await Reservation.findById(req.params.id);
   if (!reservation) return next(new AppError('Reservation not found.', 404));
 
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(reservation.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
   reservation.statusHistory.push({ status, changedBy: req.user._id, changedAt: new Date(), note });
   reservation.status = status;
   await reservation.save();
@@ -583,6 +1292,7 @@ exports.changeStatus = asyncHandler(async (req, res, next) => {
   res.status(200).json({ success: true, data: { reservation } });
 
   emitReservationChanged(req, reservation.branch, 'status', reservation);
+  emitAvailabilityChanged(req, reservation.branch);
 
   void logActivity({
     userId: req.user._id,
@@ -598,6 +1308,13 @@ exports.changeStatus = asyncHandler(async (req, res, next) => {
 exports.deleteReservation = asyncHandler(async (req, res, next) => {
   const reservation = await Reservation.findById(req.params.id);
   if (!reservation) return next(new AppError('Reservation not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(reservation.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
   if (['seated', 'completed'].includes(reservation.status)) {
     return next(new AppError('Cannot delete a seated or completed reservation.', 400));
   }
@@ -607,6 +1324,7 @@ exports.deleteReservation = asyncHandler(async (req, res, next) => {
   res.status(200).json({ success: true, message: 'Reservation deleted.' });
 
   emitReservationChanged(req, reservation.branch, 'delete', reservation);
+  emitAvailabilityChanged(req, reservation.branch);
 
   void logActivity({
     userId: req.user._id,
@@ -628,21 +1346,32 @@ async function checkDoubleBooking({ branch, table, reservationDate, reservationT
   const reqStart = reqH * 60 + reqM;
   const reqEnd = reqStart + parseInt(durationMinutes, 10);
 
-  const same = await Reservation.find({
+  const queryFilter = {
     branch,
-    table,
     reservationDate: { $gte: d, $lt: nextDay },
     status: { $nin: ['cancelled', 'no_show', 'completed'] },
     ...(excludeId ? { _id: { $ne: excludeId } } : {}),
-  }).select('reservationTime durationMinutes reservationId menuItemId').populate('menuItemId', 'name').lean();
+  };
+  if (table) queryFilter.table = table;
+  if (menuItemId) queryFilter.menuItemId = menuItemId;
+
+  const same = await Reservation.find(queryFilter)
+    .select('reservationTime durationMinutes reservationId menuItemId')
+    .populate('menuItemId', 'name')
+    .lean();
 
   for (const r of same) {
     const [h, m] = r.reservationTime.split(':').map(Number);
     const start = h * 60 + m;
     const end = start + (r.durationMinutes || 60);
     if (reqStart < end && start < reqEnd) {
+      const endH = Math.floor(end / 60) % 24;
+      const endM = end % 60;
+      const conflictEnd = `${endH.toString().padStart(2, '0')}:${endM.toString().padStart(2, '0')}`;
       return {
         ...r,
+        conflictTime: r.reservationTime,
+        conflictEnd,
         menuItemName: (typeof r.menuItemId === 'object' && r.menuItemId?.name) ? r.menuItemId.name : null,
       };
     }

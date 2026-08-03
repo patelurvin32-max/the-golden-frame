@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { INVENTORY_CATEGORIES, EXPENSE_CATEGORIES, MEMBERSHIP_TIERS } = require('../config/constants');
+const { INVENTORY_CATEGORIES, EXPENSE_CATEGORIES, MEMBERSHIP_TIERS, PAYMENT_METHODS } = require('../config/constants');
 
 const inventorySchema = new mongoose.Schema(
   {
@@ -44,12 +44,20 @@ const expenseSchema = new mongoose.Schema(
     notes: { type: String, trim: true },
     receiptUrl: { type: String },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    paymentStatus: { type: String, enum: ['paid', 'partial', 'unpaid', 'refunded'], default: 'paid' },
+    paymentMethod: { type: String, enum: [...PAYMENT_METHODS, 'n/a', 'N/A', null, ''], default: null, required: false },
+    cashAmount: { type: Number, default: 0 },
+    onlineAmount: { type: Number, default: 0 },
+    walletAmount: { type: Number, default: 0 },
+    totalPaid: { type: Number, default: 0 },
+    pendingAmount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
 
 expenseSchema.index({ branch: 1, date: -1 });
 expenseSchema.index({ branch: 1, date: -1, category: 1 });
+expenseSchema.index({ branch: 1, createdAt: -1 });
 expenseSchema.index({ createdAt: -1 });
 
 const membershipPlanSchema = new mongoose.Schema(

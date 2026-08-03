@@ -1,11 +1,19 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useRef, useState, useEffect, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { branchService, settingsService } from '@/services';
+import { useAuthStore, useAppStore } from '@/store';
 import api from '@/services/api';
 import { Button, Card, CardContent, Input, Label, Select, useToast } from '@/components/ui';
 import { cn } from '@/utils';
 import type { Branch } from '@/types';
+
+export type BranchReportConfig = {
+  branch: string;
+  branchName?: string;
+  dailyReportEnabled: boolean;
+  dailyReportEmails: string[];
+};
 
 type SettingsState = {
   businessName: string;
@@ -20,6 +28,7 @@ type SettingsState = {
   dailyReportFromEmail: string;
   dailyReportEmails: string;
   dailyReportBranchIds: string[];
+  branchReportConfigs: BranchReportConfig[];
   receipt: {
     templateName: string;
     fontStyle: 'Helvetica' | 'Courier' | 'Times-Roman';
@@ -103,6 +112,7 @@ const createDefaultSettings = (): SettingsState => ({
   dailyReportFromEmail: '',
   dailyReportEmails: '',
   dailyReportBranchIds: [],
+  branchReportConfigs: [],
   receipt: {
     templateName: 'The Golden Frame Receipt',
     fontStyle: 'Helvetica',
@@ -588,68 +598,193 @@ function ReceiptPreview({ settings }: { settings: SettingsState }) {
 export default function SettingsPage() {
   const qc = useQueryClient();
   const toast = useToast();
+  const { user } = useAuthStore();
+  const { selectedBranch } = useAppStore();
   const logoInputRef = useRef<HTMLInputElement>(null);
   const [showPreview, setShowPreview] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
   const [activeTab, setActiveTab] = useState<'brand' | 'receipt' | 'system'>('brand');
   const [settings, setSettings] = useState<SettingsState>(createDefaultSettings());
+
+  // If user is not super admin and system tab is active, switch to brand tab
+  if (user?.role !== 'super_admin' && activeTab === 'system') {
+    setActiveTab('brand');
+  }
+
   const { data: branchesData = [] } = useQuery({
     queryKey: ['branches'],
     queryFn: () => branchService.getAll().then((response) => response.data.data.branches),
   });
 
-  useQuery({
-    queryKey: ['settings'],
-    queryFn: () =>
-      settingsService.get().then((response) => {
-        const data = (response.data as any).data?.settings;
-        if (data) {
-          setSettings((current) => ({
-            ...current,
-            ...data,
-            gstNumber: data.gstNumber || '',
-            dailyReportFromEmail: data.dailyReportFromEmail || current.dailyReportFromEmail,
-            dailyReportBranchIds: (data.dailyReportBranchIds || []).map((branch: any) => (typeof branch === 'string' ? branch : branch._id)),
-            dailyReportEmails: Array.isArray(data.dailyReportEmails)
-              ? data.dailyReportEmails.join(', ')
-              : Array.isArray(data.dailyReportRecipientEmails)
-                ? data.dailyReportRecipientEmails.join(', ')
-                : current.dailyReportEmails,
-            receipt: {
-              ...current.receipt,
-              ...(data.receipt || {}),
-              header: {
-                ...current.receipt.header,
-                ...(data.receipt?.header || {}),
-              },
-              orderDetails: {
-                ...current.receipt.orderDetails,
-                ...(data.receipt?.orderDetails || {}),
-              },
-              itemsSection: {
-                ...current.receipt.itemsSection,
-                ...(data.receipt?.itemsSection || {}),
-              },
-              paymentSection: {
-                ...current.receipt.paymentSection,
-                ...(data.receipt?.paymentSection || {}),
-              },
-              footer: {
-                ...current.receipt.footer,
-                ...(data.receipt?.footer || {}),
-              },
-            },
-          }));
-        }
+  // Helper to safely extract branch ID from string or object
+  const getBranchId = (b: any): string | undefined => {
+    if (!b) return undefined;
+    if (typeof b === 'string') return b;
+    if (typeof b === 'object' && b._id) return typeof b._id === 'string' ? b._id : String(b._id);
+    return undefined;
+  };
 
+  // Determine branch context for settings
+  const userBranchId = getBranchId(user?.branches?.[0]);
+  const settingsBranch: string | undefined =
+    user?.role === 'super_admin'
+      ? selectedBranch || undefined
+      : selectedBranch || userBranchId;
+
+  const { data: settingsResponse } = useQuery({
+    queryKey: ['settings', settingsBranch || 'global', user?._id],
+    queryFn: () =>
+      settingsService.get(settingsBranch ? { branch: settingsBranch } : undefined).then((response) => {
+        const data = (response.data as any).data?.settings;
         return data;
       }),
+    refetchOnWindowFocus: true,
+    enabled: Boolean(user),
+    staleTime: 0,
   });
 
+  // Update local state when settings data changes
+  useEffect(() => {
+    if (settingsResponse) {
+      const defaults = createDefaultSettings();
+      setSettings({
+        ...defaults,
+        ...settingsResponse,
+        businessName: settingsResponse.businessName || defaults.businessName,
+        logoUrl: settingsResponse.logoUrl || '',
+        currency: settingsResponse.currency || defaults.currency,
+        currencySymbol: settingsResponse.currencySymbol || defaults.currencySymbol,
+        taxPercent: typeof settingsResponse.taxPercent === 'number' ? settingsResponse.taxPercent : defaults.taxPercent,
+        gstNumber: settingsResponse.gstNumber || '',
+        timezone: settingsResponse.timezone || defaults.timezone,
+        backupEnabled: settingsResponse.backupEnabled ?? defaults.backupEnabled,
+        dailyReportEnabled: settingsResponse.dailyReportEnabled ?? defaults.dailyReportEnabled,
+        dailyReportFromEmail: settingsResponse.dailyReportFromEmail || defaults.dailyReportFromEmail,
+        dailyReportBranchIds: (settingsResponse.dailyReportBranchIds || []).map((branch: any) =>
+          typeof branch === 'string' ? branch : branch._id
+        ),
+        dailyReportEmails: Array.isArray(settingsResponse.dailyReportEmails)
+          ? settingsResponse.dailyReportEmails.join(', ')
+          : Array.isArray(settingsResponse.dailyReportRecipientEmails)
+            ? settingsResponse.dailyReportRecipientEmails.join(', ')
+            : defaults.dailyReportEmails,
+        branchReportConfigs: (() => {
+          const apiConfigs = settingsResponse.branchReportConfigs || [];
+          const configMap = new Map<string, any>();
+          apiConfigs.forEach((c: any) => {
+            const bId = typeof c.branch === 'string' ? c.branch : c.branch?._id;
+            if (bId) configMap.set(bId, c);
+          });
+
+          return (branchesData || []).map((b: Branch) => {
+            const existing = configMap.get(b._id);
+            return {
+              branch: b._id,
+              branchName: b.name,
+              dailyReportEnabled: existing ? existing.dailyReportEnabled !== false : true,
+              dailyReportEmails: existing
+                ? (Array.isArray(existing.dailyReportEmails) ? existing.dailyReportEmails : [])
+                : [],
+            };
+          });
+        })(),
+        receipt: {
+          ...defaults.receipt,
+          ...(settingsResponse.receipt || {}),
+          header: {
+            ...defaults.receipt.header,
+            ...(settingsResponse.receipt?.header || {}),
+          },
+          orderDetails: {
+            ...defaults.receipt.orderDetails,
+            ...(settingsResponse.receipt?.orderDetails || {}),
+          },
+          itemsSection: {
+            ...defaults.receipt.itemsSection,
+            ...(settingsResponse.receipt?.itemsSection || {}),
+          },
+          paymentSection: {
+            ...defaults.receipt.paymentSection,
+            ...(settingsResponse.receipt?.paymentSection || {}),
+          },
+          footer: {
+            ...defaults.receipt.footer,
+            ...(settingsResponse.receipt?.footer || {}),
+          },
+        },
+      });
+    }
+  }, [settingsResponse, branchesData]);
+
+  const [newEmailInputs, setNewEmailInputs] = useState<Record<string, string>>({});
+
+  const updateBranchConfig = (branchId: string, updates: Partial<BranchReportConfig>) => {
+    setSettings((current) => {
+      const existingConfigs = current.branchReportConfigs || [];
+      const updatedConfigs = existingConfigs.map((c) => {
+        if (c.branch === branchId) {
+          return { ...c, ...updates };
+        }
+        return c;
+      });
+      return { ...current, branchReportConfigs: updatedConfigs };
+    });
+  };
+
+  const handleAddBranchEmail = (branchId: string) => {
+    const rawEmail = (newEmailInputs[branchId] || '').trim().toLowerCase();
+    if (!rawEmail) return;
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(rawEmail)) {
+      toast.error('Please enter a valid email address.');
+      return;
+    }
+
+    setSettings((current) => {
+      const existingConfigs = current.branchReportConfigs || [];
+      const updatedConfigs = existingConfigs.map((c) => {
+        if (c.branch === branchId) {
+          const currentEmails = c.dailyReportEmails || [];
+          if (currentEmails.includes(rawEmail)) {
+            toast.error('Email is already in the list for this branch.');
+            return c;
+          }
+          return { ...c, dailyReportEmails: [...currentEmails, rawEmail] };
+        }
+        return c;
+      });
+      return { ...current, branchReportConfigs: updatedConfigs };
+    });
+
+    setNewEmailInputs((prev) => ({ ...prev, [branchId]: '' }));
+  };
+
+  const handleRemoveBranchEmail = (branchId: string, emailToRemove: string) => {
+    setSettings((current) => {
+      const existingConfigs = current.branchReportConfigs || [];
+      const updatedConfigs = existingConfigs.map((c) => {
+        if (c.branch === branchId) {
+          return {
+            ...c,
+            dailyReportEmails: (c.dailyReportEmails || []).filter((e) => e !== emailToRemove),
+          };
+        }
+        return c;
+      });
+      return { ...current, branchReportConfigs: updatedConfigs };
+    });
+  };
+
   const saveMutation = useMutation({
-    mutationFn: (payload: SettingsState) => settingsService.update(payload as Record<string, unknown>),
+    mutationFn: (payload: SettingsState) => {
+      // Include branch context for Branch Admin
+      const payloadWithBranch = settingsBranch ? { ...payload, branch: settingsBranch } : payload;
+      return settingsService.update(payloadWithBranch as Record<string, unknown>);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['settings'] });
+      qc.invalidateQueries({ queryKey: ['settings', settingsBranch] });
       toast.success('Settings saved!');
     },
     onError: () => toast.error('Failed to save settings'),
@@ -753,6 +888,9 @@ export default function SettingsPage() {
     try {
       const formData = new FormData();
       formData.append('logo', file);
+      if (settingsBranch) {
+        formData.append('branch', settingsBranch.toString());
+      }
 
       const response = await api.post('/settings/upload-logo', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -808,9 +946,11 @@ export default function SettingsPage() {
             <Tab active={activeTab === 'receipt'} onClick={() => setActiveTab('receipt')} dot>
               Invoice Setting
             </Tab>
-            <Tab active={activeTab === 'system'} onClick={() => setActiveTab('system')}>
-              System
-            </Tab>
+            {user?.role === 'super_admin' && (
+              <Tab active={activeTab === 'system'} onClick={() => setActiveTab('system')}>
+                System
+              </Tab>
+            )}
           </div>
 
           {activeTab === 'brand' ? (
@@ -1241,7 +1381,7 @@ export default function SettingsPage() {
             </div>
           ) : null}
 
-          {activeTab === 'system' ? (
+          {activeTab === 'system' && user?.role === 'super_admin' ? (
             <Card>
               <CardContent className="space-y-5 p-6">
                 <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">System Configuration</h3>
@@ -1264,8 +1404,8 @@ export default function SettingsPage() {
                     />
                   </div>
                   {settings.dailyReportEnabled ? (
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                      <div className="space-y-1.5">
+                    <div className="space-y-5 pt-2">
+                      <div className="space-y-1.5 max-w-md">
                         <Label>Sender Email</Label>
                         <Input
                           value={settings.dailyReportFromEmail}
@@ -1273,35 +1413,105 @@ export default function SettingsPage() {
                           placeholder="reports@thegoldenframe.com"
                         />
                       </div>
-                      <div className="space-y-1.5">
-                        <Label>Client Email</Label>
-                        <Input
-                          value={settings.dailyReportEmails}
-                          onChange={(e) => setTop('dailyReportEmails', e.target.value)}
-                          placeholder="client@example.com"
-                        />
-                      </div>
-                      <div className="space-y-1.5 md:col-span-2">
-                        <Label>Branches</Label>
-                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                          {branchesData.map((branch: Branch) => (
-                            <label
-                              key={branch._id}
-                              className="flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm"
+
+                      <div className="space-y-3 border-t border-border/60 pt-4">
+                        <div>
+                          <Label className="text-sm font-semibold">Branch Email Recipient Management</Label>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            Manage independent recipient email addresses and daily report status for each branch.
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                          {(settings.branchReportConfigs && settings.branchReportConfigs.length > 0
+                            ? settings.branchReportConfigs
+                            : branchesData.map((b: Branch) => ({
+                                branch: b._id,
+                                branchName: b.name,
+                                dailyReportEnabled: true,
+                                dailyReportEmails: [],
+                              }))
+                          ).map((cfg) => (
+                            <div
+                              key={cfg.branch}
+                              className="space-y-3 rounded-xl border border-border/80 bg-background/80 p-4 shadow-sm"
                             >
-                              <input
-                                type="checkbox"
-                                className="rounded border-border"
-                                checked={settings.dailyReportBranchIds.includes(branch._id)}
-                                onChange={(e) => setBranchSelection(branch._id, e.target.checked)}
-                              />
-                              <span>{branch.name}</span>
-                            </label>
+                              <div className="flex items-center justify-between border-b border-border/60 pb-3">
+                                <div>
+                                  <h4 className="font-semibold text-sm flex items-center gap-1.5">
+                                    <span className={cn('h-2 w-2 rounded-full', cfg.dailyReportEnabled ? 'bg-emerald-500' : 'bg-muted-foreground')} />
+                                    {cfg.branchName || 'Branch'}
+                                  </h4>
+                                  <p className="text-xs text-muted-foreground mt-0.5">
+                                    {cfg.dailyReportEnabled ? 'Daily report active' : 'Daily report disabled'}
+                                  </p>
+                                </div>
+                                <Toggle
+                                  checked={cfg.dailyReportEnabled}
+                                  onChange={(enabled) => updateBranchConfig(cfg.branch, { dailyReportEnabled: enabled })}
+                                />
+                              </div>
+
+                              {cfg.dailyReportEnabled ? (
+                                <div className="space-y-2.5">
+                                  <Label className="text-xs font-medium">Recipient Emails</Label>
+                                  
+                                  <div className="flex flex-wrap gap-1.5 min-h-[32px] p-2 rounded-lg border border-border/60 bg-muted/10">
+                                    {cfg.dailyReportEmails && cfg.dailyReportEmails.length > 0 ? (
+                                      cfg.dailyReportEmails.map((email) => (
+                                        <span
+                                          key={email}
+                                          className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20"
+                                        >
+                                          <span>{email}</span>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleRemoveBranchEmail(cfg.branch, email)}
+                                            className="hover:text-red-400 transition-colors ml-1 font-bold"
+                                            title="Remove email"
+                                          >
+                                            ×
+                                          </button>
+                                        </span>
+                                      ))
+                                    ) : (
+                                      <p className="text-xs text-muted-foreground italic py-0.5">No recipient emails added for this branch yet.</p>
+                                    )}
+                                  </div>
+
+                                  <div className="flex items-center gap-2 pt-1">
+                                    <Input
+                                      type="email"
+                                      placeholder="recipient@example.com"
+                                      value={newEmailInputs[cfg.branch] || ''}
+                                      onChange={(e) => setNewEmailInputs((prev) => ({ ...prev, [cfg.branch]: e.target.value }))}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          handleAddBranchEmail(cfg.branch);
+                                        }
+                                      }}
+                                      className="text-xs h-9"
+                                    />
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => handleAddBranchEmail(cfg.branch)}
+                                      className="h-9 px-3 text-xs shrink-0"
+                                    >
+                                      + Add Email
+                                    </Button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-amber-500/90 bg-amber-500/10 p-2.5 rounded-lg">
+                                  ⚠️ Daily business report email sending is disabled for {cfg.branchName}.
+                                </p>
+                              )}
+                            </div>
                           ))}
                         </div>
-                        <p className="text-xs text-muted-foreground">
-                          Leave empty to include all active branches.
-                        </p>
                       </div>
                     </div>
                   ) : null}

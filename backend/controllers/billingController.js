@@ -10,6 +10,47 @@ const asyncHandler = require('../utils/asyncHandler');
 const { generateInvoiceNumber } = require('../utils/invoiceNumber');
 const { generateInvoicePDF } = require('../services/pdfService');
 const { logActivity } = require('../services/activityLogService');
+const { ROLES } = require('../config/constants');
+const { generateOrderId, generateCustomerId, parseCurrencyValue } = require('./customerController');
+const PaymentHistory = require('../models/PaymentHistory');
+const WalletTransaction = require('../models/WalletTransaction');
+
+// GET /api/bills/stats
+exports.getBillStats = asyncHandler(async (req, res) => {
+  const filter = {};
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    filter.branch = { $in: userBranchIds };
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
+  }
+
+  // Get date ranges
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekStart = new Date(todayStart);
+  weekStart.setDate(weekStart.getDate() - weekStart.getDay()); // Start of week (Sunday)
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  // Get counts
+  const [todayCount, weekCount, monthCount, totalCount] = await Promise.all([
+    Bill.countDocuments({ ...filter, createdAt: { $gte: todayStart } }),
+    Bill.countDocuments({ ...filter, createdAt: { $gte: weekStart } }),
+    Bill.countDocuments({ ...filter, createdAt: { $gte: monthStart } }),
+    Bill.countDocuments(filter),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      today: todayCount,
+      week: weekCount,
+      month: monthCount,
+      total: totalCount,
+    },
+  });
+});
 
 // POST /api/bills  — create a bill from a completed session
 exports.createBill = asyncHandler(async (req, res, next) => {
@@ -29,15 +70,37 @@ exports.createBill = asyncHandler(async (req, res, next) => {
 
   const targetBranch = branchId || branch;
 
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!targetBranch || !userBranchIds.includes(targetBranch.toString())) {
+      return next(new AppError('You do not have access to this branch.', 403));
+    }
+  }
+
   // Build line items
   const items = [];
   let subtotal = 0;
 
   // 1. Table time from session
+  let sessionMenuCategoryId, sessionMenuItemId, sessionMenuCategory, sessionMenuItem;
   if (sessionId) {
     const session = await Session.findById(sessionId).populate('table', 'name type');
     if (!session) return next(new AppError('Session not found.', 404));
     if (session.status !== 'completed') return next(new AppError('Session must be stopped before billing.', 400));
+
+    // Extract menu category/item from session for Live Tables billing
+    // If session has explicit menu category/item (from Customer/Menu flow), use those
+    // Otherwise, use table type as category and table name as item (for Live Tables flow)
+    if (session.menuCategoryId && session.menuItemId) {
+      sessionMenuCategoryId = session.menuCategoryId;
+      sessionMenuItemId = session.menuItemId;
+      sessionMenuCategory = session.menuCategory;
+      sessionMenuItem = session.menuItem;
+    } else {
+      // For Live Tables sessions without explicit menu selection, use table info
+      sessionMenuCategory = session.table?.type || '';
+      sessionMenuItem = session.table?.name || '';
+    }
 
     const addedItemsTotal = (session.addedItems || []).reduce((sum, item) => sum + (item.totalAmount || 0), 0);
     const calculatedGrandTotal = session.amount + addedItemsTotal;
@@ -109,9 +172,9 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     customerId ? Customer.findById(customerId).select('name phone membership').lean() : null,
   ]);
 
-  if (!membershipCustomer && sessionId) {
-    // For session-based bills without a registered customer, grab name from session
-    _sessionForName = await Session.findById(sessionId).select('customerName phoneNumber').lean();
+  if (sessionId) {
+    // For session-based bills, grab name and timestamps from session
+    _sessionForName = await Session.findById(sessionId).select('customerName phoneNumber createdAt startTime').lean();
   }
 
   if (membershipCustomer?.membership?.tier) {
@@ -128,7 +191,7 @@ exports.createBill = asyncHandler(async (req, res, next) => {
   const tax = (afterDiscounts * taxPercent) / 100;
   const total = afterDiscounts + tax;
 
-  const invoiceNumber = await generateInvoiceNumber();
+  const invoiceNumber = await generateInvoiceNumber(targetBranch);
 
   const bill = await Bill.create({
     invoiceNumber,
@@ -145,11 +208,205 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     tax,
     total,
     paymentStatus: paymentStatus || 'unpaid',
+    paymentMethod: paymentMethod || null,
+    cashAmount: req.body.cashAmount || 0,
+    onlineAmount: req.body.onlineAmount || 0,
+    walletAmount: req.body.walletAmount || 0,
+    amountReceived: req.body.amountReceived || 0,
+    pendingPaymentAmount: req.body.pendingPaymentAmount || 0,
+    pendingPlayers: req.body.pendingPlayers || [],
+    notes: req.body.notes || '',
     createdBy: req.user._id,
     // Denormalized fields for fast search without pre-lookup queries
     customerName:  membershipCustomer?.name || _sessionForName?.customerName || '',
     customerPhone: membershipCustomer?.phone || _sessionForName?.phoneNumber || '',
+    // Denormalized menu category/item from session for Live Tables billing
+    menuCategoryId: sessionMenuCategoryId,
+    menuItemId: sessionMenuItemId,
+    menuCategory: sessionMenuCategory || '',
+    menuItem: sessionMenuItem || '',
+    ...(sessionId && _sessionForName ? { createdAt: _sessionForName.createdAt || _sessionForName.startTime } : {}),
   });
+
+  // Handle pending player payments and create Order records for unpaid/partial bills
+  let customerIdToUse = customerId;
+  if (!customerIdToUse && (req.body.customerName || req.body.customerPhone || bill.customerName || bill.customerPhone)) {
+    const phone = String(req.body.customerPhone || bill.customerPhone || '').replace(/\D/g, '').slice(0, 10);
+    const name = req.body.customerName || bill.customerName || `Player (${phone})`;
+    if (phone.length === 10) {
+      let customerDoc = await Customer.findOne({ phone, isActive: true });
+      if (!customerDoc) {
+        const custId = await generateCustomerId(targetBranch);
+        customerDoc = await Customer.create({
+          customerId: custId,
+          name,
+          phone,
+          branch: targetBranch,
+        });
+      } else {
+        let customerUpdated = false;
+        if (name && name.trim() !== '' && name.trim() !== customerDoc.name) {
+          customerDoc.name = name.trim();
+          customerUpdated = true;
+        }
+        if (customerUpdated) {
+          await customerDoc.save();
+        }
+      }
+      customerIdToUse = customerDoc._id;
+    }
+  }
+
+  if (bill.paymentStatus === 'unpaid' || bill.paymentStatus === 'partial') {
+    const cashAmount = req.body.cashAmount || 0;
+    const onlineAmount = req.body.onlineAmount || 0;
+    const walletAmount = req.body.walletAmount || 0;
+    const amountReceived = req.body.amountReceived || 0;
+    const pendingPaymentAmount = req.body.pendingPaymentAmount || 0;
+    const mainPending = Math.max(0, bill.total - cashAmount - onlineAmount - walletAmount - pendingPaymentAmount);
+
+    let parentOrderId = null;
+    let mainOrder = null;
+
+    if (mainPending > 0 || (req.body.pendingPlayers && req.body.pendingPlayers.length > 0)) {
+      parentOrderId = await generateOrderId(targetBranch);
+      
+      mainOrder = await Order.create({
+        orderId: parentOrderId,
+        customer: customerIdToUse,
+        branch: targetBranch,
+        session: sessionId || undefined,
+        bill: bill._id,
+        paymentStatus: bill.paymentStatus,
+        paymentMethod: bill.paymentMethod || null,
+        cashAmount,
+        onlineAmount,
+        walletAmount,
+        pendingPaymentAmount: mainPending,
+        amountReceived,
+        totalPaid: cashAmount + onlineAmount + walletAmount,
+        billAmount: bill.total,
+        notes: bill.notes || `Pending payment for invoice ${bill.invoiceNumber}`,
+        createdBy: req.user._id,
+      });
+
+      if (mainPending > 0) {
+        await PaymentHistory.create({
+          order: mainOrder._id,
+          orderId: mainOrder.orderId,
+          customer: customerIdToUse,
+          customerName: bill.customerName || 'Customer',
+          customerPhone: bill.customerPhone || '',
+          branch: targetBranch,
+          paymentMethod: bill.paymentMethod || null,
+          cashAmount,
+          onlineAmount,
+          walletAmount,
+          totalPaid: cashAmount + onlineAmount + walletAmount,
+          billAmount: bill.total,
+          pendingAmount: mainPending,
+          paymentStatus: bill.paymentStatus,
+          notes: bill.notes || `Pending payment for invoice ${bill.invoiceNumber}`,
+          createdBy: req.user._id,
+          paymentNumber: 1,
+        });
+
+        if (customerIdToUse) {
+          await Customer.findByIdAndUpdate(customerIdToUse, { $inc: { outstandingBalance: mainPending } });
+        }
+      }
+
+      const pendingPlayers = req.body.pendingPlayers || [];
+      const savedPendingPlayersList = [];
+
+      for (const player of pendingPlayers) {
+        const playerMobile = String(player.mobile || player.phone || '').replace(/\D/g, '').slice(0, 10);
+        const playerAmount = parseCurrencyValue(player.amount) || 0;
+        const playerName = (player.name && player.name.trim()) ? player.name.trim() : `Player (${playerMobile})`;
+        
+        if (playerMobile.length === 10 && playerAmount > 0) {
+          let playerCustomer = await Customer.findOne({ phone: playerMobile, isActive: true });
+          if (!playerCustomer) {
+            const playerCustId = await generateCustomerId(targetBranch);
+            playerCustomer = await Customer.create({
+              customerId: playerCustId,
+              name: playerName,
+              phone: playerMobile,
+              branch: targetBranch,
+            });
+          } else {
+            if (playerName && playerName.trim() !== '' && (playerCustomer.name.startsWith('Player (') || !playerCustomer.name)) {
+              playerCustomer.name = playerName.trim();
+              await playerCustomer.save();
+            }
+          }
+
+          const pOrderId = `${mainOrder.orderId}-P${savedPendingPlayersList.length + 1}`;
+
+          const playerOrder = await Order.create({
+            orderId: pOrderId,
+            customer: playerCustomer._id,
+            parentOrder: mainOrder._id,
+            parentOrderId: mainOrder.orderId,
+            branch: targetBranch,
+            session: sessionId || undefined,
+            bill: bill._id,
+            paymentStatus: 'unpaid',
+            paymentMethod: null,
+            cashAmount: 0,
+            onlineAmount: 0,
+            walletAmount: 0,
+            pendingPaymentAmount: playerAmount,
+            amountReceived: 0,
+            totalPaid: 0,
+            billAmount: playerAmount,
+            additionalPlayers: `Pending player payment for order ${mainOrder.orderId}`,
+            createdBy: req.user._id,
+          });
+
+          await PaymentHistory.create({
+            order: playerOrder._id,
+            orderId: playerOrder.orderId,
+            customer: playerCustomer._id,
+            customerName: playerCustomer.name,
+            customerPhone: playerCustomer.phone,
+            branch: targetBranch,
+            paymentMethod: null,
+            cashAmount: 0,
+            onlineAmount: 0,
+            walletAmount: 0,
+            totalPaid: 0,
+            billAmount: playerAmount,
+            pendingAmount: playerAmount,
+            paymentStatus: 'unpaid',
+            notes: `Pending player payment for order ${mainOrder.orderId}`,
+            createdBy: req.user._id,
+            paymentNumber: 1,
+          });
+
+          playerCustomer.outstandingBalance = (playerCustomer.outstandingBalance || 0) + playerAmount;
+          await playerCustomer.save();
+
+          savedPendingPlayersList.push({
+            id: playerOrder._id.toString(),
+            playerName,
+            name: playerName,
+            mobileNumber: playerMobile,
+            mobile: playerMobile,
+            pendingAmount: playerAmount,
+            amount: playerAmount,
+            orderId: pOrderId,
+            customerId: playerCustomer._id.toString(),
+          });
+        }
+      }
+
+      if (savedPendingPlayersList.length > 0) {
+        mainOrder.pendingPlayers = savedPendingPlayersList;
+        await mainOrder.save();
+      }
+    }
+  }
 
   // Update session with bill reference
   if (sessionId) {
@@ -157,8 +414,8 @@ exports.createBill = asyncHandler(async (req, res, next) => {
   }
 
   // Update customer spending
-  if (customerId) {
-    await Customer.findByIdAndUpdate(customerId, { $inc: { totalSpending: total } });
+  if (customerIdToUse) {
+    await Customer.findByIdAndUpdate(customerIdToUse, { $inc: { totalSpending: total } });
   }
 
   await logActivity({
@@ -171,15 +428,35 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     ipAddress: req.ip,
   });
 
-  const populated = await Bill.findById(bill._id).populate('customer', 'name phone').populate('branch', 'name');
+  const populated = await Bill.findById(bill._id)
+    .populate('customer', 'name phone')
+    .populate('branch', 'name')
+    .populate('menuCategoryId', 'name')
+    .populate('menuItemId', 'name');
   res.status(201).json({ success: true, data: { bill: populated } });
 });
 
 // POST /api/bills/:id/payment  — record payment against a bill
 exports.receivePayment = asyncHandler(async (req, res, next) => {
-  const { method, amount, breakdown = [], transactionRef } = req.body;
+  let { method, amount, breakdown = [], transactionRef } = req.body;
+  
+  if (!method || method === '') {
+    if (breakdown.length > 0 && breakdown[0].method) {
+      method = breakdown[0].method;
+    } else {
+      method = 'cash';
+    }
+  }
+
   const bill = await Bill.findById(req.params.id);
   if (!bill) return next(new AppError('Bill not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(bill.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
 
   // Check if bill is already fully paid based on recorded payments
   const existingPayments = await Payment.find({ bill: bill._id }).lean();
@@ -209,9 +486,11 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
 // GET /api/bills/:id/pdf  — stream PDF invoice
 exports.downloadPDF = asyncHandler(async (req, res, next) => {
   const bill = await Bill.findById(req.params.id)
-    .populate('customer', 'name phone walletBalance')
-    .populate('order', 'paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid additionalPlayers')
+    .populate('customer', 'name phone walletBalance createdAt')
+    .populate('order', 'orderId createdAt paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid additionalPlayers')
     .populate('branch', 'name address phone')
+    .populate('menuCategoryId', 'name')
+    .populate('menuItemId', 'name')
     .populate({
       path: 'session',
       populate: { path: 'table', select: 'name type' },  // nested populate, no second round-trip
@@ -220,12 +499,32 @@ exports.downloadPDF = asyncHandler(async (req, res, next) => {
     .lean();
   if (!bill) return next(new AppError('Bill not found.', 404));
 
-  const settings = await Settings.findOne().lean();
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(bill.branch?._id?.toString() || bill.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
+  const branchId = bill.branch?._id || bill.branch;
+  let settings = null;
+  if (branchId) {
+    settings = await Settings.findOne({ branch: branchId }).lean();
+  }
+  if (!settings) {
+    settings = await Settings.findOne({ branch: { $exists: false } }).lean();
+  }
+  if (!settings) {
+    settings = await Settings.findOne().lean();
+  }
+
   const pdfBuffer = await generateInvoicePDF(bill, settings || {});
+  const rawInvoiceNum = bill.order?.orderId || bill.invoiceNumber || 'invoice';
+  const safeFilename = rawInvoiceNum.replace(/[/\\?%*:|"<>]/g, '_');
 
   res.set({
     'Content-Type': 'application/pdf',
-    'Content-Disposition': `attachment; filename="${bill.invoiceNumber}.pdf"`,
+    'Content-Disposition': `attachment; filename="${safeFilename}.pdf"`,
     'Content-Length': pdfBuffer.length,
   });
   res.end(pdfBuffer);
@@ -233,10 +532,18 @@ exports.downloadPDF = asyncHandler(async (req, res, next) => {
 
 // GET /api/bills?branch=&page=&limit=&search=&sort=
 exports.getBills = asyncHandler(async (req, res) => {
-  const { ROLES } = require('../config/constants');
   const filter = {};
-  if (req.user.role !== ROLES.SUPER_ADMIN) filter.branch = { $in: req.user.branches };
-  if (req.query.branch) filter.branch = req.query.branch;
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      filter.branch = req.query.branch;
+    } else {
+      filter.branch = { $in: userBranchIds };
+    }
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
+  }
   if (req.query.status) filter.paymentStatus = req.query.status;
 
   // Search functionality — search on denormalized fields (no pre-lookup queries needed)
@@ -262,18 +569,20 @@ exports.getBills = asyncHandler(async (req, res) => {
 
   const [bills, total] = await Promise.all([
     Bill.find(filter)
-      .populate('customer', 'name phone')
+      .populate('customer', 'name phone walletBalance')
       .populate('branch', 'name')
       .populate('createdBy', 'name')
-      .populate({ 
-        path: 'session', 
-        populate: { 
-          path: 'table', 
-          select: 'name type' 
-        } 
+      .populate('order', 'orderId paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid pendingPlayers notes')
+      .populate('menuCategoryId', 'name')
+      .populate('menuItemId', 'name')
+      .populate({
+        path: 'session',
+        populate: [
+          { path: 'table', select: 'name type' },
+          { path: 'menuCategoryId', select: 'name' },
+          { path: 'menuItemId', select: 'name' }
+        ]
       })
-      .populate('session.menuCategoryId', 'name')
-      .populate('session.menuItemId', 'name')
       .sort(sortOption)
       .skip((page - 1) * limit)
       .limit(limit)
@@ -283,35 +592,64 @@ exports.getBills = asyncHandler(async (req, res) => {
 
   const calculatedTotalPages = Math.ceil(total / limit);
 
+  const formattedBills = bills.map((b) => ({
+    ...b,
+    invoiceNumber: b.order?.orderId || b.invoiceNumber,
+  }));
+
   res.status(200).json({
     success: true,
-    results: bills.length,
+    results: formattedBills.length,
     total,
     page,
     limit,
     totalPages: calculatedTotalPages,
     hasNextPage: page < calculatedTotalPages,
     hasPreviousPage: page > 1,
-    data: { bills },
+    data: { bills: formattedBills },
   });
 });
 
 // GET /api/bills/:id
 exports.getBill = asyncHandler(async (req, res, next) => {
   const bill = await Bill.findById(req.params.id)
-    .populate('customer', 'name phone')
+    .select('+paymentMethod +cashAmount +onlineAmount +walletAmount +amountReceived +pendingPaymentAmount +pendingPlayers +notes')
+    .populate('customer', 'name phone walletBalance')
     .populate('branch', 'name')
+    .populate('order', 'orderId paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid pendingPlayers notes')
+    .populate('menuCategoryId', 'name')
+    .populate('menuItemId', 'name')
     .populate({ path: 'session', populate: { path: 'table', select: 'name type' } })
     .populate('createdBy', 'name');
   if (!bill) return next(new AppError('Bill not found.', 404));
-  res.status(200).json({ success: true, data: { bill } });
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(bill.branch?._id?.toString() || bill.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+  
+  const billObj = bill.toObject();
+  if (billObj.order?.orderId) {
+    billObj.invoiceNumber = billObj.order.orderId;
+  }
+
+  res.status(200).json({ success: true, data: { bill: billObj } });
 });
 
 // PUT /api/bills/:id
 exports.updateBill = asyncHandler(async (req, res, next) => {
-  const { items, paymentStatus, total, subtotal, addedItems } = req.body;
+  const { items, paymentStatus, total, subtotal, addedItems, paymentMethod, cashAmount, onlineAmount, walletAmount, amountReceived, pendingPaymentAmount, pendingPlayers, notes } = req.body;
   const bill = await Bill.findById(req.params.id);
   if (!bill) return next(new AppError('Bill not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(bill.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
 
   if (items && Array.isArray(items)) {
     bill.items = items;
@@ -326,7 +664,42 @@ exports.updateBill = asyncHandler(async (req, res, next) => {
     bill.paymentStatus = paymentStatus;
   }
 
+  // Store payment details directly on Bill for session-based bills
+  if (paymentMethod !== undefined) bill.paymentMethod = paymentMethod;
+  if (cashAmount !== undefined) bill.cashAmount = Number(cashAmount) || 0;
+  if (onlineAmount !== undefined) bill.onlineAmount = Number(onlineAmount) || 0;
+  if (walletAmount !== undefined) bill.walletAmount = Number(walletAmount) || 0;
+  if (amountReceived !== undefined) bill.amountReceived = Number(amountReceived) || 0;
+  if (pendingPaymentAmount !== undefined) bill.pendingPaymentAmount = Number(pendingPaymentAmount) || 0;
+  if (Array.isArray(pendingPlayers)) bill.pendingPlayers = pendingPlayers;
+  if (notes !== undefined) bill.notes = notes;
+
   await bill.save();
+
+  // If associated order exists, update order payment details & pending players
+  let targetOrderId = bill.order;
+  if (!targetOrderId && bill.session) {
+    const sessionOrder = await Order.findOne({ session: bill.session });
+    if (sessionOrder) targetOrderId = sessionOrder._id;
+  }
+
+  if (targetOrderId) {
+    const orderObj = await Order.findById(targetOrderId);
+    if (orderObj) {
+      if (paymentMethod !== undefined) orderObj.paymentMethod = paymentMethod;
+      if (cashAmount !== undefined) orderObj.cashAmount = Number(cashAmount) || 0;
+      if (onlineAmount !== undefined) orderObj.onlineAmount = Number(onlineAmount) || 0;
+      if (walletAmount !== undefined) orderObj.walletAmount = Number(walletAmount) || 0;
+      if (amountReceived !== undefined) orderObj.amountReceived = Number(amountReceived) || 0;
+      if (pendingPaymentAmount !== undefined) orderObj.pendingPaymentAmount = Number(pendingPaymentAmount) || 0;
+      if (paymentStatus) orderObj.paymentStatus = paymentStatus;
+      if (notes !== undefined) orderObj.notes = notes;
+      if (Array.isArray(pendingPlayers)) orderObj.pendingPlayers = pendingPlayers;
+      orderObj.billAmount = bill.total;
+
+      await orderObj.save();
+    }
+  }
 
   // If associated session exists, sync session.addedItems with the updated beverages & accessories
   if (bill.session && Array.isArray(addedItems)) {
@@ -344,8 +717,9 @@ exports.updateBill = asyncHandler(async (req, res, next) => {
   });
 
   const populated = await Bill.findById(bill._id)
-    .populate('customer', 'name phone')
+    .populate('customer', 'name phone walletBalance')
     .populate('branch', 'name')
+    .populate('order', 'paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid pendingPlayers notes')
     .populate({ path: 'session', populate: { path: 'table', select: 'name type' } })
     .populate('createdBy', 'name');
 
@@ -387,6 +761,14 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
   
   if (!order) return next(new AppError('Order not found.', 404));
 
+  const targetBranch = order.branch?._id || order.branch;
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(targetBranch.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
   const customer = order.customer;
 
   // Build line items from order's billAmount
@@ -412,25 +794,33 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
   const tax = (subtotal * taxPercent) / 100;
   const total = subtotal + tax;
 
-  const invoiceNumber = await generateInvoiceNumber();
+  let bill = await Bill.findOne({ order: order._id });
+  if (bill) {
+    if (order.orderId && bill.invoiceNumber !== order.orderId) {
+      bill.invoiceNumber = order.orderId;
+      await bill.save();
+    }
+  } else {
+    const invoiceNumber = order.orderId || (await generateInvoiceNumber(targetBranch));
+    bill = await Bill.create({
+      invoiceNumber,
+      branch: order.branch._id || order.branch,
+      customer: customer._id,
+      order: order._id,
+      items,
+      subtotal,
+      tax,
+      total,
+      walletUsed: order.walletAmount || 0,
+      walletBalance: customer.walletBalance || 0,
+      paymentStatus: order.paymentStatus || 'unpaid',
+      createdBy: req.user._id,
+      createdAt: order.createdAt || undefined,
+    });
 
-  const bill = await Bill.create({
-    invoiceNumber,
-    branch: order.branch._id || order.branch,
-    customer: customer._id,
-    order: order._id,
-    items,
-    subtotal,
-    tax,
-    total,
-    walletUsed: order.walletAmount || 0,
-    walletBalance: customer.walletBalance || 0,
-    paymentStatus: order.paymentStatus || 'unpaid',
-    createdBy: req.user._id,
-  });
-
-  // Update customer spending
-  await Customer.findByIdAndUpdate(customer._id, { $inc: { totalSpending: total } });
+    // Update customer spending
+    await Customer.findByIdAndUpdate(customer._id, { $inc: { totalSpending: total } });
+  }
 
   await logActivity({
     userId: req.user._id,
@@ -438,10 +828,11 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
     action: 'bill.create',
     entity: 'Bill',
     entityId: bill._id,
-    description: `${req.user.name} created bill ${invoiceNumber} from order ${order.orderId} — ₹${total}`,
+    description: `${req.user.name} created bill ${bill.invoiceNumber} from order ${order.orderId} — ₹${total}`,
     ipAddress: req.ip,
   });
 
   const populated = await Bill.findById(bill._id).populate('customer', 'name phone walletBalance').populate('branch', 'name');
   res.status(201).json({ success: true, data: { bill: populated } });
 });
+

@@ -10,11 +10,25 @@ import {
   TableRow, TableHead, TableCell, Modal, useToast
 } from '@/components/ui';
 import { formatCurrency, formatDate, cn } from '@/utils';
+import PaymentForm, { PaymentFormValues } from '@/components/PaymentForm';
 
 const CATEGORIES = ['rent','electricity','salary','internet','maintenance','suppliers','others'];
 const COLORS = ['#3b82f6','#22c55e','#a855f7','#f59e0b','#ef4444','#06b6d4','#64748b'];
 
 const emptyForm = { title: '', category: 'others', amount: 0, date: new Date().toISOString().slice(0,10), notes: '', branch: '' };
+const initialPaymentForm: PaymentFormValues = {
+  paymentStatus: 'paid',
+  paymentMethod: '' as 'cash' | 'upi' | 'mixed' | 'wallet' | '',
+  cashAmount: '',
+  onlineAmount: '',
+  walletAmount: '',
+  amountReceived: '',
+  pendingPaymentAmount: '',
+  billAmount: '0',
+  addToWallet: false,
+  extraAmount: '',
+  walletBalance: 0,
+};
 
 export default function ExpensesPage() {
   const qc = useQueryClient();
@@ -22,7 +36,9 @@ export default function ExpensesPage() {
   const { selectedBranch } = useAppStore();
   const { user } = useAuthStore();
   const [modal, setModal] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...emptyForm });
+  const [paymentForm, setPaymentForm] = useState<PaymentFormValues>({ ...initialPaymentForm });
   const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); d.setDate(1); return d.toISOString().slice(0,10); });
   const [dateTo, setDateTo] = useState(() => new Date().toISOString().slice(0,10));
   const [searchParams, setSearchParams] = useState({ from: dateFrom, to: dateTo });
@@ -30,6 +46,9 @@ export default function ExpensesPage() {
 
   // Determine if user can select branch (Super Admin can, Branch Manager and Staff cannot)
   const canSelectBranch = user?.role === 'super_admin';
+
+  // Determine if user can view dashboard summary and pie chart (Super Admin and Admin only)
+  const canViewDashboard = user?.role === 'super_admin' || user?.role === 'admin';
 
   // Auto-assign branch for Branch Manager and Staff when opening modal
   useEffect(() => {
@@ -40,6 +59,16 @@ export default function ExpensesPage() {
   }, [modal, canSelectBranch, user]);
 
   const { data: branchData } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
+
+  // Fetch expense statistics for Super Admin and Branch Admin
+  const { data: statsData } = useQuery({
+    queryKey: ['expense-stats', selectedBranch],
+    queryFn: () => expenseService.getStats(selectedBranch ? { branch: selectedBranch } : undefined).then((r) => r.data),
+    enabled: user?.role === 'super_admin' || user?.role === 'branch_admin',
+    staleTime: 60_000,
+  });
+
+  const stats = (statsData as any)?.data || { today: 0, week: 0, month: 0, total: 0 };
 
   const params: Record<string, string> = { from: searchParams.from, to: searchParams.to };
   if (selectedBranch) params.branch = selectedBranch;
@@ -60,8 +89,14 @@ export default function ExpensesPage() {
 
   const createMutation = useMutation({
     mutationFn: (d: any) => expenseService.create(d),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['expenses'] }); toast.success('Expense added!'); setModal(false); setForm({ ...emptyForm }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['expenses'] }); toast.success('Expense added!'); setModal(false); setForm({ ...emptyForm }); setPaymentForm({ ...initialPaymentForm }); },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed'),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: any }) => expenseService.update(id, data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['expenses'] }); toast.success('Expense updated!'); setModal(false); setForm({ ...emptyForm }); setPaymentForm({ ...initialPaymentForm }); setEditId(null); },
+    onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to update expense'),
   });
 
   const deleteMutation = useMutation({
@@ -73,7 +108,48 @@ export default function ExpensesPage() {
     const branch = form.branch || selectedBranch;
     if (canSelectBranch && !branch) { toast.error('Select a branch'); return; }
     if (!canSelectBranch && !branch) { toast.error('Branch assignment error'); return; }
-    createMutation.mutate({ ...form, branch, amount: Number(form.amount) });
+    
+    const payload = { 
+      ...form, 
+      branch, 
+      amount: Number(form.amount),
+      paymentStatus: paymentForm.paymentStatus,
+      paymentMethod: paymentForm.paymentMethod,
+      cashAmount: Number(paymentForm.cashAmount) || 0,
+      onlineAmount: Number(paymentForm.onlineAmount) || 0,
+      walletAmount: 0,
+      totalPaid: (Number(paymentForm.cashAmount) || 0) + (Number(paymentForm.onlineAmount) || 0),
+      pendingAmount: Number(paymentForm.pendingPaymentAmount) || 0,
+    };
+
+    if (editId) {
+      updateMutation.mutate({ id: editId, data: payload });
+    } else {
+      createMutation.mutate(payload);
+    }
+  };
+
+  const handleEdit = (expense: Expense) => {
+    setEditId(expense._id);
+    setForm({
+      title: expense.title,
+      category: expense.category,
+      amount: expense.amount,
+      date: expense.date ? new Date(expense.date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+      notes: expense.notes || '',
+      branch: typeof expense.branch === 'string' ? expense.branch : expense.branch?._id || '',
+    });
+    setPaymentForm({
+      ...initialPaymentForm,
+      paymentStatus: expense.paymentStatus || 'paid',
+      paymentMethod: (expense.paymentMethod as any) || '',
+      cashAmount: expense.cashAmount ? String(expense.cashAmount) : expense.amount ? String(expense.amount) : '',
+      onlineAmount: expense.onlineAmount ? String(expense.onlineAmount) : '',
+      walletAmount: '0',
+      billAmount: String(expense.amount),
+      pendingPaymentAmount: expense.pendingAmount ? String(expense.pendingAmount) : '',
+    });
+    setModal(true);
   };
 
   const handleSearch = async () => {
@@ -90,9 +166,59 @@ export default function ExpensesPage() {
     <div className="space-y-3 sm:space-y-5 animate-fade-in">
       <PageHeader
         title="Expenses"
-        subtitle={`Total: ${formatCurrency(totalExpenses)}`}
-        actions={<Button size="sm" onClick={() => { setForm({ ...emptyForm }); setModal(true); }}>+ Add Expense</Button>}
+        subtitle={canViewDashboard ? `Total: ${formatCurrency(totalExpenses)}` : undefined}
+        actions={<Button size="sm" onClick={() => { setEditId(null); setForm({ ...emptyForm }); setPaymentForm({ ...initialPaymentForm }); setModal(true); }}>+ Add Expense</Button>}
       />
+
+      {/* Statistics Cards - Only for Super Admin and Branch Admin */}
+      {(user?.role === 'super_admin' || user?.role === 'branch_admin') && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-blue-500/5 to-blue-600/5 hover:from-blue-500/10 hover:to-blue-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Today</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.today}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-lg">
+                📅
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-green-500/5 to-green-600/5 hover:from-green-500/10 hover:to-green-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Week</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.week}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-green-500/10 flex items-center justify-center text-lg">
+                📊
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-purple-500/5 to-purple-600/5 hover:from-purple-500/10 hover:to-purple-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Month</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.month}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-purple-500/10 flex items-center justify-center text-lg">
+                📈
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-amber-500/5 to-amber-600/5 hover:from-amber-500/10 hover:to-amber-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Total</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.total}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-amber-500/10 flex items-center justify-center text-lg">
+                💸
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* Date range */}
       <div className="flex flex-wrap items-center gap-3">
@@ -110,8 +236,8 @@ export default function ExpensesPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
-        {/* Pie chart */}
-        {breakdown.length > 0 && (
+        {/* Pie chart - only visible for Super Admin and Admin */}
+        {canViewDashboard && breakdown.length > 0 && (
           <Card>
             <CardHeader className="pb-2 px-3 sm:px-6"><CardTitle className="text-sm sm:text-base">By Category</CardTitle></CardHeader>
             <CardContent className="px-3 sm:px-6">
@@ -141,11 +267,11 @@ export default function ExpensesPage() {
         )}
 
         {/* Expense table */}
-        <Card className="lg:col-span-2">
+        <Card className={canViewDashboard && breakdown.length > 0 ? 'lg:col-span-2' : 'lg:col-span-3'}>
           {isLoading ? (
             <div className="p-3 sm:p-4 space-y-3">{[...Array(5)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
           ) : expenses.length === 0 ? (
-            <EmptyState icon="💸" title="No expenses found" description="Add expenses to track your costs" action={<Button size="sm" onClick={() => setModal(true)}>+ Add Expense</Button>} />
+            <EmptyState icon="💸" title="No expenses found" description="Add expenses to track your costs" action={<Button size="sm" onClick={() => { setEditId(null); setForm({ ...emptyForm }); setPaymentForm({ ...initialPaymentForm }); setModal(true); }}>+ Add Expense</Button>} />
           ) : (
             <>
               {/* Desktop table */}
@@ -168,9 +294,12 @@ export default function ExpensesPage() {
                         <TableCell><span className="capitalize text-xs text-muted-foreground">{expense.category}</span></TableCell>
                         <TableCell className="font-bold text-red-400">{formatCurrency(expense.amount)}</TableCell>
                         <TableCell>
-                          <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10"
-                            onClick={() => { if (window.confirm('Delete this expense?')) deleteMutation.mutate(expense._id); }}
-                          >✕</Button>
+                          <div className="flex items-center gap-1">
+                            <Button size="sm" variant="ghost" onClick={() => handleEdit(expense)}>Edit</Button>
+                            <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10"
+                              onClick={() => { if (window.confirm('Delete this expense?')) deleteMutation.mutate(expense._id); }}
+                            >✕</Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -192,9 +321,12 @@ export default function ExpensesPage() {
                         <span className="capitalize">{expense.category}</span>
                       </div>
                     </div>
-                    <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10 shrink-0 h-8 w-8 p-0"
-                      onClick={() => { if (window.confirm('Delete this expense?')) deleteMutation.mutate(expense._id); }}
-                    >✕</Button>
+                    <div className="flex items-center gap-1">
+                      <Button size="sm" variant="ghost" onClick={() => handleEdit(expense)}>Edit</Button>
+                      <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10 shrink-0 h-8 w-8 p-0"
+                        onClick={() => { if (window.confirm('Delete this expense?')) deleteMutation.mutate(expense._id); }}
+                      >✕</Button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -203,33 +335,56 @@ export default function ExpensesPage() {
         </Card>
       </div>
 
-      {/* Add Expense Modal */}
-      <Modal open={modal} onClose={() => setModal(false)} title="Add Expense" size="md">
-        <div className="space-y-3">
-          <div className="space-y-1.5"><Label>Title *</Label><Input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} /></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label>Category *</Label>
-              <Select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}>
-                {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-              </Select>
+      {/* Add/Edit Expense Modal */}
+      <Modal open={modal} onClose={() => setModal(false)} title={editId ? "Edit Expense" : "Add Expense"} size="md">
+        <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-2">
+          <div className="space-y-3">
+            <div className="space-y-1.5"><Label>Title *</Label><Input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Category *</Label>
+                <Select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}>
+                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </Select>
+              </div>
+              <div className="space-y-1.5"><Label>Amount (₹) *</Label>
+                <Input type="number" step="0.01" min={0} value={form.amount} onChange={(e) => {
+                  const amount = Number(e.target.value);
+                  setForm((f) => ({ ...f, amount }));
+                  setPaymentForm((pf) => ({ ...pf, billAmount: String(amount), cashAmount: String(amount) }));
+                }} />
+              </div>
             </div>
-            <div className="space-y-1.5"><Label>Amount (₹) *</Label><Input type="number" step="0.01" min={0} value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: Number(e.target.value) }))} /></div>
+            <div className="space-y-1.5"><Label>Date</Label><Input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} /></div>
+            <div className="space-y-1.5"><Label>Notes</Label><Input value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} /></div>
+            {canSelectBranch && (
+              <div className="space-y-1.5">
+                <Label>Branch *</Label>
+                <Select value={form.branch} onChange={(e) => setForm((f) => ({ ...f, branch: e.target.value }))}>
+                  <option value="">Select branch</option>
+                  {(branchData || []).map((b: any) => <option key={b._id} value={b._id}>{b.name}</option>)}
+                </Select>
+              </div>
+            )}
           </div>
-          <div className="space-y-1.5"><Label>Date</Label><Input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} /></div>
-          <div className="space-y-1.5"><Label>Notes</Label><Input value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} /></div>
-          {canSelectBranch && (
-            <div className="space-y-1.5">
-              <Label>Branch *</Label>
-              <Select value={form.branch} onChange={(e) => setForm((f) => ({ ...f, branch: e.target.value }))}>
-                <option value="">Select branch</option>
-                {(branchData || []).map((b: any) => <option key={b._id} value={b._id}>{b.name}</option>)}
-              </Select>
-            </div>
-          )}
-          <div className="flex gap-2 pt-2">
+
+          <div className="pt-4 border-t border-border">
+            <h3 className="text-sm font-semibold mb-3">Payment Details</h3>
+            <PaymentForm
+              values={paymentForm}
+              onChange={setPaymentForm}
+              showBillAmountField={true}
+              readOnlyBillAmount={true}
+              hideWalletBalance={true}
+              hideAmountReceived={true}
+            />
+          </div>
+
+          <div className="flex gap-2 pt-4">
             <Button variant="outline" className="flex-1" onClick={() => setModal(false)}>Cancel</Button>
-            <Button className="flex-1" loading={createMutation.isPending} onClick={handleSave}>Add Expense</Button>
+            <Button className="flex-1" loading={createMutation.isPending || updateMutation.isPending} onClick={handleSave}>
+              {editId ? 'Update Expense' : 'Add Expense'}
+            </Button>
           </div>
         </div>
       </Modal>

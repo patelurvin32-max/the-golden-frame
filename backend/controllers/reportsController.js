@@ -9,27 +9,22 @@ const asyncHandler = require('../utils/asyncHandler');
 const ExcelJS = require('exceljs');
 const { ROLES } = require('../config/constants');
 
+const mongoose = require('mongoose');
+
 const branchFilter = (req) => {
-  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.branches?.length) {
-    return { $in: req.user.branches };
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      return new mongoose.Types.ObjectId(req.query.branch.toString());
+    }
+    return { $in: userBranchIds.map(id => new mongoose.Types.ObjectId(id)) };
   }
-  return req.query.branch ? req.query.branch : undefined;
+  return req.query.branch ? new mongoose.Types.ObjectId(req.query.branch.toString()) : undefined;
 };
 
-// GET /api/reports/dashboard?branch=
-exports.getDashboardStats = asyncHandler(async (req, res) => {
-  // Deny Staff access to dashboard
-  if (req.user.role === ROLES.STAFF) {
-    return res.status(403).json({ success: false, message: 'Access denied' });
-  }
-  const bf = branchFilter(req);
-  const matchBranch = bf ? { branch: bf } : {};
+const { getBusinessDayStart } = require('../utils/businessDay');
 
-  const now = new Date();
-  const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-  const monthStart = new Date(now); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
-  const yearStart  = new Date(now.getFullYear(), 0, 1);
-
+const getCollectionTotals = async (matchBranch, from, to) => {
   // Helper to extract a cash or upi amount from a payment doc (handles mixed breakdown)
   const cashExpr = {
     $cond: [
@@ -46,7 +41,60 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
     ]
   };
 
-  // ── 1 query for all Bill stats (was 6 separate Bill aggregates + 3 Order aggregates) ──
+  const [billPayments, directPayments, orderPayments] = await Promise.all([
+    Bill.aggregate([
+      { $match: { ...matchBranch, createdAt: { $gte: from, $lte: to } } },
+      {
+        $group: {
+          _id: null,
+          cash: { $sum: '$cashAmount' },
+          online: { $sum: '$onlineAmount' }
+        }
+      }
+    ]),
+    Payment.aggregate([
+      { $match: { ...matchBranch, createdAt: { $gte: from, $lte: to } } },
+      {
+        $group: {
+          _id: null,
+          cash: { $sum: cashExpr },
+          online: { $sum: onlineExpr }
+        }
+      }
+    ]),
+    Order.aggregate([
+      { $match: { ...matchBranch, session: { $exists: false }, createdAt: { $gte: from, $lte: to } } },
+      {
+        $group: {
+          _id: null,
+          cash: { $sum: '$cashAmount' },
+          online: { $sum: '$onlineAmount' }
+        }
+      }
+    ])
+  ]);
+
+  const totalCash = (billPayments[0]?.cash || 0) + (directPayments[0]?.cash || 0) + (orderPayments[0]?.cash || 0);
+  const totalOnline = (billPayments[0]?.online || 0) + (directPayments[0]?.online || 0) + (orderPayments[0]?.online || 0);
+
+  return { totalCash, totalOnline };
+};
+
+// GET /api/reports/dashboard?branch=
+exports.getDashboardStats = asyncHandler(async (req, res) => {
+  // Deny Staff access to dashboard
+  if (req.user.role === ROLES.STAFF) {
+    return res.status(403).json({ success: false, message: 'Access denied' });
+  }
+  const bf = branchFilter(req);
+  const matchBranch = bf ? { branch: bf } : {};
+
+  const now = new Date();
+  const todayStart = getBusinessDayStart(now);
+  const monthStart = new Date(now); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const yearStart  = new Date(now.getFullYear(), 0, 1);
+
+  // ── 1 query for all Bill stats ──
   const billStatsPromise = Bill.aggregate([
     { $match: { ...matchBranch } },
     {
@@ -62,20 +110,20 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
     },
   ]);
 
-  // ── 1 query for all Payment stats (was 4 separate Payment aggregates) ──
-  const paymentStatsPromise = Payment.aggregate([
-    { $match: { ...matchBranch, createdAt: { $gte: monthStart } } },
+  // ── 1 query for all Order stats (excluding session duplicates) ──
+  const orderStatsPromise = Order.aggregate([
+    { $match: { ...matchBranch, session: { $exists: false } } },
     {
       $facet: {
-        todayCash:    [{ $match: { createdAt: { $gte: todayStart } } }, { $group: { _id: null, v: { $sum: cashExpr   } } }],
-        monthCash:    [                                                  { $group: { _id: null, v: { $sum: cashExpr   } } }],
-        todayOnline:  [{ $match: { createdAt: { $gte: todayStart } } }, { $group: { _id: null, v: { $sum: onlineExpr } } }],
-        monthOnline:  [                                                  { $group: { _id: null, v: { $sum: onlineExpr } } }],
-      },
-    },
+        todayRevenue: [{ $match: { paymentStatus: 'paid', createdAt: { $gte: todayStart } } }, { $group: { _id: null, v: { $sum: '$billAmount' } } }],
+        monthRevenue: [{ $match: { paymentStatus: 'paid', createdAt: { $gte: monthStart } } }, { $group: { _id: null, v: { $sum: '$billAmount' } } }],
+        yearRevenue:  [{ $match: { paymentStatus: 'paid', createdAt: { $gte: yearStart  } } }, { $group: { _id: null, v: { $sum: '$billAmount' } } }],
+        outstanding:  [{ $match: { paymentStatus: { $in: ['unpaid', 'partial'] } } }, { $group: { _id: null, v: { $sum: '$pendingPaymentAmount' } } }],
+      }
+    }
   ]);
 
-  // ── 1 query for all Expense stats (was 2 separate Expense aggregates) ──
+  // ── 1 query for all Expense stats ──
   const expenseStatsPromise = Expense.aggregate([
     { $match: { ...matchBranch } },
     {
@@ -86,11 +134,11 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
     },
   ]);
 
-  // ── Remaining simple lookups, all run in parallel with the 3 above ──
-  const [billStats, paymentStats, expenseStats, tables, todayCustomers, walletResult, walletTxStats] =
+  // ── Remaining simple lookups, all run in parallel ──
+  const [billStats, orderStats, expenseStats, tables, todayCustomers, walletResult, walletTxStats, todayColl, monthColl] =
     await Promise.all([
       billStatsPromise,
-      paymentStatsPromise,
+      orderStatsPromise,
       expenseStatsPromise,
       Table.find({ ...(bf ? { branch: bf } : {}), isActive: true }).select('status').lean(),
       Session.countDocuments({ ...matchBranch, startTime: { $gte: todayStart } }),
@@ -104,6 +152,8 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
           },
         },
       ]),
+      getCollectionTotals(matchBranch, todayStart, now),
+      getCollectionTotals(matchBranch, monthStart, now),
     ]);
 
   // Helper to extract a facet value safely
@@ -112,15 +162,15 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
   const runningTables   = tables.filter((t) => t.status === 'running').length;
   const availableTables = tables.filter((t) => t.status === 'available').length;
 
-  const todayRev  = fv(billStats,    'todayRevenue');
-  const monthRev  = fv(billStats,    'monthRevenue');
-  const yearRev   = fv(billStats,    'yearRevenue');
+  const todayRev  = fv(billStats, 'todayRevenue') + fv(orderStats, 'todayRevenue');
+  const monthRev  = fv(billStats, 'monthRevenue') + fv(orderStats, 'monthRevenue');
+  const yearRev   = fv(billStats, 'yearRevenue')  + fv(orderStats, 'yearRevenue');
   const todayExp  = fv(expenseStats, 'today');
   const monthExp  = fv(expenseStats, 'month');
-  const todayCash    = fv(paymentStats, 'todayCash');
-  const monthCash    = fv(paymentStats, 'monthCash');
-  const todayOnline  = fv(paymentStats, 'todayOnline');
-  const monthOnline  = fv(paymentStats, 'monthOnline');
+  const todayCash    = todayColl.totalCash;
+  const monthCash    = monthColl.totalCash;
+  const todayOnline  = todayColl.totalOnline;
+  const monthOnline  = monthColl.totalOnline;
 
   res.status(200).json({
     success: true,
@@ -143,7 +193,7 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
         paid:               fv(billStats, 'todayPaid',    'n'),
         partial:            fv(billStats, 'todayPartial', 'n'),
         unpaid:             fv(billStats, 'todayUnpaid',  'n'),
-        outstandingBalance: fv(billStats, 'outstanding'),
+        outstandingBalance: fv(billStats, 'outstanding') + fv(orderStats, 'outstanding'),
       },
     },
   });
@@ -153,16 +203,30 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
 exports.getRevenueReport = asyncHandler(async (req, res) => {
   const bf = branchFilter(req);
   const matchBranch = bf ? { branch: bf } : {};
-  const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 30 * 86400000);
-  const to = req.query.to ? new Date(req.query.to) : new Date();
-  const groupBy = req.query.groupBy || 'day';
 
+  let from = new Date(Date.now() - 30 * 86400000);
+  if (req.query.from) {
+    from = new Date(req.query.from);
+    from.setHours(0, 0, 0, 0);
+  }
+  let to = new Date();
+  if (req.query.to) {
+    to = new Date(req.query.to);
+    to.setHours(23, 59, 59, 999);
+  }
+
+  const groupBy = req.query.groupBy || 'day';
   const dateFormat = groupBy === 'month' ? '%Y-%m' : groupBy === 'week' ? '%Y-%U' : '%Y-%m-%d';
 
-  const [revenue, expenses, cashTotal, onlineTotal, customerCount] = await Promise.all([
+  const [revenueBills, revenueOrders, expenses, customerCount, collections] = await Promise.all([
     Bill.aggregate([
       { $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: from, $lte: to } } },
       { $group: { _id: { $dateToString: { format: dateFormat, date: '$createdAt' } }, total: { $sum: '$total' }, count: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+    ]),
+    Order.aggregate([
+      { $match: { ...matchBranch, session: { $exists: false }, paymentStatus: 'paid', createdAt: { $gte: from, $lte: to } } },
+      { $group: { _id: { $dateToString: { format: dateFormat, date: '$createdAt' } }, total: { $sum: '$billAmount' }, count: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]),
     Expense.aggregate([
@@ -170,52 +234,33 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
       { $group: { _id: { $dateToString: { format: dateFormat, date: '$date' } }, total: { $sum: '$amount' } } },
       { $sort: { _id: 1 } },
     ]),
-    // Total cash payment
-    Payment.aggregate([
-      { $match: { ...matchBranch, createdAt: { $gte: from, $lte: to } } },
-      {
-        $addFields: {
-          cashAmount: {
-            $cond: [
-              { $eq: ['$method', 'mixed'] },
-              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'cash'] } } }, 0] },
-              { $cond: [{ $eq: ['$method', 'cash'] }, { amount: '$amount' }, { amount: 0 }]
-              }
-            ]
-          }
-        }
-      },
-      { $group: { _id: null, total: { $sum: '$cashAmount.amount' } } }
-    ]),
-    // Total online payment
-    Payment.aggregate([
-      { $match: { ...matchBranch, createdAt: { $gte: from, $lte: to } } },
-      {
-        $addFields: {
-          onlineAmount: {
-            $cond: [
-              { $eq: ['$method', 'mixed'] },
-              { $arrayElemAt: [{ $filter: { input: '$breakdown', cond: { $eq: ['$$this.method', 'upi'] } } }, 0] },
-              { $cond: [{ $eq: ['$method', 'upi'] }, { amount: '$amount' }, { amount: 0 }]
-              }
-            ]
-          }
-        }
-      },
-      { $group: { _id: null, total: { $sum: '$onlineAmount.amount' } } }
-    ]),
-    // Total customers
     Customer.countDocuments({ ...matchBranch, createdAt: { $gte: from, $lte: to } }),
+    getCollectionTotals(matchBranch, from, to)
   ]);
+
+  // Merge revenue from Bills and Orders by date
+  const revenueMap = {};
+  revenueBills.forEach((r) => {
+    revenueMap[r._id] = { _id: r._id, total: r.total, count: r.count };
+  });
+  revenueOrders.forEach((r) => {
+    if (revenueMap[r._id]) {
+      revenueMap[r._id].total += r.total;
+      revenueMap[r._id].count += r.count;
+    } else {
+      revenueMap[r._id] = { _id: r._id, total: r.total, count: r.count };
+    }
+  });
+  const mergedRevenue = Object.values(revenueMap).sort((a, b) => a._id.localeCompare(b._id));
 
   res.status(200).json({
     success: true,
     data: {
-      revenue,
+      revenue: mergedRevenue,
       expenses,
       summary: {
-        totalCash: cashTotal[0]?.total || 0,
-        totalOnline: onlineTotal[0]?.total || 0,
+        totalCash: collections.totalCash,
+        totalOnline: collections.totalOnline,
         totalCustomers: customerCount,
       }
     }
@@ -226,8 +271,17 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
 exports.getTableUsageReport = asyncHandler(async (req, res) => {
   const bf = branchFilter(req);
   const matchBranch = bf ? { branch: bf } : {};
-  const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 30 * 86400000);
-  const to = req.query.to ? new Date(req.query.to) : new Date();
+
+  let from = new Date(Date.now() - 30 * 86400000);
+  if (req.query.from) {
+    from = new Date(req.query.from);
+    from.setHours(0, 0, 0, 0);
+  }
+  let to = new Date();
+  if (req.query.to) {
+    to = new Date(req.query.to);
+    to.setHours(23, 59, 59, 999);
+  }
 
   const usage = await Session.aggregate([
     { $match: { ...matchBranch, status: 'completed', startTime: { $gte: from, $lte: to } } },
@@ -249,6 +303,10 @@ exports.getTableUsageReport = asyncHandler(async (req, res) => {
 
 // GET /api/reports/branch-comparison
 exports.getBranchComparison = asyncHandler(async (req, res) => {
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    return res.status(403).json({ success: false, message: 'Access denied. You do not have permission to view branch comparisons.' });
+  }
+
   const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
 
   try {
@@ -302,8 +360,16 @@ exports.getBranchComparison = asyncHandler(async (req, res) => {
 exports.exportExcel = asyncHandler(async (req, res) => {
   const bf = branchFilter(req);
   const matchBranch = bf ? { branch: bf } : {};
-  const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 30 * 86400000);
-  const to = req.query.to ? new Date(req.query.to) : new Date();
+  let from = new Date(Date.now() - 30 * 86400000);
+  if (req.query.from) {
+    from = new Date(req.query.from);
+    from.setHours(0, 0, 0, 0);
+  }
+  let to = new Date();
+  if (req.query.to) {
+    to = new Date(req.query.to);
+    to.setHours(23, 59, 59, 999);
+  }
   const type = req.query.type || 'revenue';
 
   const workbook = new ExcelJS.Workbook();
@@ -367,7 +433,9 @@ exports.exportExcel = asyncHandler(async (req, res) => {
     if (req.query.from || req.query.to) {
       matchStage.createdAt = {};
       if (req.query.from) {
-        matchStage.createdAt.$gte = new Date(req.query.from);
+        const fromDate = new Date(req.query.from);
+        fromDate.setHours(0, 0, 0, 0);
+        matchStage.createdAt.$gte = fromDate;
       }
       if (req.query.to) {
         const toDate = new Date(req.query.to);
@@ -396,6 +464,15 @@ exports.exportExcel = asyncHandler(async (req, res) => {
         },
       },
       { $unwind: { path: '$branchDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'tables',
+          localField: 'table',
+          foreignField: '_id',
+          as: 'tableDoc',
+        },
+      },
+      { $unwind: { path: '$tableDoc', preserveNullAndEmptyArrays: true } },
       {
         $lookup: {
           from: 'menucategories',
@@ -429,11 +506,13 @@ exports.exportExcel = asyncHandler(async (req, res) => {
           customerName: { $ifNull: ['$customerDoc.name', 'Walk-in'] },
           mobileNumber: { $ifNull: ['$customerDoc.phone', ''] },
           branchName: { $ifNull: ['$branchDoc.name', ''] },
-          menuCategory: { $ifNull: ['$menuCategoryDoc.name', ''] },
-          menuItem: { $ifNull: ['$menuItemDoc.name', ''] },
-          quantity: { $literal: 1 },
+          tableName: { $ifNull: ['$tableDoc.name', '—'] },
+          menuCategory: { $ifNull: ['$menuCategoryDoc.name', '—'] },
+          menuItem: { $ifNull: ['$menuItemDoc.name', '—'] },
+          quantity: { $ifNull: ['$quantity', 1] },
           billAmount: 1,
           amountReceived: 1,
+          pendingAmount: '$pendingPaymentAmount',
           walletUsed: '$walletAmount',
           walletAdded: {
             $cond: [
@@ -445,6 +524,8 @@ exports.exportExcel = asyncHandler(async (req, res) => {
           paymentMethod: 1,
           paymentStatus: 1,
           createdBy: { $ifNull: ['$createdByDoc.name', '—'] },
+          startTime: 1,
+          endTime: 1,
           createdAt: 1,
         },
       },
@@ -459,6 +540,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
             { customerName: searchRegex },
             { mobileNumber: searchRegex },
             { branchName: searchRegex },
+            { tableName: searchRegex },
             { menuCategory: searchRegex },
             { menuItem: searchRegex },
           ],
@@ -477,16 +559,20 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       { header: 'Customer Name', key: 'customerName', width: 20 },
       { header: 'Mobile Number', key: 'mobileNumber', width: 15 },
       { header: 'Branch Name', key: 'branchName', width: 15 },
+      { header: 'Table Name', key: 'tableName', width: 15 },
       { header: 'Menu Category', key: 'menuCategory', width: 15 },
       { header: 'Menu Item', key: 'menuItem', width: 20 },
       { header: 'Quantity', key: 'quantity', width: 10 },
       { header: 'Bill Amount', key: 'billAmount', width: 12 },
       { header: 'Amount Received', key: 'amountReceived', width: 15 },
+      { header: 'Pending Amount', key: 'pendingAmount', width: 15 },
       { header: 'Wallet Used', key: 'walletUsed', width: 12 },
       { header: 'Wallet Added', key: 'walletAdded', width: 12 },
       { header: 'Payment Method', key: 'paymentMethod', width: 15 },
       { header: 'Payment Status', key: 'paymentStatus', width: 15 },
       { header: 'Created By', key: 'createdBy', width: 15 },
+      { header: 'Start Time', key: 'startTime', width: 20 },
+      { header: 'End Time', key: 'endTime', width: 20 },
       { header: 'Created At', key: 'createdAt', width: 20 },
     ];
 
@@ -496,17 +582,104 @@ exports.exportExcel = asyncHandler(async (req, res) => {
         customerName: o.customerName,
         mobileNumber: o.mobileNumber,
         branchName: o.branchName,
+        tableName: o.tableName,
         menuCategory: o.menuCategory,
         menuItem: o.menuItem,
         quantity: o.quantity,
         billAmount: o.billAmount,
         amountReceived: o.amountReceived,
-        walletUsed: o.walletUsed,
-        walletAdded: o.walletAdded,
-        paymentMethod: o.paymentMethod,
+        pendingAmount: o.pendingAmount || 0,
+        walletUsed: o.walletUsed || 0,
+        walletAdded: o.walletAdded || 0,
+        paymentMethod: o.paymentMethod || '—',
         paymentStatus: o.paymentStatus,
         createdBy: o.createdBy,
+        startTime: o.startTime ? new Date(o.startTime).toLocaleString('en-IN') : '—',
+        endTime: o.endTime ? new Date(o.endTime).toLocaleString('en-IN') : '—',
         createdAt: o.createdAt ? new Date(o.createdAt).toLocaleString('en-IN') : '—',
+      });
+    });
+  } else if (type === 'pending_payments') {
+    const bf = branchFilter(req);
+    const matchStage = { isActive: { $ne: false }, pendingPaymentAmount: { $gt: 0 } };
+    if (bf) {
+      matchStage.branch = bf;
+    }
+    if (req.query.from || req.query.to) {
+      matchStage.createdAt = {};
+      if (req.query.from) {
+        const fromDate = new Date(req.query.from);
+        fromDate.setHours(0, 0, 0, 0);
+        matchStage.createdAt.$gte = fromDate;
+      }
+      if (req.query.to) {
+        const toDate = new Date(req.query.to);
+        toDate.setHours(23, 59, 59, 999);
+        matchStage.createdAt.$lte = toDate;
+      }
+    }
+
+    const pipeline = [
+      { $match: matchStage },
+      {
+        $lookup: {
+          from: 'customers',
+          localField: 'customer',
+          foreignField: '_id',
+          as: 'customerDoc',
+        },
+      },
+      { $unwind: { path: '$customerDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'branches',
+          localField: 'branch',
+          foreignField: '_id',
+          as: 'branchDoc',
+        },
+      },
+      { $unwind: { path: '$branchDoc', preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          orderId: 1,
+          customerName: { $ifNull: ['$customerDoc.name', 'Walk-in'] },
+          mobileNumber: { $ifNull: ['$customerDoc.phone', ''] },
+          branchName: { $ifNull: ['$branchDoc.name', ''] },
+          billAmount: 1,
+          amountPaid: '$amountReceived',
+          pendingAmount: '$pendingPaymentAmount',
+          paymentMethod: 1,
+          createdAt: 1,
+        },
+      },
+      { $sort: { createdAt: -1 } }
+    ];
+
+    const pending = await Order.aggregate(pipeline).allowDiskUse(true);
+
+    sheet.columns = [
+      { header: 'Order ID', key: 'orderId', width: 20 },
+      { header: 'Customer Name', key: 'customerName', width: 20 },
+      { header: 'Mobile Number', key: 'mobileNumber', width: 15 },
+      { header: 'Branch Name', key: 'branchName', width: 15 },
+      { header: 'Bill Amount', key: 'billAmount', width: 12 },
+      { header: 'Amount Paid', key: 'amountPaid', width: 12 },
+      { header: 'Pending Amount', key: 'pendingAmount', width: 15 },
+      { header: 'Payment Method', key: 'paymentMethod', width: 15 },
+      { header: 'Created At', key: 'createdAt', width: 20 },
+    ];
+
+    pending.forEach((p) => {
+      sheet.addRow({
+        orderId: p.orderId,
+        customerName: p.customerName,
+        mobileNumber: p.mobileNumber,
+        branchName: p.branchName,
+        billAmount: p.billAmount,
+        amountPaid: p.amountPaid,
+        pendingAmount: p.pendingAmount,
+        paymentMethod: p.paymentMethod || '—',
+        createdAt: p.createdAt ? new Date(p.createdAt).toLocaleString('en-IN') : '—',
       });
     });
   }
@@ -534,7 +707,9 @@ exports.getOrderDetailsReport = asyncHandler(async (req, res, next) => {
   if (req.query.from || req.query.to) {
     matchStage.createdAt = {};
     if (req.query.from) {
-      matchStage.createdAt.$gte = new Date(req.query.from);
+      const fromDate = new Date(req.query.from);
+      fromDate.setHours(0, 0, 0, 0);
+      matchStage.createdAt.$gte = fromDate;
     }
     if (req.query.to) {
       const toDate = new Date(req.query.to);
@@ -673,7 +848,9 @@ exports.getOrderSummaryReport = asyncHandler(async (req, res, next) => {
   if (req.query.from || req.query.to) {
     matchStage.createdAt = {};
     if (req.query.from) {
-      matchStage.createdAt.$gte = new Date(req.query.from);
+      const fromDate = new Date(req.query.from);
+      fromDate.setHours(0, 0, 0, 0);
+      matchStage.createdAt.$gte = fromDate;
     }
     if (req.query.to) {
       const toDate = new Date(req.query.to);

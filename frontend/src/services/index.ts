@@ -52,11 +52,12 @@ export const customerService = {
   getAll: (params?: Record<string, string>) => api.get<ApiResponse<{ customers: Customer[] }>>('/customers', { params }),
   getOne: (id: string) => api.get<ApiResponse<{ customer: Customer }>>(`/customers/${id}`),
   lookup: (phone: string, branch?: string) => api.get<ApiResponse<{ customer: Customer | null }>>(`/customers/lookup/${phone}`, { params: { ...branch ? { branch } : {}, _t: Date.now() } }),
-  create: (data: Partial<Customer>) => api.post<ApiResponse<{ customer: Customer }>>('/customers', data),
+  create: (data: Record<string, any>) => api.post<ApiResponse<{ customer: Customer }>>('/customers', data),
   update: (id: string, data: Partial<Customer>) => api.patch<ApiResponse<{ customer: Customer }>>(`/customers/${id}`, data),
   delete: (id: string) => api.delete(`/customers/${id}`),
   receivePayment: (id: string, data: Record<string, unknown>) => api.post<ApiResponse<{ customer: Customer }>>(`/customers/${id}/receive-payment`, data),
   getPaymentHistory: (id: string) => api.get<ApiResponse<{ paymentHistory: any[] }>>(`/customers/${id}/payment-history`),
+  getStats: (params?: Record<string, string>) => api.get<ApiResponse<{ today: number; week: number; month: number; total: number }>>('/customers/stats', { params }),
 };
 
 // ── Billing ───────────────────────────────────────────────────────────────────
@@ -68,6 +69,7 @@ export const billingService = {
   createFromCustomer: (customerId: string) => api.post<ApiResponse<{ bill: Bill }>>('/bills/from-customer', { customerId }),
   receivePayment: (id: string, data: Record<string, unknown>) => api.post<ApiResponse<{ bill: Bill }>>(`/bills/${id}/payment`, data),
   downloadPDF: (id: string) => api.get(`/bills/${id}/pdf`, { responseType: 'blob' }),
+  getStats: (params?: Record<string, string>) => api.get<ApiResponse<{ today: number; week: number; month: number; total: number }>>('/bills/stats', { params }),
 };
 
 // ── Expenses ──────────────────────────────────────────────────────────────────
@@ -76,6 +78,7 @@ export const expenseService = {
   create: (data: Partial<Expense>) => api.post<ApiResponse<{ expense: Expense }>>('/expenses', data),
   update: (id: string, data: Partial<Expense>) => api.patch<ApiResponse<{ expense: Expense }>>(`/expenses/${id}`, data),
   delete: (id: string) => api.delete(`/expenses/${id}`),
+  getStats: (params?: Record<string, string>) => api.get<ApiResponse<{ today: number; week: number; month: number; total: number }>>('/expenses/stats', { params }),
 };
 
 // ── Inventory ─────────────────────────────────────────────────────────────────
@@ -136,7 +139,7 @@ export const notificationService = {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 export const settingsService = {
-  get: () => api.get('/settings'),
+  get: (params?: Record<string, string>) => api.get('/settings', { params }),
   update: (data: Record<string, unknown>) => api.patch('/settings', data),
 };
 

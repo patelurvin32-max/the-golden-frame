@@ -7,16 +7,42 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { logActivity } = require('../services/activityLogService');
 
-const emitTableUpdate = async (req, table) => {
-  const populated = await Table.findById(table._id).populate({
-    path: 'currentSession',
-    populate: [
-      { path: 'menuCategoryId', select: 'name' },
-      { path: 'menuItemId', select: 'name price' },
-      { path: 'customer', select: 'name phone' }
-    ]
-  }).lean();
-  req.app.get('io')?.to(`branch:${table.branch}`).emit('table:updated', populated);
+const emitTableUpdate = (req, tableDoc, sessionDoc = null) => {
+  try {
+    const payload = {
+      _id: tableDoc._id,
+      name: tableDoc.name,
+      type: tableDoc.type,
+      branch: tableDoc.branch,
+      status: tableDoc.status,
+      isActive: tableDoc.isActive,
+      hourlyRate: tableDoc.hourlyRate,
+      currentSession: sessionDoc
+        ? {
+            _id: sessionDoc._id,
+            status: sessionDoc.status,
+            startTime: sessionDoc.startTime,
+            pauses: sessionDoc.pauses || [],
+            extendedMinutes: sessionDoc.extendedMinutes || 0,
+            hourlyRate: sessionDoc.hourlyRate,
+            extraPlayers: sessionDoc.extraPlayers,
+            addedItems: sessionDoc.addedItems || [],
+            menuCategoryId: sessionDoc.menuCategoryId,
+            menuItemId: sessionDoc.menuItemId,
+            menuCategory: sessionDoc.menuCategory,
+            menuItem: sessionDoc.menuItem,
+            customer: sessionDoc.customer,
+            customerName: sessionDoc.customerName,
+            phoneNumber: sessionDoc.phoneNumber,
+          }
+        : null,
+    };
+
+    req.app.get('io')?.to(`branch:${tableDoc.branch}`).emit('table:updated', payload);
+    console.log('[emitTableUpdate] Emitted table update for branch:', tableDoc.branch, 'table:', tableDoc.name, 'session status:', sessionDoc?.status);
+  } catch (err) {
+    console.error('[emitTableUpdate] Error:', err.message);
+  }
 };
 
 // POST /api/sessions/start  { tableId, customerId?, customerName?, phoneNumber?, extraPlayers? }
@@ -25,6 +51,14 @@ exports.startSession = asyncHandler(async (req, res, next) => {
 
   const table = await Table.findById(tableId);
   if (!table) return next(new AppError('Table not found.', 404));
+
+  if (req.user.role !== 'super_admin' && req.user.role !== 'admin') {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(table.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch.', 403));
+    }
+  }
+
   if (table.status !== 'available') {
     return next(new AppError(`Table is currently ${table.status} and cannot be started.`, 400));
   }
@@ -60,7 +94,7 @@ exports.startSession = asyncHandler(async (req, res, next) => {
     ipAddress: req.ip,
   });
 
-  await emitTableUpdate(req, table);
+  emitTableUpdate(req, table, session);
   res.status(201).json({ success: true, data: { session } });
 });
 
@@ -68,6 +102,14 @@ exports.startSession = asyncHandler(async (req, res, next) => {
 exports.pauseSession = asyncHandler(async (req, res, next) => {
   const session = await Session.findById(req.params.id);
   if (!session) return next(new AppError('Session not found.', 404));
+
+  if (req.user.role !== 'super_admin' && req.user.role !== 'admin') {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(session.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
   if (session.status !== 'running') return next(new AppError('Only running sessions can be paused.', 400));
 
   session.pauses.push({ pausedAt: new Date() });
@@ -78,7 +120,7 @@ exports.pauseSession = asyncHandler(async (req, res, next) => {
   // to display the correct paused UI state.
   const table = await Table.findById(session.table);
 
-  await emitTableUpdate(req, table);
+  emitTableUpdate(req, table, session);
   res.status(200).json({ success: true, data: { session } });
 });
 
@@ -86,6 +128,14 @@ exports.pauseSession = asyncHandler(async (req, res, next) => {
 exports.resumeSession = asyncHandler(async (req, res, next) => {
   const session = await Session.findById(req.params.id);
   if (!session) return next(new AppError('Session not found.', 404));
+
+  if (req.user.role !== 'super_admin' && req.user.role !== 'admin') {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(session.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
   if (session.status !== 'paused') return next(new AppError('Only paused sessions can be resumed.', 400));
 
   const lastPause = session.pauses[session.pauses.length - 1];
@@ -94,7 +144,7 @@ exports.resumeSession = asyncHandler(async (req, res, next) => {
   await session.save();
 
   const table = await Table.findById(session.table);
-  await emitTableUpdate(req, table);
+  emitTableUpdate(req, table, session);
 
   res.status(200).json({ success: true, data: { session } });
 });
@@ -107,11 +157,18 @@ exports.extendSession = asyncHandler(async (req, res, next) => {
   const session = await Session.findById(req.params.id);
   if (!session) return next(new AppError('Session not found.', 404));
 
+  if (req.user.role !== 'super_admin' && req.user.role !== 'admin') {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(session.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
   session.extendedMinutes += minutes;
   await session.save();
 
   const table = await Table.findById(session.table);
-  await emitTableUpdate(req, table);
+  emitTableUpdate(req, table, session);
 
   res.status(200).json({ success: true, data: { session } });
 });
@@ -119,13 +176,23 @@ exports.extendSession = asyncHandler(async (req, res, next) => {
 // PATCH /api/sessions/:id/transfer  { customerId }
 exports.transferCustomer = asyncHandler(async (req, res, next) => {
   const { customerId } = req.body;
-  const session = await Session.findByIdAndUpdate(
+  const session = await Session.findById(req.params.id);
+  if (!session) return next(new AppError('Session not found.', 404));
+
+  if (req.user.role !== 'super_admin' && req.user.role !== 'admin') {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(session.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
+  const updatedSession = await Session.findByIdAndUpdate(
     req.params.id,
     { customer: customerId },
     { new: true }
   );
-  if (!session) return next(new AppError('Session not found.', 404));
-  res.status(200).json({ success: true, data: { session } });
+  if (!updatedSession) return next(new AppError('Session not found.', 404));
+  res.status(200).json({ success: true, data: { session: updatedSession } });
 });
 
 // PATCH /api/sessions/:id/stop
@@ -135,7 +202,17 @@ exports.transferCustomer = asyncHandler(async (req, res, next) => {
 exports.stopSession = asyncHandler(async (req, res, next) => {
   const session = await Session.findById(req.params.id);
   if (!session) return next(new AppError('Session not found.', 404));
-  if (session.status === 'completed') return next(new AppError('Session already completed.', 400));
+
+  if (req.user.role !== 'super_admin' && req.user.role !== 'admin') {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(session.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
+  if (session.status === 'completed') {
+    return res.status(200).json({ success: true, message: 'Session already completed.', data: { session } });
+  }
 
   // Close any open pause
   const lastPause = session.pauses[session.pauses.length - 1];
@@ -166,7 +243,7 @@ exports.stopSession = asyncHandler(async (req, res, next) => {
     ipAddress: req.ip,
   });
 
-  await emitTableUpdate(req, table);
+  emitTableUpdate(req, table, null);
   res.status(200).json({
     success: true,
     data: {
@@ -188,14 +265,29 @@ exports.getSession = asyncHandler(async (req, res, next) => {
     .populate('menuItemId', 'name price')
     .lean();
   if (!session) return next(new AppError('Session not found.', 404));
+
+  if (req.user.role !== 'super_admin' && req.user.role !== 'admin') {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(session.branch?._id?.toString() || session.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
   res.status(200).json({ success: true, data: { session } });
 });
 
 // GET /api/sessions/live?branch=...
 exports.getLiveSessions = asyncHandler(async (req, res) => {
   const filter = { status: { $in: ['running', 'paused'] } };
-  if (req.query.branch) filter.branch = req.query.branch;
-  else if (req.user.role !== 'super_admin') filter.branch = { $in: req.user.branches };
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  if (req.user.role !== 'super_admin' && req.user.role !== 'admin') {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      filter.branch = req.query.branch;
+    } else {
+      filter.branch = { $in: userBranchIds };
+    }
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
+  }
 
   const sessions = await Session.find(filter)
     .populate('table', 'name type hourlyRate')
@@ -217,6 +309,13 @@ exports.updateSessionMenu = asyncHandler(async (req, res, next) => {
 
   const session = await Session.findById(req.params.id);
   if (!session) return next(new AppError('Session not found.', 404));
+
+  if (req.user.role !== 'super_admin' && req.user.role !== 'admin') {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(session.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
 
   const [menuCategoryDoc, menuItemDoc] = await Promise.all([
     MenuCategory.findById(menuCategoryId),
@@ -262,7 +361,7 @@ exports.updateSessionMenu = asyncHandler(async (req, res, next) => {
   await session.save();
 
   const table = await Table.findById(session.table);
-  await emitTableUpdate(req, table);
+  emitTableUpdate(req, table, session);
 
   res.status(200).json({ success: true, data: { session } });
 });

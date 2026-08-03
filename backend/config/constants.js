@@ -6,6 +6,7 @@
 const ROLES = {
   SUPER_ADMIN: 'super_admin',
   ADMIN: 'admin',
+  BRANCH_ADMIN: 'branch_admin',
   BRANCH_MANAGER: 'branch_manager',
   STAFF: 'staff',
   CASHIER: 'cashier',
@@ -29,9 +30,12 @@ const PERMISSIONS = {
     'attendance:manage',
     'reports:view',
     'menu:manage',
+    'menu:delete',
     'menu:view',
     'bookings:manage',
     'bookings:delete',
+    'staff:view',
+    'staff:manage',
   ],
   [ROLES.BRANCH_MANAGER]: [
     'dashboard:view',
@@ -48,6 +52,8 @@ const PERMISSIONS = {
     'menu:manage',
     'menu:view',
     'bookings:manage',
+    'staff:view',
+    'staff:manage',
   ],
   [ROLES.STAFF]: [
     'tables:view',

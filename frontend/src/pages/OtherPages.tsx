@@ -202,9 +202,10 @@ type StaffFormState = {
   employmentStatus: string;
   notes: string;
   password: string;
-  role: 'branch_manager' | 'staff' | 'cashier';
+  role: 'branch_manager' | 'branch_admin' | 'staff' | 'cashier';
   branches: string[];
   isActive: boolean;
+  permissions: string[];
 };
 
 const createEmptyStaffForm = (): StaffFormState => ({
@@ -220,6 +221,7 @@ const createEmptyStaffForm = (): StaffFormState => ({
   role: 'staff',
   branches: [],
   isActive: true,
+  permissions: [],
 });
 
 const staffFormFromUser = (user: User): StaffFormState => ({
@@ -232,9 +234,10 @@ const staffFormFromUser = (user: User): StaffFormState => ({
   employmentStatus: user.employmentStatus || 'active',
   notes: user.notes || '',
   password: '',
-  role: user.role === 'branch_manager' || user.role === 'cashier' ? user.role : 'staff',
+  role: (user.role === 'branch_manager' || user.role === 'branch_admin' || user.role === 'cashier' || user.role === 'staff') ? user.role : 'staff',
   branches: (user.branches || []).map((b: any) => (typeof b === 'string' ? b : b._id)),
   isActive: user.isActive,
+  permissions: user.permissions || [],
 });
 
 const PencilIcon = () => (
@@ -248,6 +251,96 @@ const PencilIcon = () => (
     />
   </svg>
 );
+const MODULE_PERMISSIONS = [
+  {
+    module: 'Dashboard',
+    permissions: [
+      { key: 'dashboard:view', label: 'View Dashboard' }
+    ]
+  },
+  {
+    module: 'Live Tables',
+    permissions: [
+      { key: 'tables:view', label: 'View Tables' },
+      { key: 'tables:operate', label: 'Operate Tables (Start/Stop Sessions)' }
+    ]
+  },
+  {
+    module: 'Billing',
+    permissions: [
+      { key: 'billing:manage', label: 'Manage Billing (Create Bills, Receive Payments)' }
+    ]
+  },
+  {
+    module: 'Reservations / Bookings',
+    permissions: [
+      { key: 'bookings:manage', label: 'Manage Reservations' },
+      { key: 'bookings:delete', label: 'Delete Reservations' }
+    ]
+  },
+  {
+    module: 'Customers',
+    permissions: [
+      { key: 'customers:view', label: 'View Customers' },
+      { key: 'customers:create', label: 'Create Customers' },
+      { key: 'customers:manage', label: 'Manage Customers (Edit/Delete)' }
+    ]
+  },
+  {
+    module: 'Expenses',
+    permissions: [
+      { key: 'expenses:manage', label: 'Manage Expenses' }
+    ]
+  },
+  {
+    module: 'Inventory',
+    permissions: [
+      { key: 'inventory:manage', label: 'Manage Inventory' }
+    ]
+  },
+  {
+    module: 'Menu',
+    permissions: [
+      { key: 'menu:view', label: 'View Menu' },
+      { key: 'menu:manage', label: 'Manage Menu Items/Categories' },
+      { key: 'menu:delete', label: 'Delete Menu Items/Categories' }
+    ]
+  },
+  {
+    module: 'Reports',
+    permissions: [
+      { key: 'reports:view', label: 'View Reports' }
+    ]
+  },
+  {
+    module: 'Attendance',
+    permissions: [
+      { key: 'attendance:manage', label: 'Manage Staff Attendance' }
+    ]
+  },
+  {
+    module: 'Staff Management',
+    permissions: [
+      { key: 'staff:view', label: 'View Staff Accounts' },
+      { key: 'staff:manage', label: 'Manage Staff Accounts (Create/Edit/Deactivate)' }
+    ]
+  }
+];
+
+const canEditUser = (currentUser: any, targetUser: any) => {
+  if (!currentUser) return false;
+  if (targetUser.role === 'super_admin') return false; // nobody can edit super_admin
+  if (currentUser.role === 'super_admin') return true; // super_admin can edit anybody else
+  if (currentUser.role === 'admin') {
+    // admin can edit anyone except super_admin
+    return targetUser.role !== 'super_admin';
+  }
+  if (currentUser.role === 'branch_manager') {
+    // branch_manager can edit staff/cashiers, but not super_admin, admin, or branch_admin
+    return targetUser.role !== 'branch_admin' && targetUser.role !== 'admin';
+  }
+  return false;
+};
 
 export function UsersPage() {
   const qc = useQueryClient();
@@ -296,7 +389,7 @@ export function UsersPage() {
 
   const users: User[] = data || [];
   const branches: Branch[] = branchesData || [];
-  const roleColor: Record<string, string> = { super_admin: 'default', branch_manager: 'info', staff: 'outline', cashier: 'warning' };
+  const roleColor: Record<string, string> = { super_admin: 'default', branch_admin: 'success', branch_manager: 'info', staff: 'outline', cashier: 'warning' };
 
   const openCreateModal = () => {
     setSelectedUser(null);
@@ -338,6 +431,7 @@ export function UsersPage() {
       role: form.role,
       branches: !isSuperAdminOrAdmin && managerBranchId ? [managerBranchId] : form.branches,
       isActive: form.isActive,
+      permissions: form.role === 'branch_admin' ? form.permissions : undefined,
     };
 
     if (form.password.trim()) {
@@ -348,6 +442,14 @@ export function UsersPage() {
   };
 
   const handleSave = () => {
+    if (form.role === 'branch_admin') {
+      const formBranches = !isSuperAdminOrAdmin && managerBranchId ? [managerBranchId] : form.branches;
+      if (!formBranches || formBranches.length !== 1) {
+        toast.error('A Branch Admin must always be assigned to exactly one branch.');
+        return;
+      }
+    }
+
     const payload = buildPayload();
     if (modalMode === 'edit' && selectedUser) {
       updateMutation.mutate({ id: selectedUser._id, data: payload });
@@ -390,13 +492,13 @@ export function UsersPage() {
                         <TableCell><Badge variant={user.isActive ? 'success' : 'danger'}>{user.isActive ? 'Active' : 'Inactive'}</Badge></TableCell>
                         <TableCell>
                           <div className="flex flex-wrap gap-2">
-                            {user.role !== 'super_admin' && (
+                            {canEditUser(currentUser, user) && (
                               <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300" onClick={() => openEditModal(user)}>
                                 <PencilIcon />
                                 Edit
                               </Button>
                             )}
-                            {user.isActive && user.role !== 'super_admin' && (
+                            {user.isActive && canEditUser(currentUser, user) && (
                               <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-300"
                                 onClick={() => { if (window.confirm('Deactivate this user?')) deactivateMutation.mutate(user._id); }}
                               >
@@ -425,7 +527,7 @@ export function UsersPage() {
                     {(user.branches as any[]).length > 0 && (
                       <p className="text-xs text-muted-foreground mt-0.5">{(user.branches as any[]).map((b: any) => b.name || b).join(', ')}</p>
                     )}
-                    {user.role !== 'super_admin' && (
+                    {canEditUser(currentUser, user) && (
                       <div className="flex gap-2 mt-2">
                         <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300 h-8 text-xs px-2" onClick={() => openEditModal(user)}>
                           <PencilIcon />
@@ -492,13 +594,14 @@ export function UsersPage() {
               </div>
             </div>
             <div className="space-y-1.5">
-            <Label>Role *</Label>
-            <Select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as StaffFormState['role'] }))}>
-              <option value="branch_manager">Branch Manager</option>
-              <option value="staff">Staff</option>
-              <option value="cashier">Cashier</option>
-            </Select>
-          </div>
+              <Label>Role *</Label>
+              <Select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as StaffFormState['role'] }))}>
+                {isSuperAdminOrAdmin && <option value="branch_admin">Branch Admin</option>}
+                <option value="branch_manager">Branch Manager</option>
+                <option value="staff">Staff</option>
+                <option value="cashier">Cashier</option>
+              </Select>
+            </div>
             <div className="space-y-1.5">
               <Label>Salary</Label>
               <Input type="number" min={0} value={form.salary} onChange={(e) => setForm((f) => ({ ...f, salary: e.target.value }))} />
@@ -523,6 +626,47 @@ export function UsersPage() {
                 <option value="inactive">Inactive</option>
               </Select>
             </div>
+            {form.role === 'branch_admin' && (
+              <div className="col-span-1 lg:col-span-2 space-y-2 border-t border-border pt-4">
+                <Label className="text-base font-semibold text-foreground">Branch Admin Permissions</Label>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Configure granular access permissions for this Branch Admin. Only configurable by Super Admin.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {MODULE_PERMISSIONS.map((group) => (
+                    <div key={group.module} className="rounded-xl border border-border p-3 space-y-2 bg-accent/10">
+                      <span className="font-semibold text-xs text-muted-foreground uppercase tracking-wider">{group.module}</span>
+                      <div className="space-y-1.5">
+                        {group.permissions.map((p) => {
+                          const checked = form.permissions.includes(p.key);
+                          const disabled = currentUser?.role !== 'super_admin';
+                          return (
+                            <label key={p.key} className={cn("flex items-start gap-2 text-sm", disabled ? "opacity-70 cursor-not-allowed" : "cursor-pointer")}>
+                              <input
+                                type="checkbox"
+                                className="rounded mt-0.5"
+                                checked={checked}
+                                disabled={disabled}
+                                onChange={(e) => {
+                                  if (disabled) return;
+                                  setForm((f) => ({
+                                    ...f,
+                                    permissions: e.target.checked
+                                      ? [...f.permissions, p.key]
+                                      : f.permissions.filter((k) => k !== p.key)
+                                  }));
+                                }}
+                              />
+                              <span>{p.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -543,12 +687,15 @@ export function UsersPage() {
                 {branches.map((b) => (
                   <label key={b._id} className="flex items-center gap-2 text-sm cursor-pointer rounded-xl border border-border px-3 py-2">
                     <input
-                      type="checkbox"
+                      type={form.role === 'branch_admin' ? 'radio' : 'checkbox'}
+                      name={form.role === 'branch_admin' ? 'branch_admin_branch' : undefined}
                       className="rounded"
                       checked={form.branches.includes(b._id)}
                       onChange={(e) => setForm((f) => ({
                         ...f,
-                        branches: e.target.checked ? [...f.branches, b._id] : f.branches.filter((id) => id !== b._id),
+                        branches: form.role === 'branch_admin'
+                          ? (e.target.checked ? [b._id] : [])
+                          : (e.target.checked ? [...f.branches, b._id] : f.branches.filter((id) => id !== b._id)),
                       }))}
                     />
                     {b.name}

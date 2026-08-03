@@ -3,7 +3,7 @@ const { MEMBERSHIP_TIERS } = require('../config/constants');
 
 const customerSchema = new mongoose.Schema(
   {
-    customerId: { type: String, required: true, unique: true },
+    customerId: { type: String, required: true },
     name: { type: String, required: true, trim: true },
     phone: { type: String, required: true, trim: true },
     email: { type: String, trim: true, lowercase: true },
@@ -38,7 +38,8 @@ const customerSchema = new mongoose.Schema(
 );
 
 // Indexes for performance
-customerSchema.index({ phone: 1 }, { unique: true });
+customerSchema.index({ branch: 1, customerId: 1 }, { unique: true });
+customerSchema.index({ branch: 1, phone: 1 }, { unique: true });
 customerSchema.index({ name: 'text', phone: 'text', email: 'text' });
 customerSchema.index({ name: 1 });
 customerSchema.index({ email: 1 });

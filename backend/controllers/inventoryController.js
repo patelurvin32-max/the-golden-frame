@@ -12,10 +12,17 @@ exports.getInventory = asyncHandler(async (req, res) => {
   const skip = (page - 1) * limit;
 
   const filter = { isActive: true };
-  if (req.user.role !== ROLES.SUPER_ADMIN) {
-    filter.branch = { $in: req.user.branches };
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      filter.branch = req.query.branch;
+    } else {
+      filter.branch = { $in: userBranchIds };
+    }
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
   }
-  if (req.query.branch) filter.branch = req.query.branch;
   if (req.query.category && req.query.category !== 'all') {
     // If it's a mongoId, filter directly
     filter.category = req.query.category;
@@ -104,7 +111,7 @@ exports.getCategories = asyncHandler(async (req, res) => {
   if (req.query.activeOnly === 'true') {
     filter.status = 'Active';
   }
-  if (req.user.role !== ROLES.SUPER_ADMIN) {
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
     filter.branch = { $in: req.user.branches };
   }
   const categories = await InventoryCategory.find(filter).sort('name').lean();
@@ -264,7 +271,7 @@ exports.checkLowStock = async (inventoryId) => {
       type: 'low_inventory',
       title: 'Low Stock Alert',
       message: `${item.name} is running low (${item.currentStock} ${item.unit} remaining).`,
-      targetRoles: ['super_admin', 'branch_manager'],
+      targetRoles: ['super_admin', ROLES.BRANCH_ADMIN, 'branch_manager'],
       meta: { inventoryId: item._id.toString() },
     });
   }

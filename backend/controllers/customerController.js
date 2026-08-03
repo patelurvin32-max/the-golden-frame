@@ -1,9 +1,11 @@
 const Customer = require('../models/Customer');
 const Order = require('../models/Order');
 const OrderCounter = require('../models/OrderCounter');
+const CustomerCounter = require('../models/CustomerCounter');
 const WalletTransaction = require('../models/WalletTransaction');
 const PaymentHistory = require('../models/PaymentHistory');
 const { Inventory, MenuItem, StockTransaction } = require('../models/Operations');
+const Branch = require('../models/Branch');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ROLES } = require('../config/constants');
@@ -19,53 +21,218 @@ const parseCurrencyValue = (value) => {
 const { getBusinessDayDateString } = require('../utils/businessDay');
 
 // Helper function to generate custom Order ID with thread-safety using atomic counter
-const generateOrderId = async (date = new Date()) => {
+const generateOrderId = async (branchId, date = new Date()) => {
   const dateStr = getBusinessDayDateString(date);
 
-  try {
-    // Use findOneAndUpdate with atomic increment to prevent race conditions
-    const counter = await OrderCounter.findOneAndUpdate(
-      { date: dateStr },
-      { $inc: { sequence: 1 } },
+  let attempts = 0;
+  while (attempts < 50) {
+    attempts++;
+    try {
+      const counter = await OrderCounter.findOneAndUpdate(
+        { branch: branchId, date: dateStr },
+        { $inc: { sequence: 1 } },
+        { new: true, upsert: true }
+      );
+
+      if (!counter) {
+        throw new Error('Failed to generate order counter');
+      }
+
+      const sequence = counter.sequence;
+      const sequenceStr = String(sequence).padStart(4, '0');
+      const orderId = `${dateStr}/${sequenceStr}`;
+
+      const exists = await Order.findOne({ branch: branchId, orderId });
+      if (!exists) {
+        return orderId;
+      }
+    } catch (error) {
+      console.error('Error generating order ID:', error);
+    }
+  }
+
+  const timestamp = Date.now();
+  const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+  return `${dateStr}/${timestamp}-${random}`;
+};
+
+// Helper function to generate Customer ID atomically
+const generateCustomerId = async (branchId) => {
+  let counterKey = 'customer_seq';
+  if (branchId) {
+    counterKey = `customer_seq_${branchId}`;
+  }
+
+  let attempts = 0;
+  while (attempts < 50) {
+    attempts++;
+    const counter = await CustomerCounter.findByIdAndUpdate(
+      counterKey,
+      { $inc: { seq: 1 } },
       { new: true, upsert: true }
     );
+    const customerId = `CUST${String(counter.seq).padStart(6, '0')}`;
 
-    if (!counter) {
-      throw new Error('Failed to generate order counter');
+    const exists = await Customer.findOne({ branch: branchId, customerId });
+    if (!exists) {
+      return customerId;
+    }
+  }
+
+  return `CUST${Date.now()}`;
+};
+
+// Helper function to enrich order document with pendingPlayers list
+const batchEnrichOrdersWithPendingPlayers = async (orders) => {
+  if (!orders || orders.length === 0) return [];
+
+  const ordersNeedingSubOrders = orders.filter(
+    (o) => !o.pendingPlayers || o.pendingPlayers.length === 0
+  );
+
+  const subOrdersByParent = new Map();
+  if (ordersNeedingSubOrders.length > 0) {
+    const parentIds = ordersNeedingSubOrders.map((o) => o._id).filter(Boolean);
+    const parentOrderIds = ordersNeedingSubOrders.map((o) => o.orderId).filter(Boolean);
+
+    const subOrders = await Order.find({
+      $or: [
+        { parentOrder: { $in: parentIds } },
+        { parentOrderId: { $in: parentOrderIds } },
+      ],
+      isActive: true,
+    }).populate('customer', 'name phone').lean();
+
+    subOrders.forEach((so) => {
+      const key1 = so.parentOrder ? String(so.parentOrder) : null;
+      const key2 = so.parentOrderId ? String(so.parentOrderId) : null;
+      if (key1) {
+        if (!subOrdersByParent.has(key1)) subOrdersByParent.set(key1, []);
+        subOrdersByParent.get(key1).push(so);
+      }
+      if (key2 && key2 !== key1) {
+        if (!subOrdersByParent.has(key2)) subOrdersByParent.set(key2, []);
+        subOrdersByParent.get(key2).push(so);
+      }
+    });
+  }
+
+  return orders.map((orderDoc) => {
+    let pendingPlayers = orderDoc.pendingPlayers || [];
+    if (!pendingPlayers || pendingPlayers.length === 0) {
+      const matched =
+        subOrdersByParent.get(String(orderDoc._id)) ||
+        subOrdersByParent.get(String(orderDoc.orderId)) ||
+        [];
+
+      if (matched.length > 0) {
+        pendingPlayers = matched.map((so) => ({
+          id: (so.customer?._id || so._id || '').toString(),
+          playerName: so.customer?.name || 'Player',
+          name: so.customer?.name || 'Player',
+          mobileNumber: so.customer?.phone || '',
+          mobile: so.customer?.phone || '',
+          pendingAmount: so.billAmount || so.pendingPaymentAmount || 0,
+          amount: so.billAmount || so.pendingPaymentAmount || 0,
+          orderId: so.orderId,
+        }));
+      }
     }
 
-    const sequence = counter.sequence;
-    const sequenceStr = String(sequence).padStart(4, '0');
-    return `${dateStr}/${sequenceStr}`;
-  } catch (error) {
-    console.error('Error generating order ID:', error);
-    // Fallback: use timestamp-based ID if OrderCounter fails
-    const timestamp = Date.now();
-    const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-    return `${dateStr}/${timestamp}-${random}`;
-  }
+    const formattedPlayers = (pendingPlayers || []).map((p) => ({
+      id: (p.id || p._id || '').toString(),
+      playerName: p.playerName || p.name || '',
+      name: p.name || p.playerName || '',
+      mobileNumber: p.mobileNumber || p.mobile || '',
+      mobile: p.mobile || p.mobileNumber || '',
+      pendingAmount: parseCurrencyValue(p.pendingAmount || p.amount) || 0,
+      amount: parseCurrencyValue(p.amount || p.pendingAmount) || 0,
+      orderId: p.orderId || '',
+    }));
+
+    return {
+      ...orderDoc,
+      name: orderDoc.customer?.name,
+      phone: orderDoc.customer?.phone,
+      email: orderDoc.customer?.email,
+      customerId: orderDoc.customer?.customerId,
+      walletBalance: orderDoc.customer?.walletBalance || 0,
+      pendingPlayers: formattedPlayers,
+    };
+  });
 };
 
-// Helper function to generate Customer ID
-const generateCustomerId = async () => {
-  const count = await Customer.countDocuments();
-  const sequenceStr = String(count + 1).padStart(6, '0');
-  return `CUST${sequenceStr}`;
+const enrichOrderWithPendingPlayers = async (orderDoc) => {
+  const [enriched] = await batchEnrichOrdersWithPendingPlayers([orderDoc]);
+  return enriched;
 };
+
+// GET /api/customers/stats
+exports.getCustomerStats = asyncHandler(async (req, res) => {
+  const filter = { isActive: true };
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    filter.branch = { $in: userBranchIds };
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
+  }
+
+  // Get date ranges
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekStart = new Date(todayStart);
+  weekStart.setDate(weekStart.getDate() - weekStart.getDay()); // Start of week (Sunday)
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  // Get counts
+  const [todayCount, weekCount, monthCount, totalCount] = await Promise.all([
+    Order.countDocuments({ ...filter, createdAt: { $gte: todayStart } }),
+    Order.countDocuments({ ...filter, createdAt: { $gte: weekStart } }),
+    Order.countDocuments({ ...filter, createdAt: { $gte: monthStart } }),
+    Order.countDocuments(filter),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      today: todayCount,
+      week: weekCount,
+      month: monthCount,
+      total: totalCount,
+    },
+  });
+});
 
 // GET /api/customers?search=&branch=&page=&limit=&sortBy=&sortOrder=
 exports.getCustomers = asyncHandler(async (req, res) => {
   const filter = { isActive: true };
-  if (req.user.role !== ROLES.SUPER_ADMIN) filter.branch = { $in: req.user.branches };
-  if (req.query.branch) filter.branch = req.query.branch;
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      filter.branch = req.query.branch;
+    } else {
+      filter.branch = { $in: userBranchIds };
+    }
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
+  }
   
   // Server-side search by customer name, phone, or email
   if (req.query.search) {
     const searchRegex = new RegExp(req.query.search, 'i');
+    const matchingCustomers = await Customer.find({
+      $or: [
+        { name: searchRegex },
+        { phone: searchRegex },
+        { email: searchRegex },
+      ]
+    }).select('_id').lean();
+    const customerIds = matchingCustomers.map(c => c._id);
+
     filter.$or = [
-      { 'customer.name': searchRegex },
-      { 'customer.phone': searchRegex },
-      { 'customer.email': searchRegex },
+      { customer: { $in: customerIds } },
       { orderId: searchRegex },
     ];
   }
@@ -74,7 +241,16 @@ exports.getCustomers = asyncHandler(async (req, res) => {
   if (req.query.menuCategoryId) filter.menuCategoryId = req.query.menuCategoryId;
   
   // Filter by payment status if provided
-  if (req.query.paymentStatus) filter.paymentStatus = req.query.paymentStatus;
+  if (req.query.paymentStatus) {
+    filter.paymentStatus = req.query.paymentStatus;
+  } else {
+    // On the main Customers page (no paymentStatus filter), exclude sub-orders generated for pending players,
+    // as well as orders originating from Billing/Sessions or Bookings/Reservations.
+    filter.additionalPlayers = { $not: /^Pending player payment for order/ };
+    filter.session = { $exists: false };
+    filter.bill = { $exists: false };
+    filter.notes = { $not: /reservation/i };
+  }
 
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 25;
@@ -94,19 +270,13 @@ exports.getCustomers = asyncHandler(async (req, res) => {
       .populate('menuCategoryId', 'name status')
       .populate('menuItemId', 'name price status')
       .populate('branch', 'name code')
+      .populate('table', 'name type')
       .lean(), // Use lean() for faster queries
     Order.countDocuments(filter),
   ]);
 
   // Transform orders to match the expected customer structure for frontend compatibility
-  const customers = orders.map(order => ({
-    ...order,
-    name: order.customer?.name,
-    phone: order.customer?.phone,
-    email: order.customer?.email,
-    customerId: order.customer?.customerId,
-    walletBalance: order.customer?.walletBalance || 0,
-  }));
+  const customers = await batchEnrichOrdersWithPendingPlayers(orders);
 
   res.status(200).json({
     success: true,
@@ -129,16 +299,16 @@ exports.getCustomer = asyncHandler(async (req, res, next) => {
     .populate('branch', 'name code')
     .lean(); // Use lean() for faster queries
   if (!order) return next(new AppError('Order not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(order.branch?._id?.toString() || order.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
   
   // Transform to match expected structure
-  const customer = {
-    ...order,
-    name: order.customer?.name,
-    phone: order.customer?.phone,
-    email: order.customer?.email,
-    customerId: order.customer?.customerId,
-    walletBalance: order.customer?.walletBalance || 0,
-  };
+  const customer = await enrichOrderWithPendingPlayers(order);
   
   res.status(200).json({ success: true, data: { customer } });
 });
@@ -159,14 +329,33 @@ exports.lookupCustomer = asyncHandler(async (req, res) => {
     return res.status(200).json({ success: true, data: { customer: null } });
   }
 
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(customer.branch?._id?.toString() || customer.branch?.toString())) {
+      return res.status(200).json({ success: true, data: { customer: null } });
+    }
+  }
+
   res.status(200).json({ success: true, data: { customer } });
 });
 
 // POST /api/customers
 exports.createCustomer = asyncHandler(async (req, res, next) => {
-  // Auto-assign branch from user if not provided (for Branch Manager/Staff)
-  if (!req.body.branch && req.user.branches && req.user.branches.length > 0) {
-    req.body.branch = req.user.branches[0];
+  const isAdminRole = req.user.role === ROLES.SUPER_ADMIN || req.user.role === ROLES.ADMIN;
+
+  if (!isAdminRole) {
+    // Branch manager / staff: always use their OWN assigned branch.
+    // Ignore any branch sent from the frontend — it could be stale from an admin session.
+    if (!req.user.branches || req.user.branches.length === 0) {
+      return next(new AppError('You are not assigned to any branch.', 403));
+    }
+    const userBranch = req.user.branches[0];
+    req.body.branch = (userBranch._id || userBranch).toString();
+  } else {
+    // Admin / super_admin: branch must be explicitly provided
+    if (!req.body.branch) {
+      return next(new AppError('Branch is required.', 400));
+    }
   }
 
   // Normalize currency values
@@ -205,9 +394,26 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   
   // Validation based on payment status
   if (paymentStatus === 'paid') {
-    // For paid status, total paid must be >= bill amount
-    if (roundedTotalPaid < roundedBillAmount) {
-      return next(new AppError(`For Paid status, Amount Received must be greater than or equal to the Bill Amount (${roundedBillAmount})`, 400));
+    const hasPendingPlayers = Array.isArray(req.body.pendingPlayers) && req.body.pendingPlayers.length > 0;
+    let pendingPlayersTotal = 0;
+    if (hasPendingPlayers) {
+      pendingPlayersTotal = req.body.pendingPlayers.reduce((sum, p) => sum + (parseCurrencyValue(p.amount) || 0), 0);
+    }
+    
+    if (hasPendingPlayers) {
+      const totalAllocated = roundedTotalPaid + pendingPlayersTotal;
+      if (Math.abs(totalAllocated - roundedBillAmount) > 0.01) {
+        if (totalAllocated > roundedBillAmount) {
+          return next(new AppError(`Over-allocated Amount: ${(totalAllocated - roundedBillAmount).toFixed(2)}\nTotal Allocated (${totalAllocated.toFixed(2)}) must equal Total Bill Amount (${roundedBillAmount.toFixed(2)}).`, 400));
+        } else {
+          return next(new AppError(`Remaining Amount: ${(roundedBillAmount - totalAllocated).toFixed(2)}\nTotal Allocated (${totalAllocated.toFixed(2)}) must equal Total Bill Amount (${roundedBillAmount.toFixed(2)}).`, 400));
+        }
+      }
+    } else {
+      // For paid status, total paid must be >= bill amount
+      if (roundedTotalPaid < roundedBillAmount) {
+        return next(new AppError(`For Paid status, Amount Received must be greater than or equal to the Bill Amount (${roundedBillAmount})`, 400));
+      }
     }
   } else if (paymentStatus === 'partial') {
     // For partial status, allow any amount less than bill amount
@@ -254,7 +460,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   
   if (!customer) {
     // Create new customer if doesn't exist
-    const customerId = await generateCustomerId();
+    const customerId = await generateCustomerId(req.body.branch);
     customer = await Customer.create({
       customerId,
       name: req.body.name,
@@ -274,6 +480,19 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       superAdminOnly: req.user.role === ROLES.SUPER_ADMIN,
       req,
     }).catch(err => console.error('Error creating branch notification:', err));
+  } else {
+    let customerUpdated = false;
+    if (req.body.name && req.body.name.trim() !== '' && req.body.name.trim() !== customer.name) {
+      customer.name = req.body.name.trim();
+      customerUpdated = true;
+    }
+    if (req.body.email && req.body.email.trim() !== '' && req.body.email.trim() !== customer.email) {
+      customer.email = req.body.email.trim();
+      customerUpdated = true;
+    }
+    if (customerUpdated) {
+      await customer.save();
+    }
   }
   
   // Validate wallet balance if using wallet
@@ -290,7 +509,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   
   while (retryCount < maxRetries) {
     try {
-      orderId = await generateOrderId();
+      orderId = await generateOrderId(req.body.branch);
       
       // Validate that orderId was generated successfully
       if (!orderId || orderId === 'null' || orderId === null) {
@@ -298,7 +517,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       }
       
       // Check if this orderId already exists (to handle race conditions)
-      const existingOrder = await Order.findOne({ orderId });
+      const existingOrder = await Order.findOne({ branch: req.body.branch, orderId });
       if (existingOrder) {
         retryCount++;
         continue;
@@ -344,7 +563,9 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     onlineAmount,
     walletAmount,
     pendingPaymentAmount: pendingAmount,
-    amountReceived: totalPaid,
+    amountReceived: (req.body.amountReceived !== undefined && req.body.amountReceived !== null && req.body.amountReceived !== '') 
+      ? parseCurrencyValue(req.body.amountReceived) 
+      : totalPaid,
     totalPaid,
     billAmount,
     additionalPlayers: req.body.additionalPlayers,
@@ -458,6 +679,100 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   customer.totalSpending += billAmount;
   writePromises.push(customer.save());
 
+  // Handle extra pending players if provided
+  const pendingPlayers = Array.isArray(req.body.pendingPlayers) ? req.body.pendingPlayers : [];
+  const savedPendingPlayersList = [];
+
+  for (const player of pendingPlayers) {
+    const playerMobile = String(player.mobile || player.phone || '').replace(/\D/g, '').slice(0, 10);
+    const playerAmount = parseCurrencyValue(player.amount) || 0;
+    const playerName = (player.name && player.name.trim()) ? player.name.trim() : `Player (${playerMobile})`;
+    if (playerMobile.length === 10 && playerAmount > 0) {
+      // Find or create customer for player
+      let playerCustomer = await Customer.findOne({ phone: playerMobile, isActive: true });
+      if (!playerCustomer) {
+        const playerCustId = await generateCustomerId(req.body.branch);
+        playerCustomer = await Customer.create({
+          customerId: playerCustId,
+          name: playerName,
+          phone: playerMobile,
+          branch: req.body.branch,
+        });
+      } else if (player.name && player.name.trim() && (playerCustomer.name.startsWith('Player (') || !playerCustomer.name)) {
+        playerCustomer.name = player.name.trim();
+        await playerCustomer.save();
+      }
+
+      // Generate order ID for pending player using parent orderId with suffix
+      const pOrderId = `${order.orderId}-P${savedPendingPlayersList.length + 1}`;
+
+      const playerOrder = await Order.create({
+        orderId: pOrderId,
+        customer: playerCustomer._id,
+        parentOrder: order._id,
+        parentOrderId: order.orderId,
+        branch: req.body.branch,
+        menuCategoryId: req.body.menuCategoryId,
+        menuItemId: req.body.menuItemId,
+        table: req.body.tableId || req.body.table,
+        session: req.body.sessionId || req.body.session,
+        startTime: req.body.startTime,
+        endTime: req.body.endTime,
+        paymentStatus: 'unpaid',
+        paymentMethod: null,
+        cashAmount: 0,
+        onlineAmount: 0,
+        walletAmount: 0,
+        pendingPaymentAmount: playerAmount,
+        amountReceived: 0,
+        totalPaid: 0,
+        billAmount: playerAmount,
+        additionalPlayers: `Pending player payment for order ${orderId}`,
+        createdBy: req.user._id,
+      });
+
+      savedPendingPlayersList.push({
+        id: playerOrder._id.toString(),
+        playerName,
+        name: playerName,
+        mobileNumber: playerMobile,
+        mobile: playerMobile,
+        pendingAmount: playerAmount,
+        amount: playerAmount,
+        orderId: pOrderId,
+        customerId: playerCustomer._id.toString(),
+      });
+
+      writePromises.push(PaymentHistory.create({
+        order: playerOrder._id,
+        orderId: playerOrder.orderId,
+        customer: playerCustomer._id,
+        customerName: playerCustomer.name,
+        customerPhone: playerCustomer.phone,
+        branch: req.body.branch,
+        paymentMethod: null,
+        cashAmount: 0,
+        onlineAmount: 0,
+        walletAmount: 0,
+        totalPaid: 0,
+        billAmount: playerAmount,
+        pendingAmount: playerAmount,
+        paymentStatus: 'unpaid',
+        notes: `Pending share for order ${orderId}`,
+        createdBy: req.user._id,
+        paymentNumber: 1,
+      }));
+
+      playerCustomer.outstandingBalance = (playerCustomer.outstandingBalance || 0) + playerAmount;
+      writePromises.push(playerCustomer.save());
+    }
+  }
+
+  if (savedPendingPlayersList.length > 0) {
+    order.pendingPlayers = savedPendingPlayersList;
+    writePromises.push(order.save());
+  }
+
   // Deduct stock if menu item is linked to inventory
   if (menuItem && menuItem.inventoryItem) {
     const inventoryItem = await Inventory.findById(menuItem.inventoryItem._id);
@@ -488,7 +803,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
           type: 'low_inventory',
           title: 'Low Stock Alert',
           message: `${inventoryItem.name} is running low (${inventoryItem.currentStock} ${inventoryItem.unit} remaining).`,
-          targetRoles: ['super_admin', 'branch_manager'],
+          targetRoles: ['super_admin', 'branch_admin', 'branch_manager'],
           meta: { inventoryId: inventoryItem._id.toString() },
         }).catch(err => console.error('Error creating low stock notification:', err));
       }
@@ -527,6 +842,16 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
   const existingOrder = await Order.findById(req.params.id);
   if (!existingOrder) return next(new AppError('Order not found.', 404));
 
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(existingOrder.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+    if (req.body.branch && !userBranchIds.includes(req.body.branch.toString())) {
+      return next(new AppError('You cannot assign to this branch.', 403));
+    }
+  }
+
   const targetPaymentStatus = req.body.paymentStatus || existingOrder.paymentStatus;
   if ((targetPaymentStatus === 'paid' || targetPaymentStatus === 'partial') && (req.body.paymentMethod === '' || (!req.body.paymentMethod && !existingOrder.paymentMethod))) {
     return next(new AppError('Payment Method is required', 400));
@@ -539,16 +864,30 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
   if (req.body.paymentMethod === 'mixed') {
     const cashAmount = parseCurrencyValue(req.body.cashAmount) || 0;
     const onlineAmount = parseCurrencyValue(req.body.onlineAmount) || 0;
-    const totalPaid = cashAmount + onlineAmount;
+    const walletAmount = parseCurrencyValue(req.body.walletAmount) || 0;
+    const totalPaid = cashAmount + onlineAmount + walletAmount;
     const totalBill = parseCurrencyValue(req.body.billAmount) || 0;
 
-    if (totalPaid !== totalBill) {
-      return next(new AppError(`Cash Amount + Online Amount must equal the total bill amount (${totalBill})`, 400));
+    if (targetPaymentStatus === 'paid') {
+      const hasPendingPlayers = Array.isArray(req.body.pendingPlayers) && req.body.pendingPlayers.length > 0;
+      let pendingPlayersTotal = 0;
+      if (hasPendingPlayers) {
+        pendingPlayersTotal = req.body.pendingPlayers.reduce((sum, p) => sum + (parseCurrencyValue(p.amount || p.pendingAmount) || 0), 0);
+      }
+      const totalAllocated = totalPaid + pendingPlayersTotal;
+      if (Math.abs(totalAllocated - totalBill) > 0.01) {
+        return next(new AppError(`Total paid amount (${totalPaid}) + pending players amount (${pendingPlayersTotal}) must equal the total bill amount (${totalBill})`, 400));
+      }
+    } else if (targetPaymentStatus === 'partial') {
+      const amountReceived = parseCurrencyValue(req.body.amountReceived) || 0;
+      if (Math.abs(totalPaid - amountReceived) > 0.01) {
+        return next(new AppError(`Cash Amount (${cashAmount}) + Online Amount (${onlineAmount}) + Wallet Amount (${walletAmount}) must equal the Amount Received (${amountReceived})`, 400));
+      }
     }
   }
 
   // Handle stock restoration and deduction if menuItemId is changing
-  if (req.body.menuItemId && req.body.menuItemId !== existingOrder.menuItemId.toString()) {
+  if (req.body.menuItemId && req.body.menuItemId !== existingOrder.menuItemId?.toString()) {
     // Fetch both menu items concurrently
     const [previousMenuItem, newMenuItem] = await Promise.all([
       MenuItem.findById(existingOrder.menuItemId).populate('inventoryItem'),
@@ -613,7 +952,7 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
             type: 'low_inventory',
             title: 'Low Stock Alert',
             message: `${newInventoryItem.name} is running low (${newInventoryItem.currentStock} ${newInventoryItem.unit} remaining).`,
-            targetRoles: ['super_admin', 'branch_manager'],
+            targetRoles: ['super_admin', 'branch_admin', 'branch_manager'],
             meta: { inventoryId: newInventoryItem._id.toString() },
           }).catch(err => console.error(err));
         }
@@ -628,14 +967,26 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
   if (req.body.billAmount !== undefined) {
     req.body.billAmount = parseCurrencyValue(req.body.billAmount);
   }
-  if (req.body.cashAmount !== undefined) {
-    req.body.cashAmount = parseCurrencyValue(req.body.cashAmount);
+  let { paymentMethod, cashAmount, onlineAmount, amountReceived } = req.body;
+
+  if (cashAmount !== undefined) cashAmount = parseCurrencyValue(cashAmount) || 0;
+  if (onlineAmount !== undefined) onlineAmount = parseCurrencyValue(onlineAmount) || 0;
+  if (amountReceived !== undefined) amountReceived = parseCurrencyValue(amountReceived) || 0;
+
+  if (paymentMethod === 'cash' && cashAmount === 0 && amountReceived > 0) {
+    cashAmount = amountReceived;
+    req.body.cashAmount = cashAmount;
+  } else if (paymentMethod === 'upi' && onlineAmount === 0 && amountReceived > 0) {
+    onlineAmount = amountReceived;
+    req.body.onlineAmount = onlineAmount;
   }
-  if (req.body.onlineAmount !== undefined) {
-    req.body.onlineAmount = parseCurrencyValue(req.body.onlineAmount);
-  }
+
   if (req.body.cashAmount !== undefined || req.body.onlineAmount !== undefined) {
     req.body.totalPaid = (req.body.cashAmount || 0) + (req.body.onlineAmount || 0);
+  }
+
+  if (req.body.amountReceived !== undefined) {
+    req.body.amountReceived = amountReceived;
   }
 
   const order = await Order.findByIdAndUpdate(req.params.id, req.body, {
@@ -646,6 +997,29 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
 
   // Get the customer to fetch current wallet balance
   const customer = await Customer.findById(order.customer);
+
+  // Update customer details if provided
+  if (customer) {
+    if (req.body.name !== undefined && req.body.name.trim() !== '') {
+      customer.name = req.body.name.trim();
+    }
+    if (req.body.phone !== undefined) {
+      const cleanedPhone = String(req.body.phone).replace(/\D/g, '').slice(0, 10);
+      if (cleanedPhone.length === 10 && cleanedPhone !== customer.phone) {
+        const phoneExists = await Customer.findOne({ phone: cleanedPhone, isActive: true });
+        if (phoneExists && phoneExists._id.toString() !== customer._id.toString()) {
+          return next(new AppError('Phone number already exists for another customer.', 400));
+        }
+        customer.phone = cleanedPhone;
+      } else if (cleanedPhone.length !== 10) {
+        return next(new AppError('Phone number must contain exactly 10 digits.', 400));
+      }
+    }
+    if (req.body.email !== undefined) {
+      customer.email = req.body.email.trim();
+    }
+    await customer.save();
+  }
 
   // Handle wallet balance updates for edited orders
   const oldWalletAmount = existingOrder.walletAmount || 0;
@@ -735,6 +1109,128 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
     await Promise.all(writePromises);
   }
 
+  // Synchronize pending player payments on update if pendingPlayers is provided
+  if (Array.isArray(req.body.pendingPlayers)) {
+    const incomingPlayers = req.body.pendingPlayers;
+    const existingSubOrders = await Order.find({
+      $or: [
+        { parentOrder: order._id },
+        { parentOrderId: order.orderId },
+        { additionalPlayers: `Pending player payment for order ${order.orderId}` }
+      ],
+      isActive: true
+    }).populate('customer');
+
+    const updatedPendingPlayersList = [];
+    const processedSubOrderIds = new Set();
+
+    for (const p of incomingPlayers) {
+      const playerMobile = String(p.mobile || p.mobileNumber || p.phone || '').replace(/\D/g, '').slice(0, 10);
+      const playerAmount = parseCurrencyValue(p.amount || p.pendingAmount) || 0;
+      const playerName = (p.name || p.playerName || '').trim() || `Player (${playerMobile})`;
+      const targetId = p.id || p._id;
+
+      if (playerMobile.length === 10 && playerAmount > 0) {
+        let matchedSub = targetId ? existingSubOrders.find(so => so._id.toString() === targetId.toString()) : null;
+
+        if (matchedSub) {
+          processedSubOrderIds.add(matchedSub._id.toString());
+          matchedSub.billAmount = playerAmount;
+          matchedSub.pendingPaymentAmount = playerAmount;
+          matchedSub.menuCategoryId = req.body.menuCategoryId || order.menuCategoryId;
+          matchedSub.menuItemId = req.body.menuItemId || order.menuItemId;
+          matchedSub.branch = req.body.branch || order.branch;
+          await matchedSub.save();
+
+          if (matchedSub.customer) {
+            const pc = await Customer.findById(matchedSub.customer);
+            if (pc) {
+              pc.name = playerName;
+              pc.phone = playerMobile;
+              await pc.save();
+            }
+          }
+
+          updatedPendingPlayersList.push({
+            id: matchedSub._id.toString(),
+            playerName,
+            name: playerName,
+            mobileNumber: playerMobile,
+            mobile: playerMobile,
+            pendingAmount: playerAmount,
+            amount: playerAmount,
+            orderId: matchedSub.orderId,
+            customerId: matchedSub.customer ? (matchedSub.customer._id || matchedSub.customer).toString() : '',
+          });
+        } else {
+          // Create new pending player sub-order
+          let playerCustomer = await Customer.findOne({ phone: playerMobile, isActive: true });
+          if (!playerCustomer) {
+            const playerCustId = await generateCustomerId(req.body.branch || order.branch);
+            playerCustomer = await Customer.create({
+              customerId: playerCustId,
+              name: playerName,
+              phone: playerMobile,
+              branch: req.body.branch || order.branch,
+            });
+          } else if (playerName && (playerCustomer.name.startsWith('Player (') || !playerCustomer.name)) {
+            playerCustomer.name = playerName;
+            await playerCustomer.save();
+          }
+
+          const pOrderId = `${order.orderId}-P${updatedPendingPlayersList.length + 1}`;
+          const playerOrder = await Order.create({
+            orderId: pOrderId,
+            customer: playerCustomer._id,
+            parentOrder: order._id,
+            parentOrderId: order.orderId,
+            branch: req.body.branch || order.branch,
+            menuCategoryId: req.body.menuCategoryId || order.menuCategoryId,
+            menuItemId: req.body.menuItemId || order.menuItemId,
+            table: req.body.tableId || req.body.table || order.table,
+            session: req.body.sessionId || req.body.session || order.session,
+            startTime: req.body.startTime || order.startTime,
+            endTime: req.body.endTime || order.endTime,
+            paymentStatus: 'unpaid',
+            paymentMethod: null,
+            cashAmount: 0,
+            onlineAmount: 0,
+            walletAmount: 0,
+            pendingPaymentAmount: playerAmount,
+            amountReceived: 0,
+            totalPaid: 0,
+            billAmount: playerAmount,
+            additionalPlayers: `Pending player payment for order ${order.orderId}`,
+            createdBy: req.user._id,
+          });
+
+          updatedPendingPlayersList.push({
+            id: playerOrder._id.toString(),
+            playerName,
+            name: playerName,
+            mobileNumber: playerMobile,
+            mobile: playerMobile,
+            pendingAmount: playerAmount,
+            amount: playerAmount,
+            orderId: pOrderId,
+            customerId: playerCustomer._id.toString(),
+          });
+        }
+      }
+    }
+
+    // Soft delete removed pending player sub-orders
+    for (const existingSub of existingSubOrders) {
+      if (!processedSubOrderIds.has(existingSub._id.toString())) {
+        existingSub.isActive = false;
+        await existingSub.save();
+      }
+    }
+
+    order.pendingPlayers = updatedPendingPlayersList;
+    await order.save();
+  }
+
   // Populate the order directly on the mongoose document to avoid redundant find query
   const populatedOrderDoc = await order.populate([
     { path: 'customer', select: 'name phone email customerId' },
@@ -745,15 +1241,8 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
   
   const populatedOrder = populatedOrderDoc.toObject();
 
-  // Transform to match expected structure
-  const responseData = {
-    ...populatedOrder,
-    name: populatedOrder.customer?.name,
-    phone: populatedOrder.customer?.phone,
-    email: populatedOrder.customer?.email,
-    customerId: populatedOrder.customer?.customerId,
-    walletBalance: customer?.walletBalance || 0, // Include current wallet balance
-  };
+  // Transform to match expected structure with enriched pendingPlayers
+  const responseData = await enrichOrderWithPendingPlayers(populatedOrder);
 
   res.status(200).json({ success: true, data: { customer: responseData } });
 });
@@ -762,6 +1251,13 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
 exports.receivePayment = asyncHandler(async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) return next(new AppError('Order not found.', 404));
+  
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(order.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
   
   const customer = await Customer.findById(order.customer);
   if (!customer) return next(new AppError('Customer not found.', 404));
@@ -909,9 +1405,17 @@ exports.getPaymentHistory = asyncHandler(async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) return next(new AppError('Order not found.', 404));
   
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(order.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+  
   const paymentHistory = await PaymentHistory.find({ order: order._id })
     .populate('createdBy', 'name')
-    .sort('paymentNumber');
+    .sort('paymentNumber')
+    .lean();
   
   res.status(200).json({ success: true, data: { paymentHistory } });
 });
@@ -920,6 +1424,13 @@ exports.getPaymentHistory = asyncHandler(async (req, res, next) => {
 exports.deleteCustomer = asyncHandler(async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) return next(new AppError('Order not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(order.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
 
   // Restore stock if menu item is linked to inventory
   const menuItem = await MenuItem.findById(order.menuItemId).populate('inventoryItem');
@@ -957,3 +1468,7 @@ exports.deleteCustomer = asyncHandler(async (req, res, next) => {
   await Order.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
   res.status(200).json({ success: true, message: 'Order removed.' });
 });
+
+exports.generateOrderId = generateOrderId;
+exports.generateCustomerId = generateCustomerId;
+exports.parseCurrencyValue = parseCurrencyValue;

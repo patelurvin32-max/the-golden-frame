@@ -39,7 +39,7 @@ const emptyForm: PaymentFormValues & {
   menuItemId: '',
   startTime: '',
   endTime: '',
-  paymentStatus: 'unpaid',
+  paymentStatus: 'paid',
   paymentMethod: '',
   cashAmount: '',
   onlineAmount: '',
@@ -72,13 +72,16 @@ export default function CustomersPage() {
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [phoneError, setPhoneError] = useState('');
 
+  const userAssignedBranchId = user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)._id) : '';
+  const effectiveBranch = selectedBranch || (user?.role !== 'super_admin' ? userAssignedBranchId : '');
   const params: Record<string, string> = { page: String(page), limit: String(rowsPerPage) };
-  if (selectedBranch) params.branch = selectedBranch;
+  if (effectiveBranch) params.branch = effectiveBranch;
   if (debouncedSearch) params.search = debouncedSearch;
 
   const { data, isLoading } = useQuery({
-    queryKey: ['customers', selectedBranch, debouncedSearch, page, rowsPerPage],
+    queryKey: ['customers', effectiveBranch, debouncedSearch, page, rowsPerPage],
     queryFn: () => customerService.getAll(params).then((r) => r.data),
+    staleTime: 30_000,
     placeholderData: (prev) => prev,
   });
 
@@ -91,6 +94,16 @@ export default function CustomersPage() {
   });
 
   const categories: MenuCategoryDoc[] = Array.isArray((categoriesData as any)?.data?.categories) ? (categoriesData as any).data.categories : [];
+
+  // Fetch customer statistics for Super Admin and Branch Admin
+  const { data: statsData } = useQuery({
+    queryKey: ['customer-stats', effectiveBranch],
+    queryFn: () => customerService.getStats(effectiveBranch ? { branch: effectiveBranch } : undefined).then((r) => r.data),
+    enabled: user?.role === 'super_admin' || user?.role === 'branch_admin',
+    staleTime: 60_000,
+  });
+
+  const stats = (statsData as any)?.data || { today: 0, week: 0, month: 0, total: 0 };
 
   // Check if selected category is Accessories or Beverage (product purchases, not session-based)
   const selectedCategory = categories.find((cat) => cat._id === form.menuCategoryId);
@@ -112,14 +125,14 @@ export default function CustomersPage() {
   // Only fetch menu items when create or edit modal is open
   const { data: allMenuItemsData, isFetching: isFetchingAllMenuItems } = useQuery({
     queryKey: ['all-menu-items', branchToFetch],
-    queryFn: () => menuService.getAll({ limit: '1000', branch: branchToFetch }).then((r) => r.data),
+    queryFn: () => menuService.getAll({ limit: '1000', branch: branchToFetch, activeOnly: 'true' }).then((r) => r.data),
     enabled: modal !== null,
     staleTime: 10 * 60 * 1000, // Cache for 10 minutes
     gcTime: 15 * 60 * 1000, // Keep in cache for 15 minutes
   });
 
   // Fetch menu items filtered by category and branch
-  const menuParams: Record<string, string> = { limit: '1000' };
+  const menuParams: Record<string, string> = { limit: '1000', activeOnly: 'true' };
   if (form.menuCategoryId) menuParams.category = form.menuCategoryId;
   if (branchToFetch) menuParams.branch = branchToFetch;
 
@@ -216,12 +229,10 @@ export default function CustomersPage() {
       if (message && message.includes('Existing customer found')) {
         // Existing customer was loaded
         toast.success(message);
-        qc.invalidateQueries({ queryKey: ['customers'] });
         setModal(null);
         setForm(emptyForm);
       } else {
         // New customer was created
-        qc.invalidateQueries({ queryKey: ['customers'] });
         toast.success('Customer added!');
         setModal(null);
         setForm(emptyForm);
@@ -352,15 +363,27 @@ export default function CustomersPage() {
   }, [form.paymentMethod, form.billAmount, form.walletBalance]);
 
   const handleSave = () => {
-    // Auto-assign branch from user's branches for Branch Manager/Staff
-    let branch = form.branch || selectedBranch;
-    if (!branch && user && user.branches && user.branches.length > 0) {
-      branch = user.branches[0]._id;
+    // Resolve the branch to use for this customer record.
+    // For super_admin / admin: use form.branch (they pick from dropdown).
+    // For branch managers / staff: ALWAYS use their own assigned branch —
+    // never trust selectedBranch which could be stale from an admin session.
+    let branch: string;
+    const isAdminRole = user?.role === 'super_admin' || user?.role === 'admin';
+
+    if (isAdminRole) {
+      branch = form.branch || selectedBranch || '';
+    } else {
+      // Branch manager / staff — use their assigned branch
+      const b0 = user?.branches?.[0];
+      branch = (typeof b0 === 'string' ? b0 : (b0 as any)?._id?.toString()) || selectedBranch || '';
     }
-    
+
     // Validation
-    if ((user?.role === 'admin' || user?.role === 'super_admin') && !form.branch) {
+    if (isAdminRole && !branch) {
       toast.error('Branch is required'); return;
+    }
+    if (!branch) {
+      toast.error('Unable to determine your branch. Please contact an administrator.'); return;
     }
     if (!form.name) { toast.error('Full Name is required'); return; }
     if (!form.phone) { toast.error('Phone Number is required'); return; }
@@ -408,10 +431,27 @@ export default function CustomersPage() {
     
     // Validation based on payment status
     if (form.paymentStatus === 'paid') {
-      // For paid status, total paid must be >= bill amount
-      if (roundedTotalPaid < roundedBillAmount) {
-        toast.error(`For Paid status, Amount Received must be greater than or equal to the Bill Amount (${formatCurrency(roundedBillAmount)})`);
-        return;
+      const hasPendingPlayers = Array.isArray(form.pendingPlayers) && form.pendingPlayers.length > 0;
+      const pendingPlayersTotal = hasPendingPlayers
+        ? (form.pendingPlayers || []).reduce((sum: number, p: any) => sum + (parseCurrencyValue(p.amount) || 0), 0)
+        : 0;
+
+      if (hasPendingPlayers) {
+        const totalAllocated = roundedTotalPaid + pendingPlayersTotal;
+        if (Math.abs(totalAllocated - roundedBillAmount) > 0.01) {
+          if (totalAllocated > roundedBillAmount) {
+            toast.error(`Over-allocated Amount: ${formatCurrency(totalAllocated - roundedBillAmount)}\nTotal Allocated (${formatCurrency(totalAllocated)}) must equal Total Bill Amount (${formatCurrency(roundedBillAmount)}).`);
+          } else {
+            toast.error(`Remaining Amount: ${formatCurrency(roundedBillAmount - totalAllocated)}\nTotal Allocated (${formatCurrency(totalAllocated)}) must equal Total Bill Amount (${formatCurrency(roundedBillAmount)}).`);
+          }
+          return;
+        }
+      } else {
+        // For paid status, total paid must be >= bill amount
+        if (roundedTotalPaid < roundedBillAmount) {
+          toast.error(`For Paid status, Amount Received must be greater than or equal to the Bill Amount (${formatCurrency(roundedBillAmount)})`);
+          return;
+        }
       }
     } else if (form.paymentStatus === 'partial') {
       // For partial status, allow any amount less than bill amount
@@ -428,6 +468,41 @@ export default function CustomersPage() {
         cashAmount = 0;
         onlineAmount = 0;
         walletAmount = 0;
+      }
+    }
+
+    // Validate Pending Players if provided
+    if (form.pendingPlayers && form.pendingPlayers.length > 0) {
+      for (let i = 0; i < form.pendingPlayers.length; i++) {
+        const p = form.pendingPlayers[i];
+        if (!p.mobile || p.mobile.length !== 10) {
+          toast.error(`Player ${i + 1}: Mobile number must be exactly 10 digits`);
+          return;
+        }
+        if (!p.amount || Number(p.amount) <= 0) {
+          toast.error(`Player ${i + 1}: Pending amount must be greater than 0`);
+          return;
+        }
+      }
+      const mobSet = new Set<string>();
+      for (const p of form.pendingPlayers) {
+        if (mobSet.has(p.mobile)) {
+          toast.error(`Duplicate mobile number found in pending players: ${p.mobile}`);
+          return;
+        }
+        mobSet.add(p.mobile);
+      }
+
+      const sumPending = (form.pendingPlayers || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      const totalAllocated = Math.round((amountReceived + walletAmount + sumPending) * 100) / 100;
+      if (Math.abs(totalAllocated - roundedBillAmount) > 0.01) {
+        const remaining = Math.round((roundedBillAmount - totalAllocated) * 100) / 100;
+        if (remaining > 0) {
+          toast.error(`Remaining Amount: ${formatCurrency(remaining)}. Total Allocated (${formatCurrency(totalAllocated)}) must equal Bill Amount (${formatCurrency(roundedBillAmount)})`);
+        } else {
+          toast.error(`Over-allocated Amount: ${formatCurrency(totalAllocated - roundedBillAmount)}. Total Allocated (${formatCurrency(totalAllocated)}) must equal Bill Amount (${formatCurrency(roundedBillAmount)})`);
+        }
+        return;
       }
     }
     
@@ -464,7 +539,9 @@ export default function CustomersPage() {
       branch,
       billAmount,
       paymentMethod: paymentMethodToSave,
-      amountReceived: totalPaid,
+      amountReceived: (form.amountReceived !== '' && form.amountReceived !== undefined)
+        ? parseCurrencyValue(form.amountReceived)
+        : totalPaid,
       cashAmount,
       onlineAmount,
       walletAmount,
@@ -512,7 +589,20 @@ export default function CustomersPage() {
 
   const openEdit = (c: Customer) => {
     setSelected(c);
+
+    const existingPendingPlayers = Array.isArray((c as any).pendingPlayers)
+      ? (c as any).pendingPlayers.map((p: any) => ({
+          id: p.id || p._id || '',
+          name: p.name || p.playerName || '',
+          mobile: p.mobile || p.mobileNumber || '',
+          amount: String(p.amount || p.pendingAmount || ''),
+        }))
+      : [];
     
+    const initialAmountReceived = ((c as any).amountReceived !== undefined && (c as any).amountReceived !== null && (c as any).amountReceived !== '')
+      ? String((c as any).amountReceived)
+      : (((c as any).cashAmount || (c as any).onlineAmount || (c as any).totalPaid) ? String((c as any).totalPaid || 0) : '0');
+
     setForm({
       name: c.name,
       phone: c.phone,
@@ -528,7 +618,7 @@ export default function CustomersPage() {
       cashAmount: (c as any).cashAmount ? String((c as any).cashAmount) : '',
       onlineAmount: (c as any).onlineAmount ? String((c as any).onlineAmount) : '',
       walletAmount: (c as any).walletAmount ? String((c as any).walletAmount) : '',
-      amountReceived: (c as any).totalPaid ? String((c as any).totalPaid) : String((c as any).billAmount || ''),
+      amountReceived: initialAmountReceived,
       pendingPaymentAmount: (c as any).pendingPaymentAmount ? String((c as any).pendingPaymentAmount) : '',
       numberOfPlayers: c.numberOfPlayers ? String(c.numberOfPlayers) : '',
       additionalPlayers: (c as any).additionalPlayers || '',
@@ -536,25 +626,40 @@ export default function CustomersPage() {
       addToWallet: false,
       extraAmount: '',
       walletBalance: (c as any).walletBalance || 0,
+      pendingPlayers: existingPendingPlayers,
     });
     setModal('edit');
 
-    // Fetch fresh customer data to get latest wallet balance in background
-    if (c.phone) {
-      customerService.lookup(c.phone, selectedBranch || undefined)
-        .then((response) => {
-          const customer = response.data.data.customer;
-          if (customer) {
-            setForm((f) => ({
-              ...f,
-              walletBalance: customer.walletBalance || 0,
-            }));
-          }
-        })
-        .catch((error) => {
-          // If lookup fails, use the stale value already set
-        });
-    }
+    // Fetch fresh customer data to get latest wallet balance & pending players in background
+    customerService.getOne(c._id).then((res) => {
+      const freshCustomer = res.data.data.customer;
+      if (freshCustomer) {
+        const freshAmountReceived = ((freshCustomer as any).amountReceived !== undefined && (freshCustomer as any).amountReceived !== null && (freshCustomer as any).amountReceived !== '')
+          ? String((freshCustomer as any).amountReceived)
+          : (((freshCustomer as any).totalPaid !== undefined) ? String((freshCustomer as any).totalPaid) : '0');
+
+        if (Array.isArray((freshCustomer as any).pendingPlayers)) {
+          const freshPendingPlayers = (freshCustomer as any).pendingPlayers.map((p: any) => ({
+            id: p.id || p._id || '',
+            name: p.name || p.playerName || '',
+            mobile: p.mobile || p.mobileNumber || '',
+            amount: String(p.amount || p.pendingAmount || ''),
+          }));
+          setForm((f) => ({
+            ...f,
+            amountReceived: freshAmountReceived,
+            pendingPlayers: freshPendingPlayers,
+            walletBalance: (freshCustomer as any).walletBalance || 0,
+          }));
+        } else {
+          setForm((f) => ({
+            ...f,
+            amountReceived: freshAmountReceived,
+            walletBalance: (freshCustomer as any).walletBalance || 0,
+          }));
+        }
+      }
+    }).catch(() => {/* ignore error */});
   };
 
   const handleDelete = () => {
@@ -570,6 +675,56 @@ export default function CustomersPage() {
         subtitle={`${total} total custome${total === 1 ? 'r' : 'rs'}`}
         actions={<Button size="sm" onClick={openCreate}>+ Add Customer</Button>}
       />
+
+      {/* Statistics Cards - Only for Super Admin and Branch Admin */}
+      {(user?.role === 'super_admin' || user?.role === 'branch_admin') && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-blue-500/5 to-blue-600/5 hover:from-blue-500/10 hover:to-blue-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Today</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.today}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-lg">
+                📅
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-green-500/5 to-green-600/5 hover:from-green-500/10 hover:to-green-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Week</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.week}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-green-500/10 flex items-center justify-center text-lg">
+                📊
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-purple-500/5 to-purple-600/5 hover:from-purple-500/10 hover:to-purple-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Month</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.month}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-purple-500/10 flex items-center justify-center text-lg">
+                📈
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4 border-border/50 bg-gradient-to-br from-amber-500/5 to-amber-600/5 hover:from-amber-500/10 hover:to-amber-600/10 transition-all duration-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground font-medium">Total</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{stats.total}</p>
+              </div>
+              <div className="h-10 w-10 rounded-xl bg-amber-500/10 flex items-center justify-center text-lg">
+                👥
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* Search */}
       <div className="flex gap-3">
@@ -592,9 +747,9 @@ export default function CustomersPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Order ID</TableHead>
-                  <TableHead>Customer Name</TableHead>
-                  <TableHead>Menu Category</TableHead>
-                  <TableHead>Menu Item</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead>Item</TableHead>
                   <TableHead>Bill Amount</TableHead>
                   <TableHead>Payment Method</TableHead>
                   <TableHead>Payment Status</TableHead>
@@ -695,7 +850,7 @@ export default function CustomersPage() {
                 </Select>
               </div>
             )}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Full Name *</Label>
                 <Input
@@ -738,7 +893,7 @@ export default function CustomersPage() {
 
           {/* Menu Selection */}
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Menu Category *</Label>
                 <Select
@@ -775,29 +930,10 @@ export default function CustomersPage() {
             </div>
           </div>
 
-          {/* Total Amount */}
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label>Total Amount / Bill Amount *</Label>
-              <Input
-                type="number"
-                min="0"
-                step="any"
-                value={form.billAmount}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  // Preserve exact value entered by user
-                  setForm((f) => ({ ...f, billAmount: value }));
-                }}
-                placeholder="Enter total bill amount"
-              />
-            </div>
-          </div>
-
           {/* Session Details - Only show for session-based categories */}
           {!isProductCategory && (
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label>Start Time *</Label>
                   <Input
@@ -817,6 +953,25 @@ export default function CustomersPage() {
               </div>
             </div>
           )}
+
+          {/* Total Amount */}
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label>Total Amount / Bill Amount *</Label>
+              <Input
+                type="number"
+                min="0"
+                step="any"
+                value={form.billAmount}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  // Preserve exact value entered by user
+                  setForm((f) => ({ ...f, billAmount: value }));
+                }}
+                placeholder="Enter total bill amount"
+              />
+            </div>
+          </div>
 
           {/* Payment Info */}
           <PaymentForm

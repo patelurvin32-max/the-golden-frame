@@ -40,7 +40,7 @@ const createBranchNotification = async ({
     type: 'general',
     title,
     message: cleanedMessage,
-    targetRoles: targetRoles || (superAdminOnly ? ['super_admin'] : ['super_admin', ROLES.BRANCH_MANAGER, ROLES.STAFF]),
+    targetRoles: targetRoles || (superAdminOnly ? ['super_admin'] : ['super_admin', ROLES.BRANCH_ADMIN, ROLES.BRANCH_MANAGER, ROLES.STAFF]),
     meta: {
       actorId: actor?._id?.toString(),
       actorName: actor?.name || 'User',

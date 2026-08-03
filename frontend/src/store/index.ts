@@ -20,7 +20,7 @@ let pendingLogin: Promise<{ user: User; accessToken: string }> | null = null;
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       user: null,
       accessToken: null,
       isAuthenticated: false,
@@ -45,6 +45,17 @@ export const useAuthStore = create<AuthState>()(
           const { user, accessToken } = res.data.data;
           localStorage.setItem('accessToken', accessToken);
           set({ user, accessToken, isAuthenticated: true });
+
+          // Auto-set selectedBranch for non-super admin and non-admin users
+          if (user.role !== 'super_admin' && user.role !== 'admin' && user.branches && user.branches.length > 0) {
+            const defaultBranchId = typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)._id;
+            if (defaultBranchId) {
+              useAppStore.getState().setSelectedBranch(defaultBranchId);
+            }
+          } else {
+            useAppStore.getState().setSelectedBranch(null);
+          }
+
           return { user, accessToken };
         })();
 
@@ -59,11 +70,13 @@ export const useAuthStore = create<AuthState>()(
       logout: async () => {
         try { await authService.logout(); } catch { /* ignore */ }
         localStorage.removeItem('accessToken');
+        useAppStore.getState().setSelectedBranch(null);
         set({ user: null, accessToken: null, isAuthenticated: false, isLoading: false });
       },
 
       silentLogout: () => {
         localStorage.removeItem('accessToken');
+        useAppStore.getState().setSelectedBranch(null);
         set({ user: null, accessToken: null, isAuthenticated: false, isLoading: false });
       },
 
@@ -71,10 +84,20 @@ export const useAuthStore = create<AuthState>()(
       setToken: (token) => set({ accessToken: token }),
 
       fetchMe: async () => {
-        set({ isLoading: true });
+        const currentUser = get().user;
+        if (!currentUser) {
+          set({ isLoading: true });
+        }
         try {
           const res = await authService.getMe();
-          set({ user: res.data.data.user, isAuthenticated: true });
+          const u = res.data.data.user;
+          set({ user: u, isAuthenticated: true });
+          if (u && u.role !== 'super_admin' && u.role !== 'admin' && u.branches && u.branches.length > 0) {
+            const defaultBranchId = typeof u.branches[0] === 'string' ? u.branches[0] : (u.branches[0] as any)._id;
+            if (defaultBranchId) {
+              useAppStore.getState().setSelectedBranch(defaultBranchId);
+            }
+          }
         } catch {
           set({ user: null, isAuthenticated: false });
         } finally {

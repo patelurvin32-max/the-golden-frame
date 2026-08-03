@@ -17,9 +17,10 @@ router
         .matches(/^\d{10}$/).withMessage('Mobile number must contain exactly 10 digits'),
       // Branch is optional - will be auto-assigned from user for Branch Manager/Staff
       body('branch').optional().isMongoId().withMessage('Invalid Branch ID'),
-      body('menuCategoryId').isMongoId().withMessage('Menu Category is required'),
-      body('menuItemId').isMongoId().withMessage('Menu Item is required'),
+      body('menuCategoryId').optional().isMongoId().withMessage('Invalid Menu Category ID'),
+      body('menuItemId').optional().isMongoId().withMessage('Invalid Menu Item ID'),
       body('startTime').custom(async (value, { req }) => {
+        if (!req.body.menuCategoryId) return true;
         // Check if the selected category is Accessories or Beverage (product purchases)
         const category = await MenuCategory.findById(req.body.menuCategoryId);
         const categoryName = category?.name?.toLowerCase() || '';
@@ -68,6 +69,7 @@ router
   );
 
 router.get('/lookup/:phone', protect, customerController.lookupCustomer);
+router.get('/stats', protect, requirePermission('customers:view'), customerController.getCustomerStats);
 
 router
   .route('/:id')

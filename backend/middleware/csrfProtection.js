@@ -4,7 +4,6 @@ if (!process.env.CSRF_SECRET) {
   if (process.env.NODE_ENV === 'production') {
     throw new Error('CSRF_SECRET environment variable is required in production');
   }
-  console.warn('⚠️  CSRF_SECRET not set — using insecure default for development only');
 }
 
 const { doubleCsrfProtection, generateCsrfToken: generateTokenFn } = doubleCsrf({

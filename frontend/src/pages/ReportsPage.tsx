@@ -53,6 +53,7 @@ export default function ReportsPage() {
   const { data: branchData } = useQuery({
     queryKey: ['report-branches'],
     queryFn: () => reportService.getBranchComparison().then((r) => r.data.data),
+    enabled: canSelectBranch,
   });
 
   const chartData = revenueData?.revenue?.map((r: any) => {
@@ -101,7 +102,7 @@ export default function ReportsPage() {
     enabled: shouldFetch,
   });
 
-  const handleExportOrders = async () => {
+  const handleExportCustomers = async () => {
     try {
       const res = await reportService.exportExcel({
         ...searchParams,
@@ -110,8 +111,21 @@ export default function ReportsPage() {
         sortBy: orderSortBy,
         sortOrder: orderSortOrder,
       });
-      downloadBlob(res.data as Blob, `thegoldenframe-orders-${searchFrom}-to-${searchTo}.xlsx`);
-      toast.success('Order details report exported!');
+      downloadBlob(res.data as Blob, `thegoldenframe-customers-${searchFrom}-to-${searchTo}.xlsx`);
+      toast.success('Customer details report exported!');
+    } catch {
+      toast.error('Export failed');
+    }
+  };
+
+  const handleExportPendingPayments = async () => {
+    try {
+      const res = await reportService.exportExcel({
+        ...searchParams,
+        type: 'pending_payments',
+      });
+      downloadBlob(res.data as Blob, `thegoldenframe-pending-payments-${searchFrom}-to-${searchTo}.xlsx`);
+      toast.success('Pending payments report exported!');
     } catch {
       toast.error('Export failed');
     }
@@ -120,7 +134,7 @@ export default function ReportsPage() {
   const handleSearch = () => {
     const activeBranch = (selectedBranch && canSelectBranch) 
       ? String(selectedBranch) 
-      : (!canSelectBranch && user?.branches?.[0] ? String(user.branches[0]) : '');
+      : (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)?._id || '') : '');
 
     setSearchBranch(activeBranch);
     setSearchFrom(inputFrom);
@@ -148,7 +162,7 @@ export default function ReportsPage() {
   useEffect(() => {
     const initialBranch = (selectedBranch && canSelectBranch) 
       ? String(selectedBranch) 
-      : (!canSelectBranch && user?.branches?.[0] ? String(user.branches[0]) : '');
+      : (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)?._id || '') : '');
     
     setSearchBranch(initialBranch);
     setSearchFrom(inputFrom);
@@ -160,7 +174,7 @@ export default function ReportsPage() {
     { id: 'revenue', label: '💰 Revenue' },
     { id: 'tables', label: '🎱 Tables' },
     { id: 'pnl', label: '📊 P&L' },
-    { id: 'branches', label: '🏢 Branches' },
+    ...(canSelectBranch ? [{ id: 'branches', label: '🏢 Branches' }] : []),
   ];
 
   return (
@@ -171,7 +185,8 @@ export default function ReportsPage() {
           <div className="flex flex-wrap gap-2 w-full sm:w-auto">
             <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={() => handleExport('revenue')}>📥 Revenue Excel</Button>
             <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={() => handleExport('expenses')}>📥 Expenses Excel</Button>
-            <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={handleExportOrders}>📥 Order Details Excel</Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={handleExportCustomers}>📥 Customer Details Excel</Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={handleExportPendingPayments}>📥 Pending Payments Excel</Button>
           </div>
         }
       />
@@ -370,166 +385,6 @@ export default function ReportsPage() {
               </Card>
             ))}
           </div>
-
-          {/* Order Details Section */}
-          <Card>
-            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between pb-2 gap-3">
-              <CardTitle>Order Details</CardTitle>
-              <div className="flex items-center gap-3 w-full sm:w-auto">
-                <Input
-                  placeholder="Search orders..."
-                  value={orderSearch}
-                  onChange={(e) => { setOrderSearch(e.target.value); setOrderPage(1); }}
-                  className="w-full sm:w-64 h-8 text-xs rounded-lg"
-                />
-              </div>
-            </CardHeader>
-            <CardContent>
-              {ordersLoading ? (
-                <div className="space-y-2">
-                  {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-10 animate-pulse bg-muted" />)}
-                </div>
-              ) : !orderData?.data?.orders?.length ? (
-                <p className="text-center text-muted-foreground py-8">No matching orders found</p>
-              ) : (
-                <>
-                  <div className="overflow-x-auto border border-border rounded-xl">
-                    <Table2>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="cursor-pointer select-none whitespace-nowrap" onClick={() => handleSort('orderId')}>
-                            Order ID {orderSortBy === 'orderId' ? (orderSortOrder === 'asc' ? '▲' : '▼') : ''}
-                          </TableHead>
-                          <TableHead className="cursor-pointer select-none whitespace-nowrap" onClick={() => handleSort('customerName')}>
-                            Customer Name {orderSortBy === 'customerName' ? (orderSortOrder === 'asc' ? '▲' : '▼') : ''}
-                          </TableHead>
-                          <TableHead className="whitespace-nowrap">Mobile Number</TableHead>
-                          <TableHead className="cursor-pointer select-none whitespace-nowrap" onClick={() => handleSort('branchName')}>
-                            Branch {orderSortBy === 'branchName' ? (orderSortOrder === 'asc' ? '▲' : '▼') : ''}
-                          </TableHead>
-                          <TableHead className="whitespace-nowrap">Category</TableHead>
-                          <TableHead className="whitespace-nowrap">Item</TableHead>
-                          <TableHead className="whitespace-nowrap">Qty</TableHead>
-                          <TableHead className="cursor-pointer select-none whitespace-nowrap" onClick={() => handleSort('billAmount')}>
-                            Bill Amount {orderSortBy === 'billAmount' ? (orderSortOrder === 'asc' ? '▲' : '▼') : ''}
-                          </TableHead>
-                          <TableHead className="whitespace-nowrap">Amount Recd</TableHead>
-                          <TableHead className="whitespace-nowrap">Wallet Used</TableHead>
-                          <TableHead className="whitespace-nowrap">Wallet Added</TableHead>
-                          <TableHead className="whitespace-nowrap">Payment Method</TableHead>
-                          <TableHead className="whitespace-nowrap">Status</TableHead>
-                          <TableHead className="whitespace-nowrap">Created By</TableHead>
-                          <TableHead className="cursor-pointer select-none whitespace-nowrap" onClick={() => handleSort('createdAt')}>
-                            Created At {orderSortBy === 'createdAt' ? (orderSortOrder === 'asc' ? '▲' : '▼') : ''}
-                          </TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {orderData.data.orders.map((o: any) => (
-                          <TableRow key={o._id}>
-                            <TableCell className="font-mono text-xs whitespace-nowrap">{o.orderId}</TableCell>
-                            <TableCell className="text-sm font-medium whitespace-nowrap">{o.customerName}</TableCell>
-                            <TableCell className="text-sm whitespace-nowrap">{o.mobileNumber || '—'}</TableCell>
-                            <TableCell className="text-sm whitespace-nowrap">{o.branchName}</TableCell>
-                            <TableCell className="text-xs whitespace-nowrap">{o.menuCategory || '—'}</TableCell>
-                            <TableCell className="text-xs whitespace-nowrap">{o.menuItem || '—'}</TableCell>
-                            <TableCell className="text-sm whitespace-nowrap">{o.quantity}</TableCell>
-                            <TableCell className="text-sm font-medium whitespace-nowrap">{formatCurrency(o.billAmount)}</TableCell>
-                            <TableCell className="text-sm whitespace-nowrap">{formatCurrency(o.amountReceived)}</TableCell>
-                            <TableCell className="text-sm whitespace-nowrap">{formatCurrency(o.walletUsed)}</TableCell>
-                            <TableCell className="text-sm whitespace-nowrap">{formatCurrency(o.walletAdded)}</TableCell>
-                            <TableCell className="text-xs capitalize font-medium whitespace-nowrap">{o.paymentMethod}</TableCell>
-                            <TableCell className="whitespace-nowrap">
-                              <Badge variant={o.paymentStatus === 'paid' ? 'success' : o.paymentStatus === 'partial' ? 'warning' : 'danger'}>
-                                {o.paymentStatus}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-sm whitespace-nowrap">{o.createdBy}</TableCell>
-                            <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                              {new Date(o.createdAt).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table2>
-                  </div>
-                  
-                  {/* Pagination */}
-                  {orderData.pages > 1 && (
-                    <div className="flex items-center justify-between mt-4">
-                      <span className="text-xs text-muted-foreground">
-                        Page {orderPage} of {orderData.pages} ({orderData.total} total orders)
-                      </span>
-                      <div className="flex gap-2">
-                        <Button
-                           size="sm"
-                           variant="outline"
-                           disabled={orderPage === 1}
-                           onClick={() => setOrderPage((p) => Math.max(1, p - 1))}
-                        >
-                          Previous
-                        </Button>
-                        <Button
-                           size="sm"
-                           variant="outline"
-                           disabled={orderPage === orderData.pages}
-                           onClick={() => setOrderPage((p) => Math.min(orderData.pages, p + 1))}
-                        >
-                          Next
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Pending Payment Details */}
-          {orderSummaryData?.pendingPayments && orderSummaryData.pendingPayments.length > 0 && (
-            <Card>
-              <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between pb-2 gap-2">
-                <CardTitle className="text-red-400">⚠️ Pending Payment Details</CardTitle>
-                <div className="text-sm font-semibold text-red-400">
-                  Total Pending Amount: {formatCurrency(orderSummaryData?.summary?.totalPendingAmount ?? 0)}
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto border border-border rounded-xl">
-                  <Table2>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="whitespace-nowrap">Order ID</TableHead>
-                        <TableHead className="whitespace-nowrap">Customer Name</TableHead>
-                        <TableHead className="whitespace-nowrap">Mobile Number</TableHead>
-                        <TableHead className="whitespace-nowrap">Bill Amount</TableHead>
-                        <TableHead className="whitespace-nowrap">Amount Paid</TableHead>
-                        <TableHead className="whitespace-nowrap">Pending Amount</TableHead>
-                        <TableHead className="whitespace-nowrap">Payment Method</TableHead>
-                        <TableHead className="whitespace-nowrap">Created At</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {orderSummaryData.pendingPayments.map((p: any) => (
-                        <TableRow key={p._id}>
-                          <TableCell className="font-mono text-xs whitespace-nowrap">{p.orderId}</TableCell>
-                          <TableCell className="text-sm font-medium whitespace-nowrap">{p.customerName}</TableCell>
-                          <TableCell className="text-sm whitespace-nowrap">{p.mobileNumber || '—'}</TableCell>
-                          <TableCell className="text-sm font-medium whitespace-nowrap">{formatCurrency(p.billAmount)}</TableCell>
-                          <TableCell className="text-sm whitespace-nowrap">{formatCurrency(p.amountPaid)}</TableCell>
-                          <TableCell className="text-sm font-bold text-red-400 whitespace-nowrap">{formatCurrency(p.pendingAmount)}</TableCell>
-                          <TableCell className="text-xs capitalize whitespace-nowrap">{p.paymentMethod}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                            {new Date(p.createdAt).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table2>
-                </div>
-              </CardContent>
-            </Card>
-          )}
 
           {/* Wallet Transaction Details */}
           {orderSummaryData?.walletTransactions && orderSummaryData.walletTransactions.length > 0 && (

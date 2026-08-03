@@ -33,7 +33,7 @@ export const Navbar = () => {
   const { data: branches = [] } = useQuery({
     queryKey: ['branches'],
     queryFn: () => branchService.getAll().then((r) => r.data.data.branches),
-    enabled: user?.role === 'super_admin',
+    enabled: Boolean(user),
   });
 
   const { data: notifData } = useQuery({
@@ -46,6 +46,17 @@ export const Navbar = () => {
   const notifications: Notification[] = notifData?.data?.notifications || [];
   const unread = notifications.filter((n) => !n.isRead).length;
 
+  const assignedBranchId = user?.branches?.[0]
+    ? typeof user.branches[0] === 'string'
+      ? user.branches[0]
+      : (user.branches[0] as any)._id
+    : '';
+
+  const assignedBranchName =
+    (typeof user?.branches?.[0] === 'object' && (user.branches[0] as any)?.name)
+      ? (user.branches[0] as any).name
+      : branches.find((b: Branch) => b._id === assignedBranchId || b.code === assignedBranchId)?.name || '';
+
   return (
     <header className="h-14 border-b border-border bg-card flex items-center px-4 gap-4 relative z-40">
       {/* Sidebar toggle */}
@@ -53,8 +64,8 @@ export const Navbar = () => {
         ☰
       </button>
 
-      {/* Branch selector (manager/staff restricted to assigned branches) */}
-      {user?.role === 'super_admin' && Array.isArray(branches) && branches.length > 0 && (
+      {/* Branch selector for super_admin and admin */}
+      {(user?.role === 'super_admin' || user?.role === 'admin') && Array.isArray(branches) && branches.length > 0 && (
         <Select
           value={selectedBranch || ''}
           onChange={(e) => setSelectedBranch(e.target.value || null)}
@@ -67,9 +78,10 @@ export const Navbar = () => {
         </Select>
       )}
 
-      {user?.role !== 'super_admin' && user?.branches?.[0] && (
-        <span className="text-sm font-medium text-muted-foreground">
-          🏢 {(user.branches[0] as any)?.name || 'Branch'}
+      {/* Branch display badge for manager / staff / branch admin */}
+      {(user?.role !== 'super_admin' && user?.role !== 'admin') && (
+        <span className="text-sm font-semibold text-foreground flex items-center gap-1.5 px-3 py-1 bg-accent/40 rounded-lg border border-border">
+          🏢 {assignedBranchName || 'Branch'}
         </span>
       )}
 

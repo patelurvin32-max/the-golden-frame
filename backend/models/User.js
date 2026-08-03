@@ -17,6 +17,7 @@ const userSchema = new mongoose.Schema(
     role: { type: String, enum: ROLE_LIST, default: ROLES.STAFF },
     // Super admin: branches empty/ignored (sees all). Manager/Staff: scoped to these branches.
     branches: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Branch' }],
+    permissions: [{ type: String }],
     avatar: { type: String },
     isActive: { type: Boolean, default: true },
     lastLogin: { type: Date },

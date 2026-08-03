@@ -9,10 +9,16 @@ exports.getWalletTransactions = asyncHandler(async (req, res) => {
   const filter = {};
   
   // Branch filter
-  if (req.user.role !== ROLES.SUPER_ADMIN) {
-    filter.branch = { $in: req.user.branches };
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      filter.branch = req.query.branch;
+    } else {
+      filter.branch = { $in: userBranchIds };
+    }
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
   }
-  if (req.query.branch) filter.branch = req.query.branch;
   
   // Customer filter
   if (req.query.customer) filter.customer = req.query.customer;
@@ -26,12 +32,12 @@ exports.getWalletTransactions = asyncHandler(async (req, res) => {
     filter.$or = [
       { customerName: searchRegex },
       { customerPhone: searchRegex },
-      { orderId: searchRegex },
+      { description: searchRegex }
     ];
   }
 
   const page = parseInt(req.query.page, 10) || 1;
-  const limit = parseInt(req.query.limit, 10) || 10;
+  const limit = parseInt(req.query.limit, 10) || 20;
   const skip = (page - 1) * limit;
 
   // Sorting
@@ -44,9 +50,8 @@ exports.getWalletTransactions = asyncHandler(async (req, res) => {
       .sort(sort)
       .skip(skip)
       .limit(limit)
-      .populate('customer', 'customerId name phone')
-      .populate('branch', 'name code')
       .populate('createdBy', 'name')
+      .populate('branch', 'name')
       .lean(),
     WalletTransaction.countDocuments(filter),
   ]);
@@ -67,8 +72,15 @@ exports.getWalletTransactions = asyncHandler(async (req, res) => {
 exports.getCustomerWalletHistory = asyncHandler(async (req, res, next) => {
   const { customerId } = req.params;
   
-  const customer = await Customer.findOne({ customerId, isActive: true })
+  const customerFilter = { customerId, isActive: true };
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    customerFilter.branch = { $in: userBranchIds };
+  }
+  
+  const customer = await Customer.findOne(customerFilter)
     .select('customerId name phone walletBalance walletTransactions')
+    .populate('branch')
     .lean();
   
   if (!customer) {
@@ -114,7 +126,13 @@ exports.addWalletBalance = asyncHandler(async (req, res, next) => {
     return next(new AppError('Amount must be greater than 0', 400));
   }
 
-  const customer = await Customer.findOne({ customerId, isActive: true });
+  const customerFilter = { customerId, isActive: true };
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    customerFilter.branch = { $in: userBranchIds };
+  }
+
+  const customer = await Customer.findOne(customerFilter);
   if (!customer) {
     return next(new AppError('Customer not found.', 404));
   }

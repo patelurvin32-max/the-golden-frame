@@ -71,6 +71,7 @@ notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 
 
 const settingsSchema = new mongoose.Schema(
   {
+    branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
     businessName: { type: String, default: 'The Golden Frame' },
     logoUrl: { type: String },
     currency: { type: String, default: 'INR' },
@@ -85,6 +86,13 @@ const settingsSchema = new mongoose.Schema(
     dailyReportEmails: [{ type: String, trim: true, lowercase: true }],
     dailyReportRecipientEmails: [{ type: String, trim: true, lowercase: true }],
     dailyReportBranchIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Branch' }],
+    branchReportConfigs: [
+      {
+        branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
+        dailyReportEnabled: { type: Boolean, default: true },
+        dailyReportEmails: [{ type: String, trim: true, lowercase: true }],
+      },
+    ],
     receipt: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   { timestamps: true }

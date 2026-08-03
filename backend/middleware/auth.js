@@ -61,7 +61,13 @@ const restrictTo = (...roles) => (req, res, next) => {
 const requirePermission = (permission) => (req, res, next) => {
   if (req.user.role === ROLES.SUPER_ADMIN) return next();
 
-  const allowed = PERMISSIONS[req.user.role] || [];
+  let allowed = [];
+  if (req.user.role === ROLES.BRANCH_ADMIN) {
+    allowed = req.user.permissions || [];
+  } else {
+    allowed = PERMISSIONS[req.user.role] || [];
+  }
+
   if (!allowed.includes(permission)) {
     return next(new AppError('You do not have permission to perform this action.', 403));
   }

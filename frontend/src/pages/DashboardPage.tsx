@@ -15,6 +15,7 @@ export default function DashboardPage() {
   if (selectedBranch) branchParam.branch = selectedBranch;
 
   const isBranchManager = user?.role === 'branch_manager';
+  const isSuperAdminOrAdmin = user?.role === 'super_admin' || user?.role === 'admin';
 
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ['dashboard-stats', selectedBranch],
@@ -38,6 +39,7 @@ export default function DashboardPage() {
   const { data: branchComp } = useQuery({
     queryKey: ['branch-comparison'],
     queryFn: () => reportService.getBranchComparison().then((r) => r.data.data),
+    enabled: isSuperAdminOrAdmin,
     staleTime: 60_000,
   });
 
@@ -132,7 +134,7 @@ export default function DashboardPage() {
           {/* Table Type Distribution */}
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle>Table Distribution</CardTitle>
+              <CardTitle>Category Distribution</CardTitle>
             </CardHeader>
             <CardContent>
               <ResponsiveContainer width="100%" height={200}>
@@ -158,7 +160,7 @@ export default function DashboardPage() {
 
       {/* Bottom Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {!isBranchManager && (
+        {isSuperAdminOrAdmin && (
           /* Branch Comparison */
           <Card>
             <CardHeader className="pb-2">
@@ -180,7 +182,7 @@ export default function DashboardPage() {
         )}
 
         {/* Top Tables by Usage */}
-        <Card className={isBranchManager ? 'lg:col-span-2' : ''}>
+        <Card className={!isSuperAdminOrAdmin ? 'lg:col-span-2' : ''}>
           <CardHeader className="pb-2">
             <CardTitle>Top Tables by Revenue</CardTitle>
           </CardHeader>

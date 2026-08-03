@@ -38,14 +38,15 @@ const formatMinutes = (minutes) => {
 const normalizeSearch = (value) => (value || '').trim().toLowerCase();
 
 const buildBranchFilter = (req) => {
-  if (req.query.branch) return req.query.branch;
-  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.branches && req.user.branches.length > 0) {
-    // For Branch Manager and Staff, use only their first assigned branch
-    if (req.user.role === ROLES.BRANCH_MANAGER || req.user.role === ROLES.STAFF) {
-      return { $in: [req.user.branches[0]] };
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      return req.query.branch;
     }
-    // For other non-super-admin roles, use all their assigned branches
-    return { $in: req.user.branches };
+    return { $in: userBranchIds };
+  } else if (req.query.branch) {
+    return req.query.branch;
   }
   return undefined;
 };

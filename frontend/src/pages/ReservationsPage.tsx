@@ -10,6 +10,7 @@ import {
   Table2, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from '@/components/ui';
 import { formatDate, formatDateTime, cn } from '@/utils';
+import PaymentForm from '@/components/PaymentForm';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -33,6 +34,14 @@ const EMPTY_FORM = {
   durationMinutes: 60, numberOfGuests: 2,
   specialRequests: '', notes: '', status: 'pending',
   menuCategoryId: '', menuItemId: '',
+  paymentStatus: 'paid',
+  paymentMethod: '',
+  cashAmount: 0,
+  onlineAmount: 0,
+  walletAmount: 0,
+  amountReceived: '',
+  billAmount: 0,
+  additionalPlayers: [],
 };
 
 function useDelayedFlag(active: boolean, delayMs = 300) {
@@ -203,7 +212,7 @@ function ReservationForm({
   );
 
   // Fetch menu items filtered by category and branch
-  const menuParams: Record<string, string> = { limit: '1000' };
+  const menuParams: Record<string, string> = { limit: '1000', activeOnly: 'true' };
   if (form.menuCategoryId) menuParams.category = form.menuCategoryId;
   if (form.branch) menuParams.branch = form.branch;
 
@@ -233,7 +242,7 @@ function ReservationForm({
     if (form.menuCategoryId && form.branch) {
       void qc.prefetchQuery({
         queryKey: ['reservation-menu-items', form.menuCategoryId, form.branch],
-        queryFn: () => menuService.getAll({ limit: '1000', category: form.menuCategoryId, branch: form.branch }).then((r) => r.data.data.items),
+        queryFn: () => menuService.getAll({ limit: '1000', category: form.menuCategoryId, branch: form.branch, activeOnly: 'true' }).then((r) => r.data.data.items),
         staleTime: 5 * 60 * 1000,
       });
     }
@@ -356,7 +365,7 @@ function ReservationForm({
       {/* Customer */}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <Label>Customer Name *</Label>
+          <Label>Name *</Label>
           <Input value={form.customerName} onChange={(e) => set('customerName', e.target.value)} placeholder="Full name" />
         </div>
         <div className="space-y-1.5">
@@ -504,6 +513,17 @@ function ReservationForm({
           className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none" />
       </div>
 
+            {/* Payment Information */}
+      <div className="rounded-xl border border-border p-4 bg-muted/20">
+        <h4 className="text-sm font-semibold mb-3">Payment Details</h4>
+        <PaymentForm 
+          values={form} 
+          onChange={setForm} 
+          disabled={loading}
+          showBillAmountField={true}
+        />
+      </div>
+
       <div className="flex gap-2 pt-2 sticky bottom-0 bg-card pb-1">
         <Button variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
         <Button className="flex-1" loading={loading}
@@ -528,6 +548,7 @@ function ReservationForm({
 function ViewModal({ res, onClose, onEdit, onStatusChange }: {
   res: any; onClose: () => void; onEdit: () => void; onStatusChange: (s: string) => void;
 }) {
+  const { user } = useAuthStore();
   const ACTIONS: { status: ResStatus; label: string; variant: any }[] = [
     { status: 'confirmed' as const, label: '✅ Confirm',    variant: 'default' },
     { status: 'seated' as const,    label: '🪑 Seat',       variant: 'default' },
@@ -551,7 +572,7 @@ function ViewModal({ res, onClose, onEdit, onStatusChange }: {
       {/* Details grid */}
       <div className="grid grid-cols-2 gap-3">
         {[
-          { label: 'Branch',   value: res.branch?.name },
+          { label: 'Branch',   value: (user?.role === 'super_admin' || user?.role === 'admin') ? res.branch?.name : null },
           { label: 'Category', value: typeof res.menuCategoryId === 'object' ? res.menuCategoryId?.name : res.table?.type },
           { label: 'Item',     value: typeof res.menuItemId === 'object' ? res.menuItemId?.name : res.table?.name },
           { label: 'Date',     value: formatDate(res.reservationDate) },
@@ -614,7 +635,7 @@ function ViewModal({ res, onClose, onEdit, onStatusChange }: {
 function TodayTableAvailability({ branch }: { branch: string }) {
   const qc = useQueryClient();
   const { user } = useAuthStore();
-  const { onReservationChange } = useSocket();
+  const { onReservationChange, onAvailabilityChange } = useSocket();
   const [statusFilter, setStatusFilter] = useState<'all' | 'available' | 'booked'>('all');
   const [selectedCatId, setSelectedCatId] = useState<string>('all');
   const [, setTick] = useState(0);
@@ -652,13 +673,21 @@ function TodayTableAvailability({ branch }: { branch: string }) {
 
   // Socket listener for real-time live sync
   useEffect(() => {
-    const cleanup = onReservationChange((data) => {
+    const off1 = onReservationChange((data) => {
       if (!data?.reservation?.branch || data.reservation.branch.toString() === effectiveBranch) {
         qc.invalidateQueries({ queryKey: ['today-availability'] });
       }
     });
-    return cleanup;
-  }, [onReservationChange, effectiveBranch, qc]);
+    const off2 = onAvailabilityChange((data) => {
+      if (!data?.branch || data.branch.toString() === effectiveBranch) {
+        qc.invalidateQueries({ queryKey: ['today-availability'] });
+      }
+    });
+    return () => {
+      off1();
+      off2();
+    };
+  }, [onReservationChange, onAvailabilityChange, effectiveBranch, qc]);
 
   const categories: any[] = availabilityData?.categories || [];
 
@@ -821,28 +850,55 @@ function TodayTableAvailability({ branch }: { branch: string }) {
                           </span>
                         </div>
 
-                        {item.booking ? (
-                          <div className="text-xs space-y-1 bg-background/50 p-2 rounded-xl border border-border/30">
-                            <p className="font-semibold text-foreground truncate">
-                              Customer: {item.booking.customerName}
-                            </p>
-                            <p className="text-muted-foreground font-mono text-[11px]">
-                              {item.booking.startTime} – {item.booking.endTime}
-                            </p>
-                            {item.booking.remainingMinutes !== undefined && (
-                              <p className="text-[11px] font-medium text-amber-400">
-                                Remaining: {item.booking.remainingMinutes} minutes
-                              </p>
-                            )}
-                            {item.booking.startsInMinutes !== undefined && (
-                              <p className="text-[11px] font-medium text-amber-300">
-                                Starts in: {item.booking.startsInMinutes} minutes
-                              </p>
-                            )}
+                        {item.allBookings && item.allBookings.length > 0 ? (
+                          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                            {item.allBookings.map((bk: any, idx: number) => {
+                              if (bk.isCurrent) {
+                                return (
+                                  <div key={bk._id || idx} className="text-xs space-y-1 bg-background/50 p-2 rounded-xl border border-border/30">
+                                    <p className="font-semibold text-foreground truncate">
+                                      Customer: {bk.customerName}
+                                    </p>
+                                    <p className="text-muted-foreground font-mono text-[11px]">
+                                      {bk.startTime} – {bk.endTime}
+                                    </p>
+                                    {bk.remainingMinutes !== null && bk.remainingMinutes !== undefined && (
+                                      <p className="text-[11px] font-medium text-amber-400">
+                                        Remaining: {bk.remainingMinutes} minutes
+                                      </p>
+                                    )}
+                                  </div>
+                                );
+                              }
+
+                              const isNext = (item.booking && idx === 1) || (!item.booking && idx === 0);
+                              return (
+                                <div key={bk._id || idx} className="text-xs space-y-1 bg-amber-500/10 p-2 rounded-xl border border-amber-500/20">
+                                  <p className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">
+                                    {isNext ? 'Next Booking' : 'Upcoming Booking'}
+                                  </p>
+                                  <p className="font-semibold text-foreground truncate">
+                                    Customer: {bk.customerName}
+                                  </p>
+                                  <p className="text-muted-foreground font-mono text-[11px]">
+                                    {bk.startTime} – {bk.endTime}
+                                  </p>
+                                  {bk.startsInMinutes !== undefined && bk.startsInMinutes !== null && (
+                                    <p className="text-[11px] font-medium text-amber-300">
+                                      Starts in: {bk.startsInMinutes} minutes
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         ) : (
                           <p className="text-xs text-muted-foreground/70 italic">Available</p>
                         )}
+
+
+
+
                       </div>
                     );
                   })}
@@ -934,6 +990,7 @@ export default function ReservationsPage() {
   const { data: statsData } = useQuery({
     queryKey: reservationStatsKey,
     queryFn: () => reservationService.getStats(branch ? { branch } : {}).then((r) => (r.data as any).data),
+    enabled: user?.role === 'super_admin',
     refetchInterval: 300000,
     staleTime: 30 * 1000,
     gcTime: 10 * 60 * 1000,
@@ -980,8 +1037,9 @@ export default function ReservationsPage() {
   const stats = statsData || {};
 
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: reservationStatsKey });
+    qc.invalidateQueries({ queryKey: ['reservation-stats'] });
     qc.invalidateQueries({ queryKey: ['reservation-tables'] });
+    qc.invalidateQueries({ queryKey: ['today-availability'] });
   };
 
   const syncReservationCaches = useCallback((mode: 'create' | 'update' | 'delete', reservation: any) => {
@@ -1036,7 +1094,7 @@ export default function ReservationsPage() {
     if (branchId && categoryId) {
       void qc.prefetchQuery({
         queryKey: ['reservation-menu-items', categoryId, branchId],
-        queryFn: () => menuService.getAll({ limit: '1000', branch: branchId, category: categoryId }).then((r) => r.data.data.items),
+        queryFn: () => menuService.getAll({ limit: '1000', branch: branchId, category: categoryId, activeOnly: 'true' }).then((r) => r.data.data.items),
         staleTime: 5 * 60 * 1000,
       });
     }
@@ -1133,10 +1191,12 @@ export default function ReservationsPage() {
         actions={<Button size="sm" onClick={openCreate}>+ Add Bookings </Button>}
       />
 
-      {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-        {STAT_CARDS.map((s) => <StatCard key={s.label} {...s} />)}
-      </div>
+      {/* Stats row - Only visible to Super Admin */}
+      {user?.role === 'super_admin' && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+          {STAT_CARDS.map((s) => <StatCard key={s.label} {...s} />)}
+        </div>
+      )}
 
       {/* Today's Live Table Availability Timeline */}
       <TodayTableAvailability branch={branch} />

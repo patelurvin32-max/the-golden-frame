@@ -12,6 +12,7 @@ const { ROLES } = require('../config/constants');
 const expenseController = require('../controllers/expenseController');
 const expenseRouter = express.Router();
 expenseRouter.use(protect, requirePermission('expenses:manage'));
+expenseRouter.get('/stats', expenseController.getExpenseStats);
 expenseRouter.get('/', expenseController.getExpenses);
 expenseRouter.post('/', [body('title').notEmpty(), body('amount').isFloat({ min: 0 }), body('branch').optional({ checkFalsy: true }).isMongoId(), body('category').notEmpty()], validate, expenseController.createExpense);
 expenseRouter.patch('/:id', expenseController.updateExpense);
@@ -73,7 +74,16 @@ logsRouter.get('/', asyncHandler(async (req, res) => {
   const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
   const filter = {};
 
-  if (req.query.branch) filter.branch = req.query.branch;
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      filter.branch = req.query.branch;
+    } else {
+      filter.branch = { $in: userBranchIds };
+    }
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
+  }
   if (req.query.search) {
     const search = req.query.search.toString().trim();
     if (search.length > 0) {
@@ -117,8 +127,8 @@ const notifRouter = express.Router();
 notifRouter.use(protect);
 notifRouter.get('/', asyncHandler(async (req, res) => {
   const filter = { $or: [{ targetUser: req.user._id }, { targetRoles: { $in: [req.user.role] } }] };
-  if (req.user.role !== ROLES.SUPER_ADMIN) {
-    const branches = Array.isArray(req.user.branches) ? req.user.branches : [];
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const branches = Array.isArray(req.user.branches) ? req.user.branches.map(b => b._id || b) : [];
     filter.branch = { $in: branches };
   }
 
@@ -180,8 +190,8 @@ notifRouter.get('/', asyncHandler(async (req, res) => {
 }));
 notifRouter.patch('/read-all', asyncHandler(async (req, res) => {
   const filter = { $or: [{ targetUser: req.user._id }, { targetRoles: { $in: [req.user.role] } }], isRead: false };
-  if (req.user.role !== ROLES.SUPER_ADMIN) {
-    const branches = Array.isArray(req.user.branches) ? req.user.branches : [];
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const branches = Array.isArray(req.user.branches) ? req.user.branches.map(b => b._id || b) : [];
     filter.branch = { $in: branches };
   }
   await Notification.updateMany(filter, { isRead: true });

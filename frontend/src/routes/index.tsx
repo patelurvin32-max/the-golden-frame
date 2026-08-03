@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore, useAppStore } from '@/store';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { LoadingPage } from '@/components/ui';
+import { hasPermission } from '@/utils';
 
 const LoginPage = lazy(() => import('@/pages/LoginPage'));
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'));
@@ -24,20 +25,37 @@ const UsersPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default
 const LogsPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.LogsPage })));
 
 // ── Auth guard ─────────────────────────────────────────────────────────────────
-function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
+function ProtectedRoute({ children, roles, permission }: { children: React.ReactNode; roles?: string[]; permission?: string }) {
   const { isAuthenticated, isLoading, user } = useAuthStore();
   if (isLoading) return <LoadingPage />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
-  if (roles && user && !roles.includes(user.role)) return <Navigate to="/" replace />;
+  if (user) {
+    if (permission) {
+      if (!hasPermission(user, permission)) return <Navigate to="/" replace />;
+    } else if (roles && !roles.includes(user.role)) {
+      return <Navigate to="/" replace />;
+    }
+  }
   return <>{children}</>;
 }
 
-// ── Dashboard redirect for Staff ────────────────────────────────────────────────
+// ── Dashboard redirect for Staff and Branch Admins without dashboard:view ─────
 function DashboardGuard({ children }: { children: React.ReactNode }) {
   const { user } = useAuthStore();
-  if (user?.role === 'staff') {
+  if (!user) return <>{children}</>;
+
+  if (user.role === 'staff') {
     return <Navigate to="/customers" replace />;
   }
+
+  if (user.role === 'branch_admin' && !hasPermission(user, 'dashboard:view')) {
+    if (hasPermission(user, 'tables:view')) return <Navigate to="/tables" replace />;
+    if (hasPermission(user, 'customers:view')) return <Navigate to="/customers" replace />;
+    if (hasPermission(user, 'bookings:manage')) return <Navigate to="/reservations" replace />;
+    if (hasPermission(user, 'billing:manage')) return <Navigate to="/billing" replace />;
+    return <Navigate to="/notifications" replace />;
+  }
+
   return <>{children}</>;
 }
 
@@ -82,24 +100,24 @@ export function AppRoutes() {
             {/* Protected app shell */}
             <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
               <Route index element={<DashboardGuard><DashboardPage /></DashboardGuard>} />
-              <Route path="tables" element={<TablesPage />} />
-              <Route path="billing" element={<BillingPage />} />
-              <Route path="billing/new" element={<BillingPage />} />
-              <Route path="billing/:id" element={<BillingPage />} />
-              <Route path="customers" element={<CustomersPage />} />
-              <Route path="menu" element={<ProtectedRoute roles={['super_admin', 'branch_manager']}><MenuPage /></ProtectedRoute>} />
-              <Route path="inventory" element={<InventoryPage />} />
-              <Route path="pending-payments" element={<PendingPaymentsPage />} />
-              <Route path="expenses" element={<ExpensesPage />} />
-              <Route path="attendance" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager']}><AttendancePage /></ProtectedRoute>} />
+              <Route path="tables" element={<ProtectedRoute permission="tables:view"><TablesPage /></ProtectedRoute>} />
+              <Route path="billing" element={<ProtectedRoute permission="billing:manage"><BillingPage /></ProtectedRoute>} />
+              <Route path="billing/new" element={<ProtectedRoute permission="billing:manage"><BillingPage /></ProtectedRoute>} />
+              <Route path="billing/:id" element={<ProtectedRoute permission="billing:manage"><BillingPage /></ProtectedRoute>} />
+              <Route path="customers" element={<ProtectedRoute permission="customers:view"><CustomersPage /></ProtectedRoute>} />
+              <Route path="menu" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager', 'branch_admin']} permission="menu:view"><MenuPage /></ProtectedRoute>} />
+              <Route path="inventory" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager', 'branch_admin']} permission="inventory:manage"><InventoryPage /></ProtectedRoute>} />
+              <Route path="pending-payments" element={<ProtectedRoute permission="customers:view"><PendingPaymentsPage /></ProtectedRoute>} />
+              <Route path="expenses" element={<ProtectedRoute permission="expenses:manage"><ExpensesPage /></ProtectedRoute>} />
+              <Route path="attendance" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager', 'branch_admin']} permission="attendance:manage"><AttendancePage /></ProtectedRoute>} />
               <Route path="my-attendance" element={<ProtectedRoute roles={['staff']}><MyAttendancePage /></ProtectedRoute>} />
-              <Route path="reservations" element={<ReservationsPage />} />
+              <Route path="reservations" element={<ProtectedRoute permission="bookings:manage"><ReservationsPage /></ProtectedRoute>} />
               <Route path="notifications" element={<NotificationsPage />} />
-              <Route path="reports" element={<ProtectedRoute roles={['super_admin', 'admin']}><ReportsPage /></ProtectedRoute>} />
+              <Route path="reports" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_admin']} permission="reports:view"><ReportsPage /></ProtectedRoute>} />
               {/* Super admin only */}
-              <Route path="users" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager']}><UsersPage /></ProtectedRoute>} />
+              <Route path="users" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager', 'branch_admin']} permission="staff:view"><UsersPage /></ProtectedRoute>} />
               <Route path="branches" element={<ProtectedRoute roles={['super_admin']}><BranchesPage /></ProtectedRoute>} />
-              <Route path="settings" element={<ProtectedRoute roles={['super_admin']}><SettingsPage /></ProtectedRoute>} />
+              <Route path="settings" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><SettingsPage /></ProtectedRoute>} />
               <Route path="logs" element={<ProtectedRoute roles={['super_admin']}><LogsPage /></ProtectedRoute>} />
             </Route>
 

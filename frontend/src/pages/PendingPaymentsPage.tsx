@@ -17,7 +17,7 @@ const HIGH_VALUE_THRESHOLD = 2000;
 
 const emptyPaymentForm = {
   paymentStatus: 'paid' as 'paid' | 'partial' | 'unpaid',
-  paymentMethod: 'cash' as 'cash' | 'upi' | 'mixed' | 'wallet',
+  paymentMethod: '' as 'cash' | 'upi' | 'mixed' | 'wallet' | '',
   cashAmount: '',
   onlineAmount: '',
   walletAmount: '',
@@ -39,6 +39,9 @@ export default function PendingPaymentsPage() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [paymentForm, setPaymentForm] = useState(emptyPaymentForm);
 
+  const userAssignedBranchId = user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)._id) : '';
+  const effectiveBranch = selectedBranch || (user?.role !== 'super_admin' ? userAssignedBranchId : '');
+
   const params: Record<string, string> = { 
     page: String(page), 
     limit: String(rowsPerPage),
@@ -46,11 +49,11 @@ export default function PendingPaymentsPage() {
     sortBy,
     sortOrder
   };
-  if (selectedBranch) params.branch = selectedBranch;
+  if (effectiveBranch) params.branch = effectiveBranch;
   if (search) params.search = search;
 
   const { data, isLoading } = useQuery({
-    queryKey: ['customers', selectedBranch, search, page, rowsPerPage, 'unpaid', sortBy, sortOrder],
+    queryKey: ['customers', effectiveBranch, search, page, rowsPerPage, 'unpaid', sortBy, sortOrder],
     queryFn: () => customerService.getAll(params).then((r) => r.data),
     placeholderData: (prev) => prev,
   });
@@ -174,7 +177,7 @@ export default function PendingPaymentsPage() {
       {/* Search and Filter */}
       <div className="flex gap-3">
         <Input
-          placeholder="Search by name or phone..."
+          placeholder="Search by player name, phone, or ID..."
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           className="max-w-xs"
@@ -254,15 +257,15 @@ export default function PendingPaymentsPage() {
             <Table2>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Order ID</TableHead>
-                  <TableHead>Customer Name</TableHead>
+                  <TableHead>Pending ID</TableHead>
+                  <TableHead>Player Name</TableHead>
                   <TableHead>Mobile Number</TableHead>
-                  <TableHead>Menu Category</TableHead>
-                  <TableHead>Menu Item</TableHead>
-                  <TableHead>Total Bill Amount</TableHead>
-                  <TableHead>Payment Method</TableHead>
-                  <TableHead>Payment Status</TableHead>
+                  <TableHead>Pending Amount</TableHead>
+                  {(user?.role === 'super_admin' || user?.role === 'admin') && <TableHead>Branch</TableHead>}
+                  <TableHead>Table</TableHead>
+                  <TableHead>Category</TableHead>
                   <TableHead>Created Date</TableHead>
+                  <TableHead>Payment Status</TableHead>
                   <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -280,16 +283,16 @@ export default function PendingPaymentsPage() {
                       )}
                     >
                       <TableCell className="font-mono text-xs">{(c as any).orderId || c._id.slice(-8)}</TableCell>
-                      <TableCell className="text-sm font-medium">{c.name}</TableCell>
+                      <TableCell className="text-sm font-medium">{c.name || '—'}</TableCell>
                       <TableCell className="text-sm">{c.phone}</TableCell>
-                      <TableCell className="text-sm">{(c as any).menuCategoryId?.name || '—'}</TableCell>
-                      <TableCell className="text-sm">{(c as any).menuItemId?.name || '—'}</TableCell>
                       <TableCell className="text-sm font-medium">{formatCurrency((c as any).billAmount || 0)}</TableCell>
-                      <TableCell className="text-sm capitalize">{c.paymentMethod === 'mixed' ? 'Mixed' : c.paymentMethod}</TableCell>
+                      {(user?.role === 'super_admin' || user?.role === 'admin') && <TableCell className="text-sm">{(c as any).branch?.name || '—'}</TableCell>}
+                      <TableCell className="text-sm">{(c as any).table?.name || '—'}</TableCell>
+                      <TableCell className="text-sm">{(c as any).menuCategoryId?.name || '—'}</TableCell>
+                      <TableCell className="text-sm">{formatDate(c.createdAt || '', 'MMM dd, yyyy')}</TableCell>
                       <TableCell>
                         <Badge variant="danger">Unpaid</Badge>
                       </TableCell>
-                      <TableCell className="text-sm">{formatDate(c.createdAt || '', 'MMM dd, yyyy')}</TableCell>
                       <TableCell>
                         <div className="flex gap-1">
                           <Button size="sm" variant="ghost" onClick={() => handleViewDetails(c)}>
@@ -365,7 +368,7 @@ export default function PendingPaymentsPage() {
               <h3 className="text-sm font-semibold text-muted-foreground">Customer Details</h3>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <p className="text-xs text-muted-foreground">Customer Name</p>
+                  <p className="text-xs text-muted-foreground">Name</p>
                   <p className="text-sm font-medium">{selectedCustomer.name}</p>
                 </div>
                 <div>

@@ -610,10 +610,85 @@ const generateDailyBusinessReportForBranch = async ({ branchId, settings, now = 
   return report;
 };
 
+const resolveBranchEmailConfig = async (branchId, resolvedSettings) => {
+  const bIdStr = branchId ? branchId.toString() : '';
+
+  // 1. Check branchReportConfigs in global settings
+  const configs = resolvedSettings?.branchReportConfigs || [];
+  const foundInGlobal = configs.find((c) => c.branch && c.branch.toString() === bIdStr);
+
+  if (foundInGlobal) {
+    const emails = parseEmailList(foundInGlobal.dailyReportEmails);
+    const envFallback = parseEmailList(process.env.DAILY_REPORT_RECIPIENT_EMAILS || process.env.DAILY_REPORT_RECIPIENT_EMAIL);
+    return {
+      enabled: foundInGlobal.dailyReportEnabled !== false,
+      emails: emails.length ? emails : (parseEmailList(resolvedSettings?.dailyReportEmails || resolvedSettings?.dailyReportRecipientEmails).length ? parseEmailList(resolvedSettings?.dailyReportEmails || resolvedSettings?.dailyReportRecipientEmails) : envFallback),
+    };
+  }
+
+  // 2. Check per-branch Settings document in DB
+  const branchSettings = await Settings.findOne({ branch: branchId }).lean();
+  if (branchSettings) {
+    const emails = parseEmailList(branchSettings.dailyReportEmails || branchSettings.dailyReportRecipientEmails);
+    const envFallback = parseEmailList(process.env.DAILY_REPORT_RECIPIENT_EMAILS || process.env.DAILY_REPORT_RECIPIENT_EMAIL);
+    return {
+      enabled: branchSettings.dailyReportEnabled !== false,
+      emails: emails.length ? emails : (parseEmailList(resolvedSettings?.dailyReportEmails || resolvedSettings?.dailyReportRecipientEmails).length ? parseEmailList(resolvedSettings?.dailyReportEmails || resolvedSettings?.dailyReportRecipientEmails) : envFallback),
+    };
+  }
+
+  // 3. Fallback to global settings
+  const globalEmails = parseEmailList(resolvedSettings?.dailyReportEmails || resolvedSettings?.dailyReportRecipientEmails);
+  const envFallback = parseEmailList(process.env.DAILY_REPORT_RECIPIENT_EMAILS || process.env.DAILY_REPORT_RECIPIENT_EMAIL);
+  return {
+    enabled: resolvedSettings?.dailyReportEnabled !== false,
+    emails: globalEmails.length ? globalEmails : envFallback,
+  };
+};
+
 const runDailyBusinessReportForBranch = async ({ branchId, settings, now = new Date(), triggeredBy = 'scheduler' }) => {
   const resolvedSettings = await resolveReportSettings(settings);
+  const branchConfig = await resolveBranchEmailConfig(branchId, resolvedSettings);
   const report = await generateDailyBusinessReportForBranch({ branchId, settings: resolvedSettings, now });
-  const recipients = getReportRecipientsForSettings(resolvedSettings);
+
+  if (!branchConfig.enabled) {
+    const delivery = await DailyReportDelivery.findOneAndUpdate(
+      { reportType: 'daily_business_report', branch: report.branchId, reportDateKey: report.reportDateKey },
+      {
+        $set: {
+          branch: report.branchId,
+          branchName: report.branchName,
+          reportDateKey: report.reportDateKey,
+          reportDate: report.windowEnd,
+          timeZone: report.timeZone,
+          status: 'skipped',
+          recipientEmails: [],
+          provider: resolveEmailProvider(),
+          subject: report.subject,
+          summary: report.summary,
+          attemptCount: 0,
+          errorMessage: 'Daily report disabled for this branch.',
+          generatedAt: now,
+          finishedAt: new Date(),
+          triggeredBy,
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return {
+      status: 'skipped',
+      branchId: report.branchId,
+      branchName: report.branchName,
+      reportDateKey: report.reportDateKey,
+      recipients: [],
+      delivery,
+      report,
+      message: 'Daily report disabled for this branch.',
+    };
+  }
+
+  const recipients = branchConfig.emails;
   if (!recipients.length) {
     const delivery = await DailyReportDelivery.findOneAndUpdate(
       { reportType: 'daily_business_report', branch: report.branchId, reportDateKey: report.reportDateKey },

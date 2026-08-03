@@ -3,20 +3,13 @@ const path = require('path');
 const fs = require('fs');
 
 /**
- * Generates a professional PDF invoice as a Buffer.
+ * Generates a compact thermal/POS receipt-style PDF invoice as a Buffer.
  * @param {object} bill  - Populated bill document
  * @param {object} settings - Business settings (name, logo, currency symbol, etc.)
  * @returns {Promise<Buffer>}
  */
 const generateInvoicePDF = (bill, settings = {}) => {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 50, size: 'A4' });
-    const buffers = [];
-
-    doc.on('data', (chunk) => buffers.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(buffers)));
-    doc.on('error', reject);
-
     const fontStyle = settings.receipt?.fontStyle || 'Courier';
     const fontRegular = fontStyle === 'Courier' ? 'Courier' : fontStyle === 'Times-Roman' ? 'Times-Roman' : 'Helvetica';
     const fontBold = fontStyle === 'Courier' ? 'Courier-Bold' : fontStyle === 'Times-Roman' ? 'Times-Bold' : 'Helvetica-Bold';
@@ -29,10 +22,16 @@ const generateInvoicePDF = (bill, settings = {}) => {
     const branchPhone = bill.branch?.phone || '';
     const gstNumber = settings.gstNumber || '';
 
-    const receiptHeader = settings.receipt?.header || {};
+    const receiptHeader = {
+      showLogo: true,
+      showAddress: true,
+      showPhone: true,
+      showEmail: false,
+      showWebsite: false,
+      ...(settings.receipt?.header || {}),
+    };
     
-    // Default load all config fields for backward compatibility
-    const receiptOrderDetails = settings.receipt?.orderDetails || {
+    const receiptOrderDetails = {
       showInvoiceNumber: true,
       showCustomer: true,
       showAdditionalPlayers: true,
@@ -45,18 +44,20 @@ const generateInvoicePDF = (bill, settings = {}) => {
       showStaffName: true,
       showItemizedList: true,
       showTax: true,
-      showDiscount: true
+      showDiscount: true,
+      ...(settings.receipt?.orderDetails || {}),
     };
     
-    const receiptItemsSection = settings.receipt?.itemsSection || {
+    const receiptItemsSection = {
       showItemName: true,
       showQty: true,
       showRate: true,
       showAmount: true,
-      showTotalItems: true
+      showTotalItems: true,
+      ...(settings.receipt?.itemsSection || {}),
     };
 
-    const receiptPaymentSection = settings.receipt?.paymentSection || {
+    const receiptPaymentSection = {
       showDiscount: true,
       showWalletUsed: true,
       showCashPaid: true,
@@ -65,10 +66,29 @@ const generateInvoicePDF = (bill, settings = {}) => {
       showTotalPaid: true,
       showPendingAmount: true,
       showPaymentStatus: true,
-      showGrandTotal: true
+      showGrandTotal: true,
+      ...(settings.receipt?.paymentSection || {}),
     };
 
-    const receiptFooter = settings.receipt?.footer || {};
+    const receiptFooter = {
+      showThankYou: true,
+      thankYouMessage: 'Thank you for visiting! See you again.',
+      showTerms: false,
+      termsText: '',
+      showNotes: false,
+      notesText: '',
+      showPaymentInstructions: false,
+      paymentInstructions: '',
+      showBankDetails: false,
+      bankName: '',
+      accountNumber: '',
+      ifscCode: '',
+      upiId: '',
+      showQRCode: false,
+      showSignature: false,
+      signatureLabel: 'Authorized Signature',
+      ...(settings.receipt?.footer || {}),
+    };
 
     const showLogo = receiptHeader.showLogo !== false;
     const showAddress = receiptHeader.showAddress !== false;
@@ -79,8 +99,16 @@ const generateInvoicePDF = (bill, settings = {}) => {
     const headerPhone = receiptHeader.phone || branchPhone;
     const headerEmail = receiptHeader.email || '';
     const headerWebsite = receiptHeader.website || '';
+    const showMetaSection = receiptOrderDetails.showInvoiceNumber || receiptOrderDetails.showDateTime || receiptOrderDetails.showCategory;
+    const showCustomerInfo = receiptOrderDetails.showCustomer || receiptOrderDetails.showAdditionalPlayers;
+    const hasSessionDetails = receiptOrderDetails.showTableName || receiptOrderDetails.showStartTime || receiptOrderDetails.showEndTime || receiptOrderDetails.showDuration;
+    const showThankYou = receiptFooter.showThankYou !== false;
+    const thankYouMessage = receiptFooter.thankYouMessage || settings.receiptFooterNote || 'Thank you for visiting! See you again.';
+    const showTerms = receiptFooter.showTerms === true;
+    const showNotes = receiptFooter.showNotes !== false;
+    const notesText = receiptFooter.notesText || 'This is a computer-generated invoice. No signature is required.';
 
-    // Helper function for formatting dates
+    // Helper function for formatting dates & times
     const formatDate = (date) => {
       if (!date) return '';
       const d = new Date(date);
@@ -93,7 +121,6 @@ const generateInvoicePDF = (bill, settings = {}) => {
       return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
     };
 
-    // Helper function for formatting duration
     const formatDuration = (minutes) => {
       if (!minutes) return '0m';
       const hrs = Math.floor(minutes / 60);
@@ -101,15 +128,61 @@ const generateInvoicePDF = (bill, settings = {}) => {
       return hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
     };
 
-    // Helper for drawing dashed divider
+    // Calculate required height for 80mm POS Thermal Receipt
+    let h = 20; // margins
+    if (showLogo) h += 40;
+    h += 16; // bizName
+    if (branchName) h += 12;
+    if (showAddress && headerAddress) h += 16;
+    if (showPhone && headerPhone) h += 12;
+    if (showEmail && headerEmail) h += 12;
+    if (showWebsite && headerWebsite) h += 12;
+    if (gstNumber) h += 12;
+
+    if (showMetaSection) h += 48;
+    if (showCustomerInfo) h += 32;
+    if (bill.session && hasSessionDetails) h += 55;
+    if (receiptOrderDetails.showItemizedList) {
+      h += 22;
+      h += (bill.items || []).length * 16;
+      if (receiptItemsSection.showTotalItems) h += 14;
+      h += 10;
+    }
+    h += 60; // summary
+    h += 45; // payment
+    if (showThankYou) h += 16;
+    if (showTerms && receiptFooter.termsText) h += 14;
+    if (showNotes && notesText) h += 14;
+    if (receiptFooter.showPaymentInstructions && receiptFooter.paymentInstructions) h += 14;
+    if (receiptFooter.showBankDetails) h += 22;
+    if (receiptFooter.showQRCode) h += 52;
+    if (receiptFooter.showSignature) h += 20;
+
+    const totalHeight = Math.max(380, Math.ceil(h + 30));
+
+    // Initialize 80mm (226.77 pt) POS Receipt PDF Document
+    const doc = new PDFDocument({
+      size: [226.77, totalHeight],
+      margin: 10,
+    });
+
+    const buffers = [];
+    doc.on('data', (chunk) => buffers.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(buffers)));
+    doc.on('error', reject);
+
+    const pageWidth = 226.77;
+    const margin = 10;
+    const contentWidth = pageWidth - margin * 2; // 206.77
+    const rightMarginX = pageWidth - margin; // 216.77
+
     const drawDashedDivider = (currentY) => {
-      doc.dash(3, { space: 2 }).moveTo(50, currentY).lineTo(545, currentY).strokeColor('#000000').lineWidth(0.8).stroke();
+      doc.dash(2, { space: 2 }).moveTo(margin, currentY).lineTo(rightMarginX, currentY).strokeColor('#000000').lineWidth(0.6).stroke();
       doc.undash();
     };
 
-    // ── Header Section ──────────────────────────────────────────────────────
-    let y = 50;
-    
+    let y = 10;
+
     // 1. Logo
     if (showLogo) {
       let logoPath = null;
@@ -120,122 +193,114 @@ const generateInvoicePDF = (bill, settings = {}) => {
           logoPath = localLogoPath;
         }
       }
+      const logoWidth = 45;
+      const logoX = (pageWidth - logoWidth) / 2;
       if (logoPath) {
         try {
-          doc.image(logoPath, 267, y, { fit: [60, 60], align: 'center' });
-          y += 70;
+          doc.image(logoPath, logoX, y, { fit: [logoWidth, 35], align: 'center' });
+          y += 38;
         } catch (err) {
-          y += 10;
+          y += 5;
         }
       } else {
-        // Draw elegant placeholder logo box
-        doc.rect(267, y, 60, 40).strokeColor('#000000').lineWidth(0.8).stroke();
-        doc.fontSize(8).font('Courier-Bold').fillColor('#000000').text('LOGO', 267, y + 16, { width: 60, align: 'center' });
-        y += 55;
+        doc.rect(logoX, y, logoWidth, 26).strokeColor('#000000').lineWidth(0.6).stroke();
+        doc.fontSize(7).font('Courier-Bold').fillColor('#000000').text('LOGO', logoX, y + 9, { width: logoWidth, align: 'center' });
+        y += 32;
       }
     }
-    
+
     // 2. Business details
-    doc.fontSize(14).font(fontBold).fillColor('#000000').text(bizName.toUpperCase(), 297, y, { align: 'center' });
-    y += 18;
-    
+    doc.fontSize(10.5).font(fontBold).fillColor('#000000').text(bizName.toUpperCase(), margin, y, { width: contentWidth, align: 'center' });
+    y += 14;
+
     if (branchName) {
-      doc.fontSize(9).font(fontRegular).fillColor('#000000').text(branchName, 297, y, { align: 'center' });
-      y += 14;
+      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(branchName, margin, y, { width: contentWidth, align: 'center' });
+      y += 11;
     }
-    
+
     if (showAddress && headerAddress) {
-      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(headerAddress, 50, y, { width: 495, align: 'center' });
-      const addressLines = Math.ceil(doc.widthOfString(headerAddress, { width: 495 }) / 495);
-      y += Math.max(12, addressLines * 10);
+      doc.fontSize(7.5).font(fontRegular).fillColor('#000000').text(headerAddress, margin, y, { width: contentWidth, align: 'center' });
+      const addressLines = Math.ceil(doc.widthOfString(headerAddress, { width: contentWidth }) / contentWidth);
+      y += Math.max(10, addressLines * 9);
     }
-    
+
     if (showPhone && headerPhone) {
-      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`Ph: ${headerPhone}`, 297, y, { align: 'center' });
-      y += 12;
+      doc.fontSize(7.5).font(fontRegular).fillColor('#000000').text(`Ph: ${headerPhone}`, margin, y, { width: contentWidth, align: 'center' });
+      y += 10;
     }
 
     if (showEmail && headerEmail) {
-      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`Email: ${headerEmail}`, 297, y, { align: 'center' });
-      y += 12;
+      doc.fontSize(7.5).font(fontRegular).fillColor('#000000').text(`Email: ${headerEmail}`, margin, y, { width: contentWidth, align: 'center' });
+      y += 10;
     }
 
     if (showWebsite && headerWebsite) {
-      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`Web: ${headerWebsite}`, 297, y, { align: 'center' });
-      y += 12;
-    }
-    
-    if (gstNumber) {
-      doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`GSTIN: ${gstNumber}`, 297, y, { align: 'center' });
-      y += 14;
+      doc.fontSize(7.5).font(fontRegular).fillColor('#000000').text(`Web: ${headerWebsite}`, margin, y, { width: contentWidth, align: 'center' });
+      y += 10;
     }
 
-    // TAX INVOICE heading
-    const showMetaSection = receiptOrderDetails.showInvoiceNumber || receiptOrderDetails.showDateTime || receiptOrderDetails.showCategory;
+    if (gstNumber) {
+      doc.fontSize(7.5).font(fontRegular).fillColor('#000000').text(`GSTIN: ${gstNumber}`, margin, y, { width: contentWidth, align: 'center' });
+      y += 11;
+    }
+
+    // 3. TAX INVOICE Header & Meta
     if (showMetaSection) {
+      y += 4;
+      drawDashedDivider(y);
       y += 6;
+      doc.fontSize(9.5).font(fontBold).fillColor('#000000').text(templateName.toUpperCase(), margin, y, { width: contentWidth, align: 'center' });
+      y += 12;
       drawDashedDivider(y);
       y += 8;
-      doc.fontSize(12).font(fontBold).fillColor('#000000').text(templateName.toUpperCase(), 297, y, { align: 'center' });
-      y += 14;
-      drawDashedDivider(y);
-      y += 10;
 
-      // ── Invoice Details ───────────────────────────────────────────────────────
-      doc.fontSize(9).font(fontRegular).fillColor('#000000');
-      
-      // Left column
+      doc.fontSize(8).font(fontRegular).fillColor('#000000');
       if (receiptOrderDetails.showInvoiceNumber) {
-        doc.text(`Bill No: ${bill.invoiceNumber || ''}`, 50, y);
+        const invoiceNum = bill.order?.orderId || bill.invoiceNumber || '';
+        doc.text(`Bill No: ${invoiceNum}`, margin, y);
       }
-      if (receiptOrderDetails.showDateTime) {
-        doc.text(`Date: ${formatDate(bill.createdAt)}`, 50, y + 14);
-      }
-      
-      // Right column
       if (receiptOrderDetails.showCategory) {
         const orderType = bill.session ? 'Table Session' : 'Walk-in';
-        doc.text(orderType, 380, y, { width: 165, align: 'right' });
+        doc.text(orderType, 110, y, { width: 106.77, align: 'right' });
       }
+      y += 12;
+
       if (receiptOrderDetails.showDateTime) {
-        doc.text(`Time: ${formatTime(bill.createdAt)}`, 380, y + 14, { width: 165, align: 'right' });
+        const invoiceDateTime = bill.order?.createdAt || bill.session?.createdAt || bill.session?.startTime || bill.customer?.createdAt || bill.createdAt;
+        doc.text(`Date: ${formatDate(invoiceDateTime)}`, margin, y);
+        doc.text(`Time: ${formatTime(invoiceDateTime)}`, 110, y, { width: 106.77, align: 'right' });
+        y += 12;
       }
 
-      y += 34;
       drawDashedDivider(y);
-      y += 10;
+      y += 8;
     }
 
-    // ── Customer Details ──────────────────────────────────────────────────────
-    const showCustomerInfo = receiptOrderDetails.showCustomer || receiptOrderDetails.showAdditionalPlayers;
+    // 4. Customer Details
     if (showCustomerInfo) {
       const customerName = bill.customer?.name || 'Walk-in';
       const customerPhone = bill.customer?.phone || '';
-      
+
+      doc.fontSize(8).font(fontRegular).fillColor('#000000');
       if (receiptOrderDetails.showCustomer) {
-        doc.text(`Customer: ${customerName}`, 50, y);
+        doc.text(`Customer: ${customerName}`, margin, y);
         if (customerPhone) {
-          doc.text(`Mobile: ${customerPhone}`, 380, y, { width: 165, align: 'right' });
+          doc.text(`Mobile: ${customerPhone}`, 110, y, { width: 106.77, align: 'right' });
         }
-        y += 14;
+        y += 12;
       }
 
-      // Additional Players
-      if (receiptOrderDetails.showAdditionalPlayers) {
-        const additionalPlayers = bill.order?.additionalPlayers || '';
-        if (additionalPlayers) {
-          doc.text(`Add. Players: ${additionalPlayers}`, 50, y);
-          y += 14;
-        }
+      if (receiptOrderDetails.showAdditionalPlayers && bill.order?.additionalPlayers) {
+        doc.text(`Add. Players: ${bill.order.additionalPlayers}`, margin, y, { width: contentWidth });
+        y += 12;
       }
 
-      y += 4;
       drawDashedDivider(y);
-      y += 10;
+      y += 8;
     }
 
-    // ── Session Details (Time-based categories display duration/times) ───────────────────────────────────────────────────────
-    if (bill.session && (receiptOrderDetails.showTableName || receiptOrderDetails.showStartTime || receiptOrderDetails.showEndTime || receiptOrderDetails.showDuration)) {
+    // 5. Session Details
+    if (bill.session && hasSessionDetails) {
       const session = bill.session;
       const table = session.table;
       const gameCategory = table?.type?.toUpperCase() || 'GAME';
@@ -243,120 +308,106 @@ const generateInvoicePDF = (bill, settings = {}) => {
       const startTime = formatTime(session.startTime);
       const endTime = formatTime(session.endTime);
       const duration = formatDuration(session.billableMinutes);
-      
+
+      doc.fontSize(7.5).font(fontRegular).fillColor('#000000');
       if (receiptOrderDetails.showCategory) {
-        doc.text(`Table/Game Category: ${gameCategory}`, 50, y);
-        y += 14;
+        doc.text(`Category: ${gameCategory}`, margin, y);
+        y += 11;
       }
       if (receiptOrderDetails.showTableName) {
-        doc.text(`Table/Menu Item: ${tableName}`, 50, y);
-        y += 14;
+        doc.text(`Table: ${tableName}`, margin, y);
+        y += 11;
       }
-      if (receiptOrderDetails.showStartTime) {
-        doc.text(`Start Time: ${startTime}`, 50, y);
-      }
-      if (receiptOrderDetails.showEndTime) {
-        doc.text(`End Time: ${endTime}`, 220, y);
+      if (receiptOrderDetails.showStartTime || receiptOrderDetails.showEndTime) {
+        doc.text(`Start: ${startTime}  End: ${endTime}`, margin, y);
+        y += 11;
       }
       if (receiptOrderDetails.showDuration) {
-        doc.text(`Duration: ${duration}`, 380, y, { width: 165, align: 'right' });
-      }
-      if (receiptOrderDetails.showStartTime || receiptOrderDetails.showEndTime || receiptOrderDetails.showDuration) {
-        y += 14;
+        doc.text(`Duration: ${duration}`, margin, y);
+        y += 11;
       }
       if (receiptOrderDetails.showStaffName && bill.createdBy?.name) {
-        doc.text(`Billed By: ${bill.createdBy.name}`, 50, y);
-        y += 14;
+        doc.text(`Billed By: ${bill.createdBy.name}`, margin, y);
+        y += 11;
       }
 
-      y += 4;
       drawDashedDivider(y);
-      y += 10;
+      y += 8;
     }
 
-    // ── Billing Table ───────────────────────────────────────────────────────
+    // 6. Itemized List
     if (receiptOrderDetails.showItemizedList) {
-      // Table Header
-      doc.fontSize(9).font(fontBold).fillColor('#000000');
-      if (receiptItemsSection.showItemName) doc.text('ITEM', 50, y);
-      if (receiptItemsSection.showQty) doc.text('QTY', 340, y, { width: 30, align: 'right' });
-      if (receiptItemsSection.showRate) doc.text('RATE', 380, y, { width: 70, align: 'right' });
-      if (receiptItemsSection.showAmount) doc.text('AMT', 460, y, { width: 85, align: 'right' });
+      doc.fontSize(7.5).font(fontBold).fillColor('#000000');
+      if (receiptItemsSection.showItemName) doc.text('ITEM', margin, y);
+      if (receiptItemsSection.showQty) doc.text('QTY', 110, y, { width: 25, align: 'right' });
+      if (receiptItemsSection.showRate) doc.text('RATE', 135, y, { width: 35, align: 'right' });
+      if (receiptItemsSection.showAmount) doc.text('AMT', 170, y, { width: 46.77, align: 'right' });
 
-      y += 12;
-      doc.moveTo(50, y).lineTo(545, y).strokeColor('#000000').lineWidth(0.8).stroke();
-      y += 6;
+      y += 10;
+      doc.moveTo(margin, y).lineTo(rightMarginX, y).strokeColor('#000000').lineWidth(0.6).stroke();
+      y += 5;
 
-      // Items list
       doc.font(fontRegular);
       for (let i = 0; i < bill.items.length; i++) {
         const item = bill.items[i];
-        if (receiptItemsSection.showItemName) doc.text(item.description, 50, y, { width: 280 });
-        if (receiptItemsSection.showQty) doc.text(String(item.quantity), 340, y, { width: 30, align: 'right' });
-        if (receiptItemsSection.showRate) doc.text(item.unitPrice.toFixed(2), 380, y, { width: 70, align: 'right' });
-        if (receiptItemsSection.showAmount) doc.text(item.total.toFixed(2), 460, y, { width: 85, align: 'right' });
-        
-        const descHeight = receiptItemsSection.showItemName ? doc.heightOfString(item.description, { width: 280 }) : 12;
-        y += Math.max(14, descHeight + 2);
-        
-        if (i < bill.items.length - 1) {
-          doc.dash(1, { space: 2 }).moveTo(50, y - 2).lineTo(545, y - 2).strokeColor('#cccccc').lineWidth(0.5).stroke();
-          doc.undash();
-        }
+        if (receiptItemsSection.showItemName) doc.text(item.description, margin, y, { width: 98 });
+        if (receiptItemsSection.showQty) doc.text(String(item.quantity), 110, y, { width: 25, align: 'right' });
+        if (receiptItemsSection.showRate) doc.text(item.unitPrice.toFixed(2), 135, y, { width: 35, align: 'right' });
+        if (receiptItemsSection.showAmount) doc.text(item.total.toFixed(2), 170, y, { width: 46.77, align: 'right' });
+
+        const descHeight = receiptItemsSection.showItemName ? doc.heightOfString(item.description, { width: 98 }) : 10;
+        y += Math.max(12, descHeight + 2);
       }
 
-      y += 4;
       if (receiptItemsSection.showTotalItems) {
-        doc.fontSize(8).font(fontRegular).fillColor('#000000').text(`Total Items: ${bill.items.length}`, 50, y);
-        y += 12;
+        doc.fontSize(7.5).font(fontRegular).fillColor('#000000').text(`Total Items: ${bill.items.length}`, margin, y);
+        y += 11;
       }
       drawDashedDivider(y);
-      y += 10;
+      y += 8;
     }
 
-    // ── Billing Summary (No duplicate tax calculation, inclusive prices) ───────────────────────────────────────────────────────
-    const summaryX = 320;
+    // 7. Billing Summary
     const addSummaryRow = (label, value, bold = false) => {
-      doc.fontSize(9).font(bold ? fontBold : fontRegular).fillColor('#000000')
-        .text(label, summaryX, y)
-        .text(value, 460, y, { width: 85, align: 'right' });
-      y += 14;
+      doc.fontSize(8).font(bold ? fontBold : fontRegular).fillColor('#000000')
+        .text(label, margin, y)
+        .text(value, 120, y, { width: 96.77, align: 'right' });
+      y += 12;
     };
 
     addSummaryRow('Subtotal:', `${symbol}${bill.subtotal.toFixed(2)}`);
-    
+
     if (receiptPaymentSection.showDiscount) {
       if (bill.discountAmount > 0) {
         addSummaryRow(`Discount (${bill.discountType || 'flat'}):`, `-${symbol}${bill.discountAmount.toFixed(2)}`);
       }
       if (bill.membershipDiscount > 0) {
-        addSummaryRow('Membership Discount:', `-${symbol}${bill.membershipDiscount.toFixed(2)}`);
+        addSummaryRow('Membership Disc:', `-${symbol}${bill.membershipDiscount.toFixed(2)}`);
       }
     }
 
     if (receiptOrderDetails.showTax && bill.tax > 0) {
       addSummaryRow('Tax / GST:', `${symbol}${bill.tax.toFixed(2)}`);
     }
-    
+
     if (receiptPaymentSection.showWalletUsed && bill.walletUsed > 0) {
       addSummaryRow('Wallet Used:', `-${symbol}${bill.walletUsed.toFixed(2)}`);
     }
 
-    // Grand Total divider box
     const billTotal = bill.total || 0;
     if (receiptPaymentSection.showGrandTotal) {
+      y += 2;
+      doc.moveTo(margin, y).lineTo(rightMarginX, y).strokeColor('#000000').lineWidth(0.8).stroke();
       y += 4;
-      doc.moveTo(50, y).lineTo(545, y).strokeColor('#000000').lineWidth(1).stroke();
-      y += 6;
-      doc.fontSize(11).font(fontBold).fillColor('#000000')
-        .text('GRAND TOTAL', 50, y)
-        .text(`${symbol}${billTotal.toFixed(2)}`, 460, y, { width: 85, align: 'right' });
-      y += 14;
-      doc.moveTo(50, y).lineTo(545, y).strokeColor('#000000').lineWidth(1).stroke();
-      y += 10;
+      doc.fontSize(9).font(fontBold).fillColor('#000000')
+        .text('GRAND TOTAL', margin, y)
+        .text(`${symbol}${billTotal.toFixed(2)}`, 120, y, { width: 96.77, align: 'right' });
+      y += 13;
+      doc.moveTo(margin, y).lineTo(rightMarginX, y).strokeColor('#000000').lineWidth(0.8).stroke();
+      y += 8;
     }
 
-    // ── Payment Information ───────────────────────────────────────────────────
+    // 8. Payment Section
     const order = bill.order || {};
     let paymentMethod = order.paymentMethod?.toUpperCase() || 'CASH';
     let cashAmount = order.cashAmount || 0;
@@ -364,7 +415,7 @@ const generateInvoicePDF = (bill, settings = {}) => {
     let walletAmount = order.walletAmount || bill.walletUsed || 0;
     let totalPaid = order.totalPaid || 0;
     let pendingAmount = order.pendingPaymentAmount || 0;
-    
+
     if (!order._id) {
       if (bill.paymentStatus === 'paid') {
         totalPaid = billTotal;
@@ -376,77 +427,68 @@ const generateInvoicePDF = (bill, settings = {}) => {
       }
     }
 
-    doc.fontSize(9).font(fontRegular).fillColor('#000000');
+    doc.fontSize(7.5).font(fontRegular).fillColor('#000000');
     if (receiptPaymentSection.showPaymentStatus) {
-      doc.text(`Payment Method: ${paymentMethod}`, 50, y);
-      y += 14;
+      doc.text(`Payment Method: ${paymentMethod}`, margin, y);
+      y += 11;
     }
 
     if (receiptPaymentSection.showPaymentBreakdown) {
       if (receiptPaymentSection.showCashPaid && cashAmount > 0) {
-        doc.text(`Cash Paid: ${symbol}${cashAmount.toFixed(2)}`, 50, y);
-        y += 14;
+        doc.text(`Cash Paid: ${symbol}${cashAmount.toFixed(2)}`, margin, y);
+        y += 11;
       }
-
       if (receiptPaymentSection.showUPIPaid && upiAmount > 0) {
-        doc.text(`UPI Paid: ${symbol}${upiAmount.toFixed(2)}`, 50, y);
-        y += 14;
+        doc.text(`UPI Paid: ${symbol}${upiAmount.toFixed(2)}`, margin, y);
+        y += 11;
       }
     }
 
     if (receiptPaymentSection.showWalletUsed && walletAmount > 0) {
-      doc.text(`Wallet Paid: ${symbol}${walletAmount.toFixed(2)}`, 50, y);
-      y += 14;
+      doc.text(`Wallet Paid: ${symbol}${walletAmount.toFixed(2)}`, margin, y);
+      y += 11;
     }
 
     if (receiptPaymentSection.showTotalPaid && totalPaid > 0) {
-      doc.text(`Total Paid: ${symbol}${totalPaid.toFixed(2)}`, 50, y);
-      y += 14;
+      doc.text(`Total Paid: ${symbol}${totalPaid.toFixed(2)}`, margin, y);
+      y += 11;
     }
 
     if (receiptPaymentSection.showPendingAmount && pendingAmount > 0) {
-      doc.text(`Pending Amount: ${symbol}${pendingAmount.toFixed(2)}`, 50, y);
-      y += 14;
-      
-      y += 4;
-      doc.font(fontBold).fillColor('#990000').text(`OUTSTANDING BALANCE: ${symbol}${pendingAmount.toFixed(2)}`, 50, y);
+      doc.text(`Pending Amount: ${symbol}${pendingAmount.toFixed(2)}`, margin, y);
+      y += 11;
+      doc.font(fontBold).fillColor('#990000').text(`OUTSTANDING: ${symbol}${pendingAmount.toFixed(2)}`, margin, y);
       doc.font(fontRegular).fillColor('#000000');
-      y += 14;
+      y += 11;
     }
 
-    y += 5;
+    y += 4;
     drawDashedDivider(y);
-    y += 12;
+    y += 8;
 
-    // ── Footer Section ───────────────────────────────────────────────────────
-    const showThankYou = receiptFooter.showThankYou !== false;
-    const thankYouMessage = receiptFooter.thankYouMessage || settings.receiptFooterNote || 'Thank you for visiting! See you again.';
-    
+    // 9. Footer Section
     if (showThankYou && thankYouMessage) {
-      doc.fontSize(9).font(fontBold).fillColor('#000000')
-        .text(thankYouMessage, 297, y, { align: 'center' });
-      y += doc.heightOfString(thankYouMessage, { width: 495, align: 'center' }) + 6;
+      doc.fontSize(8).font(fontBold).fillColor('#000000')
+        .text(thankYouMessage, margin, y, { width: contentWidth, align: 'center' });
+      y += doc.heightOfString(thankYouMessage, { width: contentWidth, align: 'center' }) + 4;
     }
 
-    const showTerms = receiptFooter.showTerms === true;
     if (showTerms && receiptFooter.termsText) {
-      doc.fontSize(7).font(fontRegular).fillColor('#666666')
-        .text(`Terms: ${receiptFooter.termsText}`, 50, y, { width: 495, align: 'center' });
-      y += doc.heightOfString(`Terms: ${receiptFooter.termsText}`, { width: 495, align: 'center' }) + 4;
+      doc.fontSize(6.5).font(fontRegular).fillColor('#444444')
+        .text(`Terms: ${receiptFooter.termsText}`, margin, y, { width: contentWidth, align: 'center' });
+      y += doc.heightOfString(`Terms: ${receiptFooter.termsText}`, { width: contentWidth, align: 'center' }) + 3;
     }
 
-    const showNotes = receiptFooter.showNotes !== false;
-    const notesText = receiptFooter.notesText || 'This is a computer-generated invoice. No signature is required.';
     if (showNotes && notesText) {
-      doc.fontSize(7).font(fontRegular).fillColor('#666666')
-        .text(notesText, 50, y, { width: 495, align: 'center' });
-      y += doc.heightOfString(notesText, { width: 495, align: 'center' }) + 4;
+      doc.fontSize(6.5).font(fontRegular).fillColor('#444444')
+        .text(notesText, margin, y, { width: contentWidth, align: 'center' });
+      y += doc.heightOfString(notesText, { width: contentWidth, align: 'center' }) + 3;
     }
 
     if (receiptFooter.showPaymentInstructions && receiptFooter.paymentInstructions) {
-      doc.fontSize(7).font(fontRegular).fillColor('#666666')
-        .text(receiptFooter.paymentInstructions, 50, y, { width: 495, align: 'center' });
-      y += doc.heightOfString(receiptFooter.paymentInstructions, { width: 495, align: 'center' }) + 4;
+      doc.fontSize(6.5).font(fontRegular).fillColor('#444444')
+        .text(receiptFooter.paymentInstructions, margin, y, { width: contentWidth, align: 'center' });
+      y += doc.heightOfString(receiptFooter.paymentInstructions, { width: contentWidth, align: 'center' }) + 3;
     }
 
     if (receiptFooter.showBankDetails) {
@@ -457,23 +499,24 @@ const generateInvoicePDF = (bill, settings = {}) => {
         receiptFooter.upiId ? `UPI: ${receiptFooter.upiId}` : '',
       ].filter(Boolean);
       if (bankLines.length > 0) {
-        doc.fontSize(7).font(fontRegular).fillColor('#666666')
-          .text(bankLines.join(' | '), 50, y, { width: 495, align: 'center' });
-        y += doc.heightOfString(bankLines.join(' | '), { width: 495, align: 'center' }) + 4;
+        doc.fontSize(6.5).font(fontRegular).fillColor('#444444')
+          .text(bankLines.join(' | '), margin, y, { width: contentWidth, align: 'center' });
+        y += doc.heightOfString(bankLines.join(' | '), { width: contentWidth, align: 'center' }) + 3;
       }
     }
 
     if (receiptFooter.showQRCode) {
-      // Draw elegant dummy POS QR Code box at the bottom
-      doc.rect(272, y, 50, 50).strokeColor('#000000').lineWidth(0.8).stroke();
-      doc.fontSize(6).font(fontBold).fillColor('#000000').text('QR CODE', 272, y + 22, { width: 50, align: 'center' });
-      y += 56;
+      const qrWidth = 40;
+      const qrX = (pageWidth - qrWidth) / 2;
+      doc.rect(qrX, y, qrWidth, 40).strokeColor('#000000').lineWidth(0.6).stroke();
+      doc.fontSize(6).font(fontBold).fillColor('#000000').text('QR CODE', qrX, y + 16, { width: qrWidth, align: 'center' });
+      y += 46;
     }
 
     if (receiptFooter.showSignature) {
-      y += 8;
-      doc.fontSize(7).font(fontRegular).fillColor('#666666')
-        .text(receiptFooter.signatureLabel || 'Authorized Signature', 400, y, { width: 145, align: 'center' });
+      y += 4;
+      doc.fontSize(6.5).font(fontRegular).fillColor('#444444')
+        .text(receiptFooter.signatureLabel || 'Authorized Signature', margin, y, { width: contentWidth, align: 'right' });
     }
 
     doc.end();

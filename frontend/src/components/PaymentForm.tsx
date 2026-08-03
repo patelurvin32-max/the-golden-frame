@@ -1,6 +1,12 @@
 import { useEffect } from 'react';
-import { Input, Label, Select } from '@/components/ui';
+import { Input, Label, Select, Button } from '@/components/ui';
 import { formatCurrency, parseCurrencyValue } from '@/utils';
+
+export interface PendingPlayer {
+  name?: string;
+  mobile: string;
+  amount: string;
+}
 
 export interface PaymentFormValues {
   paymentStatus: 'paid' | 'partial' | 'unpaid' | 'refunded';
@@ -14,6 +20,7 @@ export interface PaymentFormValues {
   addToWallet: boolean;
   extraAmount: string;
   walletBalance: number;
+  pendingPlayers?: PendingPlayer[];
 }
 
 interface PaymentFormProps {
@@ -22,6 +29,8 @@ interface PaymentFormProps {
   disabled?: boolean;
   showBillAmountField?: boolean;
   readOnlyBillAmount?: boolean;
+  hideWalletBalance?: boolean;
+  hideAmountReceived?: boolean;
 }
 
 const PAYMENT_STATUSES = ['paid', 'partial', 'unpaid', 'refunded'] as const;
@@ -32,12 +41,15 @@ export default function PaymentForm({
   onChange,
   disabled = false,
   showBillAmountField = false,
-  readOnlyBillAmount = false
+  readOnlyBillAmount = false,
+  hideWalletBalance = false,
+  hideAmountReceived = false
 }: PaymentFormProps) {
   // Reset split payment fields when switching to 'mixed' method so all inputs start blank
+  // Reset split payment fields when switching to 'mixed' method if it was defaulted to full bill amount
   useEffect(() => {
     if (values.paymentMethod === 'mixed') {
-      if (values.cashAmount === values.billAmount || Number(values.cashAmount) === Number(values.billAmount) || values.onlineAmount === '0' || values.pendingPaymentAmount === '0') {
+      if (values.cashAmount && Number(values.cashAmount) === Number(values.billAmount) && Number(values.billAmount) > 0) {
         onChange({
           ...values,
           cashAmount: '',
@@ -67,6 +79,20 @@ export default function PaymentForm({
     }
   }, [values.paymentMethod]);
 
+  // Auto-clear payment method if status is 'unpaid'
+  useEffect(() => {
+    if (values.paymentStatus === 'unpaid' && values.paymentMethod) {
+      onChange({
+        ...values,
+        paymentMethod: '',
+        cashAmount: '',
+        onlineAmount: '',
+        walletAmount: '',
+        pendingPaymentAmount: '',
+      });
+    }
+  }, [values.paymentStatus]);
+
   const handleFieldChange = (field: keyof PaymentFormValues, value: string | boolean) => {
     onChange({ ...values, [field]: value });
   };
@@ -90,7 +116,7 @@ export default function PaymentForm({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className={`grid gap-3 ${values.paymentStatus === 'unpaid' ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}`}>
         <div className="space-y-1.5">
           <Label>Payment Status *</Label>
           <Select
@@ -103,33 +129,37 @@ export default function PaymentForm({
             ))}
           </Select>
         </div>
-        <div className="space-y-1.5">
-          <Label>Payment Method {isPaymentMethodRequired ? '*' : ''}</Label>
-          <Select
-            value={values.paymentMethod || ''}
-            onChange={(e) => handleFieldChange('paymentMethod', e.target.value as any)}
-            disabled={disabled}
-          >
-            <option value="">Select Payment Method</option>
-            {PAYMENT_METHODS.map((method) => (
-              <option key={method} value={method} className="capitalize">
-                {method === 'wallet' ? 'Wallet / Advance Balance' : method}
-              </option>
-            ))}
-          </Select>
-        </div>
+        {values.paymentStatus !== 'unpaid' && (
+          <div className="space-y-1.5">
+            <Label>Payment Method {isPaymentMethodRequired ? '*' : ''}</Label>
+            <Select
+              value={values.paymentMethod || ''}
+              onChange={(e) => handleFieldChange('paymentMethod', e.target.value as any)}
+              disabled={disabled}
+            >
+              <option value="">Select Payment Method</option>
+              {PAYMENT_METHODS.map((method) => (
+                <option key={method} value={method} className="capitalize">
+                  {method === 'wallet' ? 'Wallet / Advance Balance' : method}
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
       </div>
-      
+
       {/* Available Wallet Balance */}
-      <div className="space-y-1.5">
-        <Label>Available Wallet Balance</Label>
-        <Input
-          type="text"
-          value={formatCurrency(values.walletBalance || 0)}
-          readOnly
-          className="bg-muted/50"
-        />
-      </div>
+      {!hideWalletBalance && (
+        <div className="space-y-1.5">
+          <Label>Available Wallet Balance</Label>
+          <Input
+            type="text"
+            value={formatCurrency(values.walletBalance || 0)}
+            readOnly
+            className="bg-muted/50"
+          />
+        </div>
+      )}
 
       {/* Wallet Calculation Display */}
       {values.paymentMethod === 'wallet' && values.billAmount && (
@@ -155,18 +185,21 @@ export default function PaymentForm({
         </div>
       )}
 
-      <div className="space-y-1.5">
-        <Label>Amount Received</Label>
-        <Input
-          type="number"
-          min="0"
-          step="0.01"
-          value={values.amountReceived}
-          onChange={(e) => handleFieldChange('amountReceived', e.target.value)}
-          placeholder="Enter amount received (optional)"
-          disabled={disabled}
-        />
-      </div>
+      {/* Amount Received */}
+      {!hideAmountReceived && (
+        <div className="space-y-1.5">
+          <Label>Amount Received</Label>
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            value={values.amountReceived}
+            onChange={(e) => handleFieldChange('amountReceived', e.target.value)}
+            placeholder="Enter amount received (optional)"
+            disabled={disabled}
+          />
+        </div>
+      )}
 
       {/* Extra Amount Display */}
       {values.amountReceived && Number(values.amountReceived) > 0 && Number(values.billAmount) > 0 && (
@@ -322,7 +355,8 @@ export default function PaymentForm({
             </div>
           </div>
           {/* Validation Error */}
-          {(Number(values.cashAmount) || 0) + (Number(values.onlineAmount) || 0) + (Number(values.walletAmount) || 0) + (Number(values.pendingPaymentAmount) || 0) > 0 &&
+          {!((values.pendingPlayers || []).length > 0) &&
+           (Number(values.cashAmount) || 0) + (Number(values.onlineAmount) || 0) + (Number(values.walletAmount) || 0) + (Number(values.pendingPaymentAmount) || 0) > 0 &&
            (Number(values.cashAmount) || 0) + (Number(values.onlineAmount) || 0) + (Number(values.walletAmount) || 0) + (Number(values.pendingPaymentAmount) || 0) !== (Number(values.billAmount) || 0) && (
             <p className="text-xs text-red-400">
               Total payment (Cash + UPI + Wallet + Pending) must equal the bill amount ({formatCurrency(Number(values.billAmount) || 0)})
@@ -390,6 +424,173 @@ export default function PaymentForm({
               Insufficient wallet balance. Available: {formatCurrency(values.walletBalance)}
             </p>
           )}
+        </div>
+      )}
+
+      {/* Pending Player Payments Section */}
+      {values.paymentStatus !== 'refunded' && (
+        <div className="space-y-3 pt-3 border-t border-border animate-fade-in">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm font-semibold text-foreground">
+              Pending Player Payments
+            </Label>
+            {Number(values.billAmount) > 0 && (
+              <span className="text-xs font-mono text-muted-foreground">
+                Unpaid Balance: {formatCurrency(Math.max(0, (Number(values.billAmount) || 0) - ((Number(values.amountReceived) || 0) > 0 ? (Number(values.amountReceived) || 0) : ((Number(values.cashAmount) || 0) + (Number(values.onlineAmount) || 0))) - (Number(values.walletAmount) || 0)))}
+              </span>
+            )}
+          </div>
+
+          {(values.pendingPlayers || []).map((player, index) => {
+            const currentPlayers = values.pendingPlayers || [];
+            const mobileError = player.mobile && player.mobile.length > 0 && player.mobile.length !== 10
+              ? 'Mobile number must be exactly 10 digits'
+              : currentPlayers.filter((p) => p.mobile && p.mobile === player.mobile).length > 1
+              ? 'Duplicate mobile number'
+              : '';
+            const amountError = player.amount !== '' && Number(player.amount) <= 0
+              ? 'Amount must be greater than 0'
+              : '';
+
+            return (
+              <div key={index} className="p-3 bg-muted/30 rounded-lg border border-border space-y-3 relative">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Player {index + 1}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const updated = (values.pendingPlayers || []).filter((_, i) => i !== index);
+                      onChange({ ...values, pendingPlayers: updated });
+                    }}
+                    disabled={disabled}
+                    className="text-xs text-red-400 hover:text-red-300 font-medium cursor-pointer"
+                  >
+                    Remove
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Player Name</Label>
+                    <Input
+                      type="text"
+                      value={player.name || ''}
+                      onChange={(e) => {
+                        const updated = (values.pendingPlayers || []).map((p, i) => i === index ? { ...p, name: e.target.value } : p);
+                        onChange({ ...values, pendingPlayers: updated });
+                      }}
+                      placeholder="Player name (optional)"
+                      disabled={disabled}
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Mobile Number *</Label>
+                    <Input
+                      type="text"
+                      value={player.mobile}
+                      onChange={(e) => {
+                        const cleaned = e.target.value.replace(/\D/g, '').slice(0, 10);
+                        const updated = (values.pendingPlayers || []).map((p, i) => i === index ? { ...p, mobile: cleaned } : p);
+                        onChange({ ...values, pendingPlayers: updated });
+                      }}
+                      placeholder="10-digit mobile number"
+                      maxLength={10}
+                      disabled={disabled}
+                      className={mobileError ? 'border-red-500 focus:ring-red-500' : ''}
+                    />
+                    {mobileError && <p className="text-xs text-red-400">{mobileError}</p>}
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Pending Amount *</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={player.amount}
+                      onChange={(e) => {
+                        const updated = (values.pendingPlayers || []).map((p, i) => i === index ? { ...p, amount: e.target.value } : p);
+                        onChange({ ...values, pendingPlayers: updated });
+                      }}
+                      placeholder="Enter pending amount"
+                      disabled={disabled}
+                      className={amountError ? 'border-red-500 focus:ring-red-500' : ''}
+                    />
+                    {amountError && <p className="text-xs text-red-400">{amountError}</p>}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const current = values.pendingPlayers || [];
+              onChange({ ...values, pendingPlayers: [...current, { mobile: '', amount: '' }] });
+            }}
+            disabled={disabled}
+            className="w-full border-dashed"
+          >
+            + Add Extra Player Pending Payment
+          </Button>
+
+          {/* Validation summary error if total doesn't balance */}
+          {(() => {
+            const billAmt = Number(values.billAmount) || 0;
+            const rawRec = Number(values.amountReceived) || 0;
+            const cashAmt = Number(values.cashAmount) || 0;
+            const onlineAmt = Number(values.onlineAmount) || 0;
+            const walletAmt = Number(values.walletAmount) || 0;
+
+            let receivedAmt = 0;
+            if (values.paymentMethod === 'mixed') {
+              receivedAmt = cashAmt + onlineAmt;
+            } else if (values.paymentMethod === 'wallet') {
+              receivedAmt = 0;
+            } else {
+              receivedAmt = rawRec > 0 ? rawRec : (cashAmt + onlineAmt);
+            }
+
+            // When extra pending players exist, only count pendingPaymentAmount if explicitly set in mixed payment mode
+            const mainPendingAmt = values.paymentMethod === 'mixed' ? (Number(values.pendingPaymentAmount) || 0) : 0;
+            const totalPendingAmt = (values.pendingPlayers || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+            const totalAllocated = Math.round((receivedAmt + walletAmt + mainPendingAmt + totalPendingAmt) * 100) / 100;
+            const roundedBillAmt = Math.round(billAmt * 100) / 100;
+
+            const hasPendingPlayers = (values.pendingPlayers || []).length > 0;
+
+            if (hasPendingPlayers && roundedBillAmt > 0 && Math.abs(totalAllocated - roundedBillAmt) > 0.01) {
+              const remaining = Math.round((roundedBillAmt - totalAllocated) * 100) / 100;
+              if (remaining > 0) {
+                return (
+                  <div className="space-y-1 p-2.5 bg-red-500/10 rounded-lg border border-red-500/20 text-xs text-red-400 font-medium">
+                    <p className="font-semibold text-red-300">Remaining Amount: {formatCurrency(remaining)}</p>
+                    <p>
+                      Total Allocated ({formatCurrency(totalAllocated)}) must equal Total Bill Amount ({formatCurrency(roundedBillAmt)}).
+                    </p>
+                  </div>
+                );
+              } else {
+                const overAllocated = Math.round((totalAllocated - roundedBillAmt) * 100) / 100;
+                return (
+                  <div className="space-y-1 p-2.5 bg-red-500/10 rounded-lg border border-red-500/20 text-xs text-red-400 font-medium">
+                    <p className="font-semibold text-red-300">Over-allocated Amount: {formatCurrency(overAllocated)}</p>
+                    <p>
+                      Total Allocated ({formatCurrency(totalAllocated)}) must equal Total Bill Amount ({formatCurrency(roundedBillAmt)}).
+                    </p>
+                  </div>
+                );
+              }
+            }
+            return null;
+          })()}
         </div>
       )}
     </div>

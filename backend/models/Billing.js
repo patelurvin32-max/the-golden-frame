@@ -15,7 +15,7 @@ const billItemSchema = new mongoose.Schema(
 
 const billSchema = new mongoose.Schema(
   {
-    invoiceNumber: { type: String, required: true, unique: true },
+    invoiceNumber: { type: String, required: true },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
     session: { type: mongoose.Schema.Types.ObjectId, ref: 'Session' },
@@ -34,9 +34,35 @@ const billSchema = new mongoose.Schema(
     paymentStatus: { type: String, enum: ['unpaid', 'paid', 'partial'], default: 'unpaid' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     pdfUrl: { type: String },
+    // Payment details stored directly on Bill for session-based bills without Order
+    paymentMethod: { type: String, enum: [...PAYMENT_METHODS, 'n/a', 'N/A', null, ''], default: null },
+    cashAmount: { type: Number, default: 0 },
+    onlineAmount: { type: Number, default: 0 },
+    walletAmount: { type: Number, default: 0 },
+    amountReceived: { type: Number, default: 0 },
+    pendingPaymentAmount: { type: Number, default: 0 },
+    pendingPlayers: [
+      {
+        id: { type: String },
+        playerName: { type: String, trim: true },
+        mobileNumber: { type: String, trim: true },
+        pendingAmount: { type: Number },
+        name: { type: String, trim: true },
+        mobile: { type: String, trim: true },
+        amount: { type: Number },
+        orderId: { type: String, trim: true },
+        customerId: { type: String, trim: true }
+      }
+    ],
+    notes: { type: String, trim: true },
     // Denormalized for faster search (avoids Customer/Session pre-lookup on every getBills search)
     customerName:  { type: String, trim: true, default: '' },
     customerPhone: { type: String, trim: true, default: '' },
+    // Denormalized menu category/item from session for Live Tables billing
+    menuCategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuCategory' },
+    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem' },
+    menuCategory: { type: String, trim: true, default: '' },
+    menuItem: { type: String, trim: true, default: '' },
   },
   { timestamps: true }
 );
@@ -60,6 +86,7 @@ const paymentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+billSchema.index({ branch: 1, invoiceNumber: 1 }, { unique: true });
 billSchema.index({ session: 1 });
 billSchema.index({ customer: 1 });
 billSchema.index({ customerName: 1 });

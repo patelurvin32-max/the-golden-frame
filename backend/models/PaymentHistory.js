@@ -3,11 +3,13 @@ const { PAYMENT_METHODS } = require('../config/constants');
 
 const paymentHistorySchema = new mongoose.Schema(
   {
-    order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', required: true },
-    orderId: { type: String, required: true },
-    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
-    customerName: { type: String, required: true },
-    customerPhone: { type: String, required: true },
+    order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', required: function() { return !this.expense && !this.reservation; } },
+    orderId: { type: String, required: function() { return !this.expense && !this.reservation; } },
+    reservation: { type: mongoose.Schema.Types.ObjectId, ref: 'Reservation' },
+    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: function() { return !this.expense && !this.reservation; } },
+    customerName: { type: String, required: function() { return !this.expense; } },
+    customerPhone: { type: String, required: function() { return !this.expense; } },
+    expense: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense' },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     paymentMethod: { type: String, enum: [...PAYMENT_METHODS, 'n/a', 'N/A', null, ''], default: null, required: false },
     cashAmount: { type: Number, default: 0 },
@@ -30,6 +32,6 @@ paymentHistorySchema.index({ orderId: 1, createdAt: -1 });
 paymentHistorySchema.index({ customer: 1, createdAt: -1 });
 paymentHistorySchema.index({ branch: 1, createdAt: -1 });
 paymentHistorySchema.index({ paymentStatus: 1, createdAt: -1 });
-paymentHistorySchema.index({ order: 1, paymentNumber: 1 }, { unique: true }); // Ensure unique payment numbers per order
+paymentHistorySchema.index({ order: 1, paymentNumber: 1 }, { unique: true, partialFilterExpression: { order: { $type: 'objectId' } } }); // Ensure unique payment numbers per order
 
 module.exports = mongoose.model('PaymentHistory', paymentHistorySchema);

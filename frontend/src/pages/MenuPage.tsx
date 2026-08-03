@@ -23,6 +23,7 @@ const emptyForm = {
 };
 
 import { useDebounce } from '@/hooks/useDebounce';
+import { useSocket } from '@/hooks/useSocket';
 
 export default function MenuPage() {
   const qc = useQueryClient();
@@ -30,9 +31,13 @@ export default function MenuPage() {
   const { selectedBranch } = useAppStore();
   const { user } = useAuthStore();
 
-  // Determine if user can select branch (Super Admin can, Branch Manager and Staff cannot)
+  // Determine permissions based on user role
   const canSelectBranch = user?.role === 'super_admin';
   const isSuperAdmin = user?.role === 'super_admin';
+  const canDeleteMenu = user?.role !== 'branch_manager';
+  const canToggleStatus = user?.role !== 'branch_manager';
+
+
 
   const [activeTab, setActiveTab] = useState<'items' | 'categories'>('items');
 
@@ -178,6 +183,17 @@ export default function MenuPage() {
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to update menu item'),
   });
 
+  const toggleItemStatusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: 'Active' | 'Inactive' }) =>
+      menuService.update(id, { status }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['menu'] });
+      qc.invalidateQueries({ queryKey: ['menu-categories'] });
+      toast.success('Menu item status updated!');
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to toggle status'),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => menuService.delete(id),
     onSuccess: () => {
@@ -187,6 +203,17 @@ export default function MenuPage() {
     },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to delete menu item'),
   });
+
+  const { onMenuUpdate } = useSocket();
+
+  useEffect(() => {
+    const cleanup = onMenuUpdate(() => {
+      qc.invalidateQueries({ queryKey: ['menu'] });
+      qc.invalidateQueries({ queryKey: ['menu-categories'] });
+    });
+    return cleanup;
+  }, [onMenuUpdate, qc]);
+
 
   const saveCategoryMutation = useMutation({
     mutationFn: (data: { name: string; status: 'Active' | 'Inactive' }) => {
@@ -246,7 +273,7 @@ export default function MenuPage() {
     if (canSelectBranch && !branch) { toast.error('Select a branch'); return; }
     if (!canSelectBranch && !branch) { toast.error('Branch assignment error'); return; }
 
-    const payload = {
+    const payload: any = {
       ...form,
       name: form.name.trim(),
       price: Number(form.price),
@@ -255,6 +282,9 @@ export default function MenuPage() {
       description: form.description.trim() || undefined,
       branch
     };
+    if (!canToggleStatus) {
+      delete payload.status;
+    }
 
     if (selected) {
       updateMutation.mutate({ id: selected._id, data: payload });
@@ -265,11 +295,15 @@ export default function MenuPage() {
 
   const handleSaveCategory = () => {
     if (!categoryForm.name.trim()) { toast.error('Category name is required'); return; }
-    saveCategoryMutation.mutate({
+    const catPayload: any = {
       name: categoryForm.name.trim(),
-      status: categoryForm.status
-    });
+    };
+    if (canToggleStatus) {
+      catPayload.status = categoryForm.status;
+    }
+    saveCategoryMutation.mutate(catPayload);
   };
+
 
   const handleDeleteCategory = (cat: MenuCategoryDoc) => {
     if (cat.totalItems && cat.totalItems > 0) {
@@ -377,7 +411,7 @@ export default function MenuPage() {
                       <TableHead>Half Price</TableHead>
                       <TableHead>Full Price</TableHead>
                       <TableHead>Status</TableHead>
-                      <TableHead className="w-[180px]">Actions</TableHead>
+                      <TableHead className="w-[220px]">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -406,19 +440,44 @@ export default function MenuPage() {
                               </Badge>
                             </TableCell>
                             <TableCell>
-                              <div className="flex gap-1">
-                                <Button size="sm" variant="ghost"
+                              <div className="flex gap-1.5 items-center">
+                                <Button size="sm" variant="outline"
                                   onClick={() => { setSelected(item); setModal('create'); }}
                                 >
                                   Edit
                                 </Button>
-                                <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10"
-                                  onClick={() => { if (window.confirm('Delete this menu item?')) deleteMutation.mutate(item._id); }}
-                                >
-                                  ✕
-                                </Button>
+                                {item.status === 'Active' ? (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="text-amber-400 hover:bg-amber-500/10 border-amber-500/20 text-xs"
+                                    onClick={() => toggleItemStatusMutation.mutate({ id: item._id, status: 'Inactive' })}
+                                    loading={toggleItemStatusMutation.isPending && toggleItemStatusMutation.variables?.id === item._id}
+                                  >
+                                    Deactivate
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="text-emerald-400 hover:bg-emerald-500/10 border-emerald-500/20 text-xs"
+                                    onClick={() => toggleItemStatusMutation.mutate({ id: item._id, status: 'Active' })}
+                                    loading={toggleItemStatusMutation.isPending && toggleItemStatusMutation.variables?.id === item._id}
+                                  >
+                                    Activate
+                                  </Button>
+                                )}
+                                {canDeleteMenu && (
+                                  <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10 px-2"
+                                    onClick={() => { if (window.confirm('Delete this menu item?')) deleteMutation.mutate(item._id); }}
+                                  >
+                                    ✕
+                                  </Button>
+                                )}
                               </div>
+
                             </TableCell>
+
                           </TableRow>
                         </React.Fragment>
                       );
@@ -500,13 +559,16 @@ export default function MenuPage() {
                               Activate
                             </Button>
                           )}
-                          <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10"
-                            onClick={() => handleDeleteCategory(cat)}
-                            loading={deleteCategoryMutation.isPending}
-                          >
-                            ✕
-                          </Button>
+                          {canDeleteMenu && (
+                            <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10"
+                              onClick={() => handleDeleteCategory(cat)}
+                              loading={deleteCategoryMutation.isPending}
+                            >
+                              ✕
+                            </Button>
+                          )}
                         </div>
+
                       </TableCell>
                     </TableRow>
                   ))}
@@ -548,13 +610,15 @@ export default function MenuPage() {
             <div className="space-y-1.5"><Label>Full Price</Label><Input type="number" step="0.01" min="0" value={form.fullPrice} onChange={(e) => setForm((f) => ({ ...f, fullPrice: e.target.value }))} /></div>
           </div>
           <div className="space-y-1.5"><Label>Description</Label><Input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Optional description" /></div>
-          <div className="space-y-1.5">
-            <Label>Status</Label>
-            <Select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as 'Active' | 'Inactive' }))}>
-              <option value="Active">Active</option>
-              <option value="Inactive">Inactive</option>
-            </Select>
-          </div>
+          {canToggleStatus && (
+            <div className="space-y-1.5">
+              <Label>Status</Label>
+              <Select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as 'Active' | 'Inactive' }))}>
+                <option value="Active">Active</option>
+                <option value="Inactive">Inactive</option>
+              </Select>
+            </div>
+          )}
           {canSelectBranch && (
             <div className="space-y-1.5">
               <Label>Branch *</Label>
@@ -580,13 +644,16 @@ export default function MenuPage() {
             <Label>Category Name *</Label>
             <Input value={categoryForm.name} onChange={(e) => setCategoryForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. Table" />
           </div>
-          <div className="space-y-1.5">
-            <Label>Category Status *</Label>
-            <Select value={categoryForm.status} onChange={(e) => setCategoryForm((f) => ({ ...f, status: e.target.value as 'Active' | 'Inactive' }))}>
-              <option value="Active">Active</option>
-              <option value="Inactive">Inactive</option>
-            </Select>
-          </div>
+          {canToggleStatus && (
+            <div className="space-y-1.5">
+              <Label>Category Status *</Label>
+              <Select value={categoryForm.status} onChange={(e) => setCategoryForm((f) => ({ ...f, status: e.target.value as 'Active' | 'Inactive' }))}>
+                <option value="Active">Active</option>
+                <option value="Inactive">Inactive</option>
+              </Select>
+            </div>
+          )}
+
           <div className="flex gap-2 pt-2">
             <Button variant="outline" className="flex-1" onClick={() => setCategoryModal(null)}>Cancel</Button>
             <Button className="flex-1" loading={saveCategoryMutation.isPending} onClick={handleSaveCategory}>

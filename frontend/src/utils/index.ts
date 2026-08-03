@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import type { User } from '@/types';
 
 export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 
@@ -79,3 +80,50 @@ export const STATUS_COLORS: Record<string, string> = {
   maintenance: 'bg-red-500/20 text-red-400 border-red-500/30',
   paused: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
 };
+
+export function hasPermission(user: User | null, permission: string): boolean {
+  if (!user) return false;
+  if (user.role === 'super_admin' || user.role === 'admin') return true;
+  if (user.role === 'branch_admin') {
+    return user.permissions?.includes(permission) || false;
+  }
+  
+  const staticPermissions: Record<string, string[]> = {
+    branch_manager: [
+      'dashboard:view',
+      'tables:view',
+      'tables:operate',
+      'billing:manage',
+      'customers:manage',
+      'customers:create',
+      'customers:view',
+      'inventory:manage',
+      'expenses:manage',
+      'attendance:manage',
+      'reports:view',
+      'menu:manage',
+      'menu:view',
+      'bookings:manage',
+      'staff:view',
+      'staff:manage',
+    ],
+    staff: [
+      'tables:view',
+      'tables:operate',
+      'billing:manage',
+      'customers:view',
+      'customers:create',
+      'customers:manage',
+      'menu:view',
+      'bookings:manage',
+    ],
+    cashier: [
+      'tables:view',
+      'billing:manage',
+      'customers:create',
+      'customers:manage',
+    ]
+  };
+
+  return staticPermissions[user.role]?.includes(permission) || false;
+}
