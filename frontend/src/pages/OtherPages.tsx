@@ -202,7 +202,7 @@ type StaffFormState = {
   employmentStatus: string;
   notes: string;
   password: string;
-  role: 'branch_manager' | 'branch_admin' | 'staff' | 'cashier';
+  role: 'admin' | 'branch_manager' | 'branch_admin' | 'staff' | 'cashier';
   branches: string[];
   isActive: boolean;
   permissions: string[];
@@ -234,7 +234,7 @@ const staffFormFromUser = (user: User): StaffFormState => ({
   employmentStatus: user.employmentStatus || 'active',
   notes: user.notes || '',
   password: '',
-  role: (user.role === 'branch_manager' || user.role === 'branch_admin' || user.role === 'cashier' || user.role === 'staff') ? user.role : 'staff',
+  role: (user.role === 'admin' || user.role === 'branch_manager' || user.role === 'branch_admin' || user.role === 'cashier' || user.role === 'staff') ? user.role : 'staff',
   branches: (user.branches || []).map((b: any) => (typeof b === 'string' ? b : b._id)),
   isActive: user.isActive,
   permissions: user.permissions || [],
@@ -347,6 +347,7 @@ export function UsersPage() {
   const toast = useToast();
   const { user: currentUser } = useAuthStore();
   const isSuperAdminOrAdmin = currentUser?.role === 'super_admin' || currentUser?.role === 'admin';
+  const isSuperAdmin = currentUser?.role === 'super_admin';
   const managerBranch = currentUser?.branches?.[0];
   const managerBranchId = managerBranch ? (typeof managerBranch === 'string' ? managerBranch : managerBranch._id) : '';
 
@@ -389,7 +390,7 @@ export function UsersPage() {
 
   const users: User[] = data || [];
   const branches: Branch[] = branchesData || [];
-  const roleColor: Record<string, string> = { super_admin: 'default', branch_admin: 'success', branch_manager: 'info', staff: 'outline', cashier: 'warning' };
+  const roleColor: Record<string, string> = { super_admin: 'default', admin: 'secondary', branch_admin: 'success', branch_manager: 'info', staff: 'outline', cashier: 'warning' };
 
   const openCreateModal = () => {
     setSelectedUser(null);
@@ -442,6 +443,23 @@ export function UsersPage() {
   };
 
   const handleSave = () => {
+    if (!form.name.trim()) {
+      toast.error('Full Name is required.');
+      return;
+    }
+    if (!form.email.trim()) {
+      toast.error('Email address is required.');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(form.email.trim())) {
+      toast.error('Please enter a valid email address.');
+      return;
+    }
+    if (modalMode === 'create' && (!form.password || form.password.trim().length < 8)) {
+      toast.error('Password must be at least 8 characters long.');
+      return;
+    }
     if (form.role === 'branch_admin') {
       const formBranches = !isSuperAdminOrAdmin && managerBranchId ? [managerBranchId] : form.branches;
       if (!formBranches || formBranches.length !== 1) {
@@ -596,7 +614,8 @@ export function UsersPage() {
             <div className="space-y-1.5">
               <Label>Role *</Label>
               <Select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as StaffFormState['role'] }))}>
-                {isSuperAdminOrAdmin && <option value="branch_admin">Branch Admin</option>}
+                {isSuperAdmin && <option value="admin">Admin</option>}
+                {isSuperAdmin && <option value="branch_admin">Branch Admin</option>}
                 <option value="branch_manager">Branch Manager</option>
                 <option value="staff">Staff</option>
                 <option value="cashier">Cashier</option>

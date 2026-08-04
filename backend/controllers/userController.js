@@ -95,13 +95,17 @@ exports.createUser = asyncHandler(async (req, res, next) => {
 
   let assignedBranches = branches;
 
+  // Only Super Admin can create Branch Admin, Admin, or Super Admin accounts
+  if (role === ROLES.SUPER_ADMIN || role === ROLES.ADMIN || role === ROLES.BRANCH_ADMIN) {
+    if (req.user.role !== ROLES.SUPER_ADMIN) {
+      return next(new AppError('Only Super Admin can create Branch Admin or Admin accounts.', 403));
+    }
+  }
+
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
     const userBranchId = req.user.branches?.[0]?._id || req.user.branches?.[0];
     if (!userBranchId) {
       return next(new AppError('You do not have an assigned branch to create staff.', 400));
-    }
-    if (role === ROLES.SUPER_ADMIN || role === ROLES.ADMIN || role === ROLES.BRANCH_ADMIN) {
-      return next(new AppError('You cannot create admin users.', 403));
     }
     assignedBranches = [userBranchId];
   }
@@ -181,10 +185,14 @@ exports.updateUser = asyncHandler(async (req, res, next) => {
     if (!hasOverlap) {
       return next(new AppError('You do not have permission to edit staff outside your branch.', 403));
     }
-    if (updateData.role && (updateData.role === ROLES.SUPER_ADMIN || updateData.role === ROLES.ADMIN || updateData.role === ROLES.BRANCH_ADMIN)) {
-      return next(new AppError('You cannot assign admin roles.', 403));
-    }
     delete updateData.branches;
+  }
+
+  // Only Super Admin can assign Branch Admin, Admin, or Super Admin roles
+  if (updateData.role && (updateData.role === ROLES.SUPER_ADMIN || updateData.role === ROLES.ADMIN || updateData.role === ROLES.BRANCH_ADMIN)) {
+    if (req.user.role !== ROLES.SUPER_ADMIN) {
+      return next(new AppError('Only Super Admin can assign Branch Admin or Admin roles.', 403));
+    }
   }
 
   if (req.user.role !== ROLES.SUPER_ADMIN) {

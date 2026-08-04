@@ -1,7 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const { protect, restrictTo, requirePermission } = require('../middleware/auth');
-const { ROLES } = require('../config/constants');
+const { ROLES, ROLE_LIST } = require('../config/constants');
 const validate = require('../middleware/validate');
 const userController = require('../controllers/userController');
 
@@ -18,10 +18,10 @@ router.post(
   restrictTo(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.BRANCH_ADMIN),
   requirePermission('staff:manage'),
   [
-    body('name').notEmpty(),
-    body('email').isEmail(),
-    body('password').isLength({ min: 8 }),
-    body('role').isIn([ROLES.BRANCH_ADMIN, ROLES.BRANCH_MANAGER, ROLES.STAFF, ROLES.CASHIER]),
+    body('name').trim().notEmpty().withMessage('Full Name is required'),
+    body('email').trim().notEmpty().withMessage('Email address is required').isEmail().withMessage('Please enter a valid email address'),
+    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters long'),
+    body('role').isIn(ROLE_LIST).withMessage('Invalid role selected'),
   ],
   validate,
   userController.createUser
