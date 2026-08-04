@@ -5,7 +5,7 @@ import { branchService, settingsService } from '@/services';
 import { useAuthStore, useAppStore } from '@/store';
 import api from '@/services/api';
 import { Button, Card, CardContent, Input, Label, Select, useToast } from '@/components/ui';
-import { cn } from '@/utils';
+import { cn, resolveApiUrl } from '@/utils';
 import type { Branch } from '@/types';
 
 export type BranchReportConfig = {
@@ -325,6 +325,7 @@ function ReceiptPreview({ settings }: { settings: SettingsState }) {
         ? 'Georgia, serif'
         : 'Arial, sans-serif';
   const businessName = header.businessName || settings.businessName || 'The Golden Frame';
+  const logoSrc = resolveApiUrl(settings.logoUrl);
 
   // Math totals (No separate GST displays, prices are inclusive)
   const subtotal = 610.00;
@@ -343,9 +344,9 @@ function ReceiptPreview({ settings }: { settings: SettingsState }) {
       style={{ width: 320, fontFamily, fontSize: 11, lineHeight: '1.4' }}
     >
       {/* Logo */}
-      {header.showLogo && settings.logoUrl ? (
+      {header.showLogo && logoSrc ? (
         <div className="flex justify-center mb-2">
-          <img src={settings.logoUrl} alt="Logo" className="h-12 w-12 object-contain" />
+          <img src={logoSrc} alt="Logo" className="h-12 w-12 object-contain" />
         </div>
       ) : header.showLogo ? (
         <div className="flex justify-center mb-2">
@@ -605,6 +606,7 @@ export default function SettingsPage() {
   const [logoUploading, setLogoUploading] = useState(false);
   const [activeTab, setActiveTab] = useState<'brand' | 'receipt' | 'system'>('brand');
   const [settings, setSettings] = useState<SettingsState>(createDefaultSettings());
+  const displayLogoUrl = resolveApiUrl(settings.logoUrl);
 
   // If user is not super admin and system tab is active, switch to brand tab
   if (user?.role !== 'super_admin' && activeTab === 'system') {
@@ -962,8 +964,8 @@ export default function SettingsPage() {
                   <Label>Business Logo</Label>
                   <div className="flex items-center gap-4">
                     <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-border bg-muted/30">
-                      {settings.logoUrl ? (
-                        <img src={settings.logoUrl} alt="Logo" className="h-full w-full object-contain p-1" />
+                      {displayLogoUrl ? (
+                        <img src={displayLogoUrl} alt="Logo" className="h-full w-full object-contain p-1" />
                       ) : (
                         <span className="text-3xl">CM</span>
                       )}
@@ -979,7 +981,7 @@ export default function SettingsPage() {
                       <Button size="sm" variant="outline" loading={logoUploading} onClick={() => logoInputRef.current?.click()}>
                         Upload Logo
                       </Button>
-                      {settings.logoUrl ? (
+                      {displayLogoUrl ? (
                         <Button size="sm" variant="ghost" className="block text-red-400" onClick={handleRemoveLogo}>
                           Remove Logo
                         </Button>

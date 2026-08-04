@@ -727,12 +727,12 @@ export default function CustomersPage() {
       )}
 
       {/* Search */}
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-2 sm:gap-3">
         <Input
           placeholder="Search by name or phone..."
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-          className="max-w-xs"
+          className="w-full sm:max-w-xs"
         />
       </div>
 
@@ -743,7 +743,8 @@ export default function CustomersPage() {
           <EmptyState icon="👥" title="No customers found" description="Add your first customer to get started" action={<Button size="sm" onClick={openCreate}>+ Add Customer</Button>} />
         ) : (
           <>
-            <Table2>
+            <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+              <Table2>
               <TableHeader>
                 <TableRow>
                   <TableHead>Order ID</TableHead>
@@ -796,10 +797,11 @@ export default function CustomersPage() {
                 })}
               </TableBody>
             </Table2>
+            </div>
 
             {/* Pagination */}
-            <div className="flex items-center justify-between p-4 border-t border-border">
-              <div className="flex items-center gap-3">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 border-t border-border">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 <span className="text-sm text-muted-foreground">
                   Showing {(page - 1) * rowsPerPage + 1}–{Math.min(page * rowsPerPage, total)} of {total} records
                 </span>
@@ -815,10 +817,10 @@ export default function CustomersPage() {
                 </Select>
               </div>
               {pages > 1 && (
-                <div className="flex items-center gap-2">
-                  <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</Button>
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="flex-1 sm:flex-none">Previous</Button>
                   <span className="text-sm text-muted-foreground">Page {page} of {pages}</span>
-                  <Button size="sm" variant="outline" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>Next</Button>
+                  <Button size="sm" variant="outline" disabled={page >= pages} onClick={() => setPage((p) => p + 1)} className="flex-1 sm:flex-none">Next</Button>
                 </div>
               )}
             </div>

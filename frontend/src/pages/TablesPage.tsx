@@ -162,41 +162,41 @@ function TableCard({ table, onAction, isPauseLoading, isResumeLoading }: { table
           {/* Actions */}
           <div className="flex gap-1.5">
             {table.status === 'available' && (
-              <Button size="sm" className="flex-1" onClick={() => onAction('start', table)}>
+              <Button size="sm" className="flex-1 h-10 text-sm font-medium" onClick={() => onAction('start', table)}>
                 ▶ Start
               </Button>
             )}
             {table.status === 'running' && session && session.status === 'running' && (
               <>
-                <Button size="sm" variant="outline" className="flex-1" loading={isPauseLoading} disabled={isPauseLoading} onClick={() => onAction('pause', table)}>
+                <Button size="sm" variant="outline" className="flex-1 h-10" loading={isPauseLoading} disabled={isPauseLoading} onClick={() => onAction('pause', table)}>
                   ⏸
                 </Button>
-                <Button size="sm" variant="outline" className="flex-1" disabled={isPauseLoading} onClick={() => onAction('extend', table)}>
-                  +
+                <Button size="sm" variant="outline" className="flex-1 h-10" disabled={isPauseLoading} onClick={() => onAction('extend', table)}>
+                  +⏱
                 </Button>
-                <Button size="sm" variant="outline" className="flex-1" disabled={isPauseLoading} onClick={() => onAction('edit', table)}>
-                  Edit
+                <Button size="sm" variant="outline" className="flex-1 h-10" disabled={isPauseLoading} onClick={() => onAction('edit', table)}>
+                  ✏️
                 </Button>
-                <Button size="sm" variant="destructive" className="flex-1" disabled={isPauseLoading} onClick={() => onAction('stop', table)}>
-                  ■ Stop
+                <Button size="sm" variant="destructive" className="flex-1 h-10" disabled={isPauseLoading} onClick={() => onAction('stop', table)}>
+                  ■
                 </Button>
               </>
             )}
             {table.status === 'running' && session && session.status === 'paused' && (
               <>
-                <Button size="sm" className="flex-1" loading={isResumeLoading} disabled={isResumeLoading} onClick={() => onAction('resume', table)}>
+                <Button size="sm" className="flex-1 h-10" loading={isResumeLoading} disabled={isResumeLoading} onClick={() => onAction('resume', table)}>
                   ▶ Resume
                 </Button>
-                <Button size="sm" variant="outline" className="flex-1" disabled={isResumeLoading} onClick={() => onAction('edit', table)}>
-                  Edit
+                <Button size="sm" variant="outline" className="flex-1 h-10" disabled={isResumeLoading} onClick={() => onAction('edit', table)}>
+                  ✏️
                 </Button>
-                <Button size="sm" variant="destructive" className="flex-1" disabled={isResumeLoading} onClick={() => onAction('stop', table)}>
-                  ■ Stop
+                <Button size="sm" variant="destructive" className="flex-1 h-10" disabled={isResumeLoading} onClick={() => onAction('stop', table)}>
+                  ■
                 </Button>
               </>
             )}
             {table.status === 'maintenance' && (
-              <Button size="sm" variant="outline" className="flex-1" onClick={() => onAction('setAvailable', table)}>
+              <Button size="sm" variant="outline" className="flex-1 h-10" onClick={() => onAction('setAvailable', table)}>
                 Mark Available
               </Button>
             )}
@@ -621,13 +621,13 @@ export default function TablesPage() {
 
       {/* Tables Grid */}
       {isLoading ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
           {[...Array(10)].map((_, i) => <Skeleton key={i} className="h-52" />)}
         </div>
       ) : tables.length === 0 ? (
         <EmptyState icon="🎱" title="No tables found" description="Try adjusting your filters" />
       ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
           <AnimatePresence>
             {tables.map((table: Table) => (
                 <TableCard

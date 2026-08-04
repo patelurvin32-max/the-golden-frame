@@ -7,9 +7,10 @@ import type { Branch, Notification } from '@/types';
 import { Button, Select } from '@/components/ui';
 import { formatDateTime } from '@/utils';
 import { useSocket } from '@/hooks/useSocket';
+import { Menu } from 'lucide-react';
 
 export const Navbar = () => {
-  const { toggleSidebar, toggleDarkMode, isDarkMode, selectedBranch, setSelectedBranch } = useAppStore();
+  const { toggleSidebar, setSidebarOpen, toggleDarkMode, isDarkMode, selectedBranch, setSelectedBranch } = useAppStore();
   const { user } = useAuthStore();
   const [showNotif, setShowNotif] = useState(false);
   const queryClient = useQueryClient();
@@ -58,9 +59,20 @@ export const Navbar = () => {
       : branches.find((b: Branch) => b._id === assignedBranchId || b.code === assignedBranchId)?.name || '';
 
   return (
-    <header className="h-14 border-b border-border bg-card flex items-center px-4 gap-4 relative z-40">
-      {/* Sidebar toggle */}
-      <button onClick={toggleSidebar} className="h-8 w-8 rounded-lg hover:bg-accent flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+    <header className="h-14 border-b border-border bg-card flex items-center px-3 sm:px-4 gap-3 flex-shrink-0">
+      {/* Hamburger — mobile only */}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="lg:hidden flex-shrink-0"
+        onClick={() => setSidebarOpen(true)}
+        aria-label="Open menu"
+      >
+        <Menu className="h-5 w-5" />
+      </Button>
+
+      {/* Sidebar toggle — desktop only */}
+      <button onClick={toggleSidebar} className="hidden lg:flex h-8 w-8 rounded-lg hover:bg-accent items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
         ☰
       </button>
 
@@ -69,7 +81,7 @@ export const Navbar = () => {
         <Select
           value={selectedBranch || ''}
           onChange={(e) => setSelectedBranch(e.target.value || null)}
-          className="w-40 h-8 text-xs"
+          className="w-32 sm:w-40 h-8 text-xs"
         >
           <option value="">All Branches</option>
           {branches.map((b: Branch) => (

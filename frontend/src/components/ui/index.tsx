@@ -144,14 +144,14 @@ interface ModalProps { open: boolean; onClose: () => void; title?: string; child
 export const Modal = ({ open, onClose, title, children, size = 'md' }: ModalProps) => {
   if (!open) return null;
   const sizes = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-lg', xl: 'max-w-2xl' };
-  const responsiveSizes = { sm: 'w-full max-w-sm sm:max-w-sm', md: 'w-full max-w-md sm:max-w-md', lg: 'w-full max-w-lg sm:max-w-lg', xl: 'w-full max-w-full sm:max-w-2xl' };
+  const responsiveSizes = { sm: 'w-[calc(100vw-2rem)] sm:max-w-sm', md: 'w-[calc(100vw-2rem)] sm:max-w-md', lg: 'w-[calc(100vw-2rem)] sm:max-w-lg', xl: 'w-[calc(100vw-2rem)] sm:max-w-2xl' };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <motion.div 
         initial={{ opacity: 0, scale: 0.95, y: 10 }} 
         animate={{ opacity: 1, scale: 1, y: 0 }} 
-        className={cn('relative max-h-[90vh] flex flex-col rounded-2xl border border-border bg-card shadow-2xl', responsiveSizes[size])}
+        className={cn('relative max-h-[90vh] flex flex-col rounded-2xl border border-border bg-card shadow-2xl mx-auto', responsiveSizes[size])}
       >
         {title && (
           <div className="flex items-center justify-between border-b border-border p-4 sm:p-5 flex-shrink-0">

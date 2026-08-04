@@ -1277,7 +1277,7 @@ export default function ReservationsPage() {
           />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
               <Table2>
                 <TableHeader>
                   <TableRow>

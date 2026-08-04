@@ -2,7 +2,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, LogOut } from 'lucide-react';
-import { cn, hasPermission } from '@/utils';
+import { cn, hasPermission, resolveApiUrl } from '@/utils';
 import { useAuthStore, useAppStore } from '@/store';
 import { settingsService } from '@/services';
 
@@ -40,11 +40,7 @@ export const Sidebar = () => {
     staleTime: 5 * 60 * 1000,
   });
 
-  // Only use custom logo if it's from a branch-specific setting
-  // Global settings (no branch) use default logo to avoid 404 errors from old logo URLs
-  const logoUrl = settingsBranch
-    ? ((settingsData as any)?.data?.settings?.logoUrl || '/assets/tgf.jpg')
-    : '/assets/tgf.jpg';
+  const logoUrl = resolveApiUrl((settingsData as any)?.data?.settings?.logoUrl) || '/assets/tgf.jpg';
 
   const handleLogoError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
     (e.target as HTMLImageElement).src = '/assets/tgf.jpg';
@@ -103,128 +99,154 @@ export const Sidebar = () => {
     : filtered.filter((item) => !item.isParent);
 
   const handleItemClick = () => {
+    // Close sidebar on mobile after navigation
     if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1024px)').matches) {
       setSidebarOpen(false);
     }
   };
 
-  return (
-    <AnimatePresence>
-      {sidebarOpen && (
-        <motion.aside
-          initial={{ x: -260 }} animate={{ x: 0 }} exit={{ x: -260 }} transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-          className="fixed left-0 top-0 z-30 h-screen w-64 flex flex-col border-r border-border bg-card"
-        >
-          {/* Logo */}
-          <div className="flex items-center gap-3 px-6 py-5 border-b border-border">
-            <img src={logoUrl} alt="The Golden Frame" className="h-9 w-9 rounded-xl object-contain" onError={handleLogoError} />
-            <div>
-              <p className="font-bold text-foreground leading-none">The Golden Frame</p>
-            </div>
-          </div>
+  // Extract sidebar content into a component for reuse
+  const SidebarContent = () => (
+    <>
+      {/* Logo */}
+      <div className="flex items-center gap-3 px-6 py-5 border-b border-border">
+        <img src={logoUrl} alt="The Golden Frame" className="h-9 w-9 rounded-xl object-contain" onError={handleLogoError} />
+        <div>
+          <p className="font-bold text-foreground leading-none">The Golden Frame</p>
+        </div>
+      </div>
 
-          {/* Navigation */}
-          <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
-            {orderedFiltered.map((item) => {
-              if (item.isParent) {
-                const children = orderedFiltered
-                  .filter((child) => child.parent === item.id)
-                  .sort((a, b) => {
-                    const keyA = a.path?.replace('/', '') || '';
-                    const keyB = b.path?.replace('/', '') || '';
-                    const indexA = masterChildOrder.indexOf(keyA);
-                    const indexB = masterChildOrder.indexOf(keyB);
-                    return (indexA === -1 ? 99 : indexA) - (indexB === -1 ? 99 : indexB);
-                  });
-                return (
-                  <div key={item.id}>
-                    <button
-                      onClick={toggleMasterMenu}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 text-muted-foreground hover:text-foreground hover:bg-accent"
-                    >
-                      <span className="text-base w-5 text-center">{item.icon}</span>
-                      {item.label}
-                      <span className="ml-auto">
-                        {masterMenuOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                      </span>
-                    </button>
-                    <AnimatePresence>
-                      {masterMenuOpen && (
-                        <motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.2, ease: 'easeInOut' }}
-                          className="overflow-hidden pl-4 space-y-1"
-                        >
-                          {children.map((child) => {
-                            if (!child.path) return null;
-                            const active = pathname === child.path || (child.path !== '/' && pathname.startsWith(child.path));
-                            return (
-                              <Link
-                                key={child.path}
-                                to={child.path}
-                                onClick={handleItemClick}
-                                className={cn(
-                                  'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200',
-                                  active ? 'gradient-brand text-white shadow-lg shadow-blue-500/20' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-                                )}
-                              >
-                                <span className="text-base w-5 text-center">{child.icon}</span>
-                                {child.label}
-                                {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-white/60" />}
-                              </Link>
-                            );
-                          })}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                );
-              }
-
-              // Skip child items (they're rendered inside parent)
-              if (item.parent && orderedFiltered.some((p) => p.isParent && p.id === item.parent)) return null;
-
-              // Regular menu items
-              if (!item.path) return null;
-              const active = pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path));
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  onClick={handleItemClick}
-                  className={cn(
-                    'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200',
-                    active ? 'gradient-brand text-white shadow-lg shadow-blue-500/20' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-                  )}
+      {/* Navigation */}
+      <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+        {orderedFiltered.map((item) => {
+          if (item.isParent) {
+            const children = orderedFiltered
+              .filter((child) => child.parent === item.id)
+              .sort((a, b) => {
+                const keyA = a.path?.replace('/', '') || '';
+                const keyB = b.path?.replace('/', '') || '';
+                const indexA = masterChildOrder.indexOf(keyA);
+                const indexB = masterChildOrder.indexOf(keyB);
+                return (indexA === -1 ? 99 : indexA) - (indexB === -1 ? 99 : indexB);
+              });
+            return (
+              <div key={item.id}>
+                <button
+                  onClick={toggleMasterMenu}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 text-muted-foreground hover:text-foreground hover:bg-accent"
                 >
                   <span className="text-base w-5 text-center">{item.icon}</span>
                   {item.label}
-                  {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-white/60" />}
-                </Link>
-              );
-            })}
-          </nav>
+                  <span className="ml-auto">
+                    {masterMenuOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                  </span>
+                </button>
+                <AnimatePresence>
+                  {masterMenuOpen && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2, ease: 'easeInOut' }}
+                      className="overflow-hidden pl-4 space-y-1"
+                    >
+                      {children.map((child) => {
+                        if (!child.path) return null;
+                        const active = pathname === child.path || (child.path !== '/' && pathname.startsWith(child.path));
+                        return (
+                          <Link
+                            key={child.path}
+                            to={child.path}
+                            onClick={handleItemClick}
+                            className={cn(
+                              'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200',
+                              active ? 'gradient-brand text-white shadow-lg shadow-blue-500/20' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                            )}
+                          >
+                            <span className="text-base w-5 text-center">{child.icon}</span>
+                            {child.label}
+                            {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-white/60" />}
+                          </Link>
+                        );
+                      })}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            );
+          }
 
-          {/* User profile */}
-          <div className="border-t border-border p-4">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="h-9 w-9 rounded-xl gradient-brand flex items-center justify-center text-white font-semibold text-sm">
-                {user?.name?.[0]?.toUpperCase()}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{user?.name}</p>
-                <p className="text-xs text-muted-foreground capitalize">{role.replace('_', ' ')}</p>
-              </div>
-            </div>
-            <button onClick={() => logout()} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors group">
-              <LogOut className="h-4 w-4 text-muted-foreground group-hover:text-red-400 transition-colors" />
-              <span>Sign out</span>
-            </button>
+          // Skip child items (they're rendered inside parent)
+          if (item.parent && orderedFiltered.some((p) => p.isParent && p.id === item.parent)) return null;
+
+          // Regular menu items
+          if (!item.path) return null;
+          const active = pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path));
+          return (
+            <Link
+              key={item.path}
+              to={item.path}
+              onClick={handleItemClick}
+              className={cn(
+                'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200',
+                active ? 'gradient-brand text-white shadow-lg shadow-blue-500/20' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+              )}
+            >
+              <span className="text-base w-5 text-center">{item.icon}</span>
+              {item.label}
+              {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-white/60" />}
+            </Link>
+          );
+        })}
+      </nav>
+
+      {/* User profile */}
+      <div className="border-t border-border p-4">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="h-9 w-9 rounded-xl gradient-brand flex items-center justify-center text-white font-semibold text-sm">
+            {user?.name?.[0]?.toUpperCase()}
           </div>
-        </motion.aside>
-      )}
-    </AnimatePresence>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium truncate">{user?.name}</p>
+            <p className="text-xs text-muted-foreground capitalize">{role.replace('_', ' ')}</p>
+          </div>
+        </div>
+        <button onClick={() => logout()} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors group">
+          <LogOut className="h-4 w-4 text-muted-foreground group-hover:text-red-400 transition-colors" />
+          <span>Sign out</span>
+        </button>
+      </div>
+    </>
+  );
+
+  return (
+    <>
+      {/* Desktop sidebar — always visible, static (not overlay) */}
+      <div className="hidden lg:flex flex-col w-64 border-r border-border bg-card h-screen flex-shrink-0">
+        <SidebarContent />
+      </div>
+
+      {/* Mobile sidebar — overlay drawer, only when open */}
+      <AnimatePresence>
+        {sidebarOpen && (
+          <motion.aside
+            initial={{ x: -260 }} animate={{ x: 0 }} exit={{ x: -260 }} transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            className="lg:hidden fixed left-0 top-0 z-30 h-screen w-64 flex flex-col border-r border-border bg-card"
+          >
+            {/* Close button — mobile only */}
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="absolute top-3 right-3 p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted"
+              aria-label="Close menu"
+            >
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            <SidebarContent />
+          </motion.aside>
+        )}
+      </AnimatePresence>
+    </>
   );
 };

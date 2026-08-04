@@ -60,6 +60,7 @@
   .gradient-brand { background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%); }
   .text-gradient { background: linear-gradient(135deg, #3b82f6, #6366f1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
   .animate-slide-up { animation: slideUp 0.3s ease-out; }
+  .safe-area-pb { padding-bottom: env(safe-area-inset-bottom, 0px); }
 }
 
 /* Light mode picker icon styling */

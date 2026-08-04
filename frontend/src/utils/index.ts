@@ -1,6 +1,7 @@
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import type { User } from '@/types';
+import { API_BASE_URL } from '@/services/api';
 
 export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 
@@ -56,6 +57,21 @@ export const downloadBlob = (blob: Blob, filename: string) => {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+};
+
+export const resolveApiUrl = (url?: string) => {
+  if (!url) return '';
+  if (/^(https?:|data:|blob:)/i.test(url)) return url;
+
+  if (url.startsWith('/api/')) {
+    try {
+      return new URL(url, API_BASE_URL).toString();
+    } catch {
+      return url;
+    }
+  }
+
+  return url;
 };
 
 export const getCategoryColor = (name: string) => {
