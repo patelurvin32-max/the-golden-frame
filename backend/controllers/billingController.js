@@ -83,10 +83,20 @@ exports.createBill = asyncHandler(async (req, res, next) => {
 
   // 1. Table time from session
   let sessionMenuCategoryId, sessionMenuItemId, sessionMenuCategory, sessionMenuItem;
+  let session = null;
+  let _sessionForName = null;
   if (sessionId) {
-    const session = await Session.findById(sessionId).populate('table', 'name type');
+    session = await Session.findById(sessionId).populate('table', 'name type');
     if (!session) return next(new AppError('Session not found.', 404));
     if (session.status !== 'completed') return next(new AppError('Session must be stopped before billing.', 400));
+
+    // Extract name fields from the SAME session object — no second fetch needed
+    _sessionForName = {
+      customerName: session.customerName,
+      phoneNumber: session.phoneNumber,
+      createdAt: session.createdAt,
+      startTime: session.startTime,
+    };
 
     // Extract menu category/item from session for Live Tables billing
     // If session has explicit menu category/item (from Customer/Menu flow), use those
@@ -136,25 +146,28 @@ exports.createBill = asyncHandler(async (req, res, next) => {
   }
 
   // 2. Inventory / food items sold
-  for (const { inventoryId, quantity } of inventoryItems) {
-    const item = await Inventory.findById(inventoryId);
-    if (!item) continue;
-    if (item.stockQuantity < quantity) {
-      return next(new AppError(`Insufficient stock for ${item.name}.`, 400));
-    }
-    const lineTotal = item.sellingPrice * quantity;
-    items.push({
-      description: item.name,
-      quantity,
-      unitPrice: item.sellingPrice,
-      total: lineTotal,
-      type: 'inventory',
-      inventoryItem: item._id,
-    });
-    subtotal += lineTotal;
-    // Deduct stock
-    item.stockQuantity -= quantity;
-    await item.save();
+  if (inventoryItems && inventoryItems.length > 0) {
+    await Promise.all(
+      inventoryItems.map(async ({ inventoryId, quantity }) => {
+        const item = await Inventory.findById(inventoryId);
+        if (!item) return;
+        if (item.stockQuantity < quantity) {
+          throw new AppError(`Insufficient stock for ${item.name}.`, 400);
+        }
+        const lineTotal = item.sellingPrice * quantity;
+        items.push({
+          description: item.name,
+          quantity,
+          unitPrice: item.sellingPrice,
+          total: lineTotal,
+          type: 'inventory',
+          inventoryItem: item._id,
+        });
+        subtotal += lineTotal;
+        item.stockQuantity -= quantity;
+        await item.save();
+      })
+    );
   }
 
   // 3. Discount calculation
@@ -166,16 +179,10 @@ exports.createBill = asyncHandler(async (req, res, next) => {
   let membershipDiscount = 0;
 
   // Fetch settings and customer membership in parallel
-  let _sessionForName = null;
   const [settings, membershipCustomer] = await Promise.all([
     Settings.findOne().lean(),
     customerId ? Customer.findById(customerId).select('name phone membership').lean() : null,
   ]);
-
-  if (sessionId) {
-    // For session-based bills, grab name and timestamps from session
-    _sessionForName = await Session.findById(sessionId).select('customerName phoneNumber createdAt startTime').lean();
-  }
 
   if (membershipCustomer?.membership?.tier) {
     const { MembershipPlan } = require('../models/Operations');
@@ -319,91 +326,104 @@ exports.createBill = asyncHandler(async (req, res, next) => {
       const pendingPlayers = req.body.pendingPlayers || [];
       const savedPendingPlayersList = [];
 
-      for (const player of pendingPlayers) {
-        const playerMobile = String(player.mobile || player.phone || '').replace(/\D/g, '').slice(0, 10);
-        const playerAmount = parseCurrencyValue(player.amount) || 0;
-        const playerName = (player.name && player.name.trim()) ? player.name.trim() : `Player (${playerMobile})`;
-        
-        if (playerMobile.length === 10 && playerAmount > 0) {
-          let playerCustomer = await Customer.findOne({ phone: playerMobile, isActive: true });
-          if (!playerCustomer) {
-            const playerCustId = await generateCustomerId(targetBranch);
-            playerCustomer = await Customer.create({
-              customerId: playerCustId,
-              name: playerName,
-              phone: playerMobile,
-              branch: targetBranch,
-            });
-          } else {
-            if (playerName && playerName.trim() !== '' && (playerCustomer.name.startsWith('Player (') || !playerCustomer.name)) {
-              playerCustomer.name = playerName.trim();
-              await playerCustomer.save();
+      if (pendingPlayers.length > 0) {
+        // Process ALL players in parallel — not one by one
+        const playerResults = await Promise.all(
+          pendingPlayers.map(async (player, index) => {
+            const playerMobile = String(player.mobile || player.phone || '').replace(/\D/g, '').slice(0, 10);
+            const playerAmount = parseCurrencyValue(player.amount) || 0;
+            const playerName = (player.name?.trim()) ? player.name.trim() : `Player (${playerMobile})`;
+
+            if (playerMobile.length !== 10 || playerAmount <= 0) return null;
+
+            // Find or create customer
+            let playerCustomer = await Customer.findOne({ phone: playerMobile, isActive: true });
+            if (!playerCustomer) {
+              const playerCustId = await generateCustomerId(targetBranch);
+              playerCustomer = await Customer.create({
+                customerId: playerCustId,
+                name: playerName,
+                phone: playerMobile,
+                branch: targetBranch,
+              });
+            } else if (playerName && !playerCustomer.name.startsWith('Player (')) {
+              // Update name only if it's not already a real name
+              if (playerCustomer.name !== playerName) {
+                playerCustomer.name = playerName;
+                await playerCustomer.save();
+              }
             }
-          }
 
-          const pOrderId = `${mainOrder.orderId}-P${savedPendingPlayersList.length + 1}`;
+            const pOrderId = `${mainOrder.orderId}-P${index + 1}`;
 
-          const playerOrder = await Order.create({
-            orderId: pOrderId,
-            customer: playerCustomer._id,
-            parentOrder: mainOrder._id,
-            parentOrderId: mainOrder.orderId,
-            branch: targetBranch,
-            session: sessionId || undefined,
-            bill: bill._id,
-            paymentStatus: 'unpaid',
-            paymentMethod: null,
-            cashAmount: 0,
-            onlineAmount: 0,
-            walletAmount: 0,
-            pendingPaymentAmount: playerAmount,
-            amountReceived: 0,
-            totalPaid: 0,
-            billAmount: playerAmount,
-            additionalPlayers: `Pending player payment for order ${mainOrder.orderId}`,
-            createdBy: req.user._id,
-          });
+            // Create order AND payment history AND update outstanding in parallel per player
+            const [playerOrder] = await Promise.all([
+              Order.create({
+                orderId: pOrderId,
+                customer: playerCustomer._id,
+                parentOrder: mainOrder._id,
+                parentOrderId: mainOrder.orderId,
+                branch: targetBranch,
+                session: sessionId || undefined,
+                bill: bill._id,
+                paymentStatus: 'unpaid',
+                paymentMethod: null,
+                cashAmount: 0,
+                onlineAmount: 0,
+                walletAmount: 0,
+                pendingPaymentAmount: playerAmount,
+                amountReceived: 0,
+                totalPaid: 0,
+                billAmount: playerAmount,
+                additionalPlayers: `Pending player payment for order ${mainOrder.orderId}`,
+                createdBy: req.user._id,
+              }),
+              PaymentHistory.create({
+                order: null,
+                orderId: pOrderId,
+                customer: playerCustomer._id,
+                customerName: playerCustomer.name,
+                customerPhone: playerCustomer.phone,
+                branch: targetBranch,
+                paymentMethod: null,
+                cashAmount: 0,
+                onlineAmount: 0,
+                walletAmount: 0,
+                totalPaid: 0,
+                billAmount: playerAmount,
+                pendingAmount: playerAmount,
+                paymentStatus: 'unpaid',
+                notes: `Pending player payment for order ${mainOrder.orderId}`,
+                createdBy: req.user._id,
+                paymentNumber: 1,
+              }),
+              Customer.findByIdAndUpdate(playerCustomer._id, {
+                $inc: { outstandingBalance: playerAmount },
+              }),
+            ]);
 
-          await PaymentHistory.create({
-            order: playerOrder._id,
-            orderId: playerOrder.orderId,
-            customer: playerCustomer._id,
-            customerName: playerCustomer.name,
-            customerPhone: playerCustomer.phone,
-            branch: targetBranch,
-            paymentMethod: null,
-            cashAmount: 0,
-            onlineAmount: 0,
-            walletAmount: 0,
-            totalPaid: 0,
-            billAmount: playerAmount,
-            pendingAmount: playerAmount,
-            paymentStatus: 'unpaid',
-            notes: `Pending player payment for order ${mainOrder.orderId}`,
-            createdBy: req.user._id,
-            paymentNumber: 1,
-          });
+            return {
+              id: playerOrder._id.toString(),
+              playerName,
+              name: playerName,
+              mobileNumber: playerMobile,
+              mobile: playerMobile,
+              pendingAmount: playerAmount,
+              amount: playerAmount,
+              orderId: pOrderId,
+              customerId: playerCustomer._id.toString(),
+            };
+          })
+        );
 
-          playerCustomer.outstandingBalance = (playerCustomer.outstandingBalance || 0) + playerAmount;
-          await playerCustomer.save();
+        // Filter out nulls (invalid players)
+        const validResults = playerResults.filter(Boolean);
+        savedPendingPlayersList.push(...validResults);
 
-          savedPendingPlayersList.push({
-            id: playerOrder._id.toString(),
-            playerName,
-            name: playerName,
-            mobileNumber: playerMobile,
-            mobile: playerMobile,
-            pendingAmount: playerAmount,
-            amount: playerAmount,
-            orderId: pOrderId,
-            customerId: playerCustomer._id.toString(),
-          });
+        if (savedPendingPlayersList.length > 0) {
+          mainOrder.pendingPlayers = savedPendingPlayersList;
+          await mainOrder.save();
         }
-      }
-
-      if (savedPendingPlayersList.length > 0) {
-        mainOrder.pendingPlayers = savedPendingPlayersList;
-        await mainOrder.save();
       }
     }
   }
@@ -507,16 +527,11 @@ exports.downloadPDF = asyncHandler(async (req, res, next) => {
   }
 
   const branchId = bill.branch?._id || bill.branch;
-  let settings = null;
-  if (branchId) {
-    settings = await Settings.findOne({ branch: branchId }).lean();
-  }
-  if (!settings) {
-    settings = await Settings.findOne({ branch: { $exists: false } }).lean();
-  }
-  if (!settings) {
-    settings = await Settings.findOne().lean();
-  }
+  const [branchSettings, globalSettings] = await Promise.all([
+    Settings.findOne({ branch: branchId }).lean(),
+    Settings.findOne({ branch: { $exists: false } }).lean(),
+  ]);
+  const settings = branchSettings || globalSettings || await Settings.findOne().lean();
 
   const pdfBuffer = await generateInvoicePDF(bill, settings || {});
   const rawInvoiceNum = bill.order?.orderId || bill.invoiceNumber || 'invoice';

@@ -97,6 +97,7 @@ const settingsSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+settingsSchema.index({ branch: 1 }, { sparse: true });
 
 module.exports = {
   Attendance: mongoose.model('Attendance', attendanceSchema),

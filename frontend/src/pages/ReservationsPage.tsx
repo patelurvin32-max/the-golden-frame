@@ -668,7 +668,7 @@ function TodayTableAvailability({ branch }: { branch: string }) {
     queryFn: () => reservationService.getTodayAvailability({ branch: effectiveBranch }).then((r) => (r.data as any).data),
     enabled: !!effectiveBranch,
     refetchInterval: 30000,
-    staleTime: 10000,
+    staleTime: 60_000,
   });
 
   // Socket listener for real-time live sync

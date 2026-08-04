@@ -17,6 +17,24 @@ const ROLE_LIST = Object.values(ROLES);
 // Coarse permission map used by the requirePermission middleware.
 // Super admin implicitly bypasses all checks (see middleware/auth.js).
 const PERMISSIONS = {
+  [ROLES.BRANCH_ADMIN]: [
+    'dashboard:view',
+    'tables:view',
+    'tables:operate',
+    'billing:manage',
+    'customers:manage',
+    'customers:create',
+    'customers:view',
+    'inventory:manage',
+    'expenses:manage',
+    'attendance:manage',
+    'reports:view',
+    'menu:manage',
+    'menu:view',
+    'bookings:manage',
+    'staff:view',
+    'staff:manage',
+  ],
   [ROLES.ADMIN]: [
     'dashboard:view',
     'tables:view',

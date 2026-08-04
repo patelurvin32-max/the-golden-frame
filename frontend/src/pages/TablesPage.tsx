@@ -263,7 +263,6 @@ export default function TablesPage() {
     mutationFn: (d: { sessionId: string; menuCategoryId: string; menuItemId: string }) =>
       sessionService.updateMenu(d.sessionId, d.menuCategoryId, d.menuItemId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['tables'] });
       toast.success('Live session menu updated!');
       setModal(null);
       setActiveTable(null);
@@ -363,14 +362,11 @@ export default function TablesPage() {
     mutationFn: (data: { tableId: string; customerId?: string; customerName: string; phoneNumber: string; extraPlayers: string[] }) =>
       sessionService.start(data.tableId, data.customerId, data.customerName, data.phoneNumber, data.extraPlayers),
     onSuccess: (res) => {
-      // Close modal immediately — socket will update the table card in real-time.
-      // Also kick off a background refetch as a safety net.
+      // Socket will update the table card in real-time
       toast.success('Session started!');
       setModal(null);
       setStartForm({ customerId: '', customerSearch: '', customerName: '', phoneNumber: '', extraPlayers: '' });
       setPhoneError('');
-      // Background refetch — don't block UI
-      qc.refetchQueries({ queryKey: ['tables', tableBranch] });
     },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to start session'),
   });
@@ -397,13 +393,13 @@ export default function TablesPage() {
   const extendMutation = useMutation({
     mutationFn: ({ sessionId, minutes }: { sessionId: string; minutes: number }) =>
       sessionService.extend(sessionId, minutes),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tables', tableBranch] }); toast.success(`Extended by ${extendMinutes} minutes`); setModal(null); },
+    onSuccess: () => { toast.success(`Extended by ${extendMinutes} minutes`); setModal(null); },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed'),
   });
 
   const updateTableMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => tableService.update(id, { status } as any),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tables', tableBranch] }); toast.success('Table updated'); },
+    onSuccess: () => { toast.success('Table updated'); },
   });
 
   const searchCustomers = useCallback(async (query: string) => {
@@ -551,7 +547,7 @@ export default function TablesPage() {
       setActiveTable(null);
 
       // Refetch in background to sync any server-side differences
-      qc.refetchQueries({ queryKey: ['tables', tableBranch] });
+      // qc.refetchQueries({ queryKey: ['tables', tableBranch] }); // Socket handles table update
       qc.invalidateQueries({ queryKey: ['bills'] });
       qc.invalidateQueries({ queryKey: ['customers'] });
       qc.invalidateQueries({ queryKey: ['pending-payments'] });
@@ -573,7 +569,7 @@ export default function TablesPage() {
     if (isRefreshing) return;
     setIsRefreshing(true);
     try {
-      await qc.refetchQueries({ queryKey: ['tables', tableBranch] });
+      // qc.refetchQueries({ queryKey: ['tables', tableBranch] }); // Socket handles real-time updates
       toast.success('Live tables refreshed successfully');
     } catch (error) {
       toast.error('Failed to refresh live tables');
