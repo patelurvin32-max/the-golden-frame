@@ -38,7 +38,12 @@ const upload = multer({
 });
 
 // Logo files must stay publicly readable so login and other unauthenticated pages can render them.
-router.use('/logo-file', express.static(uploadDir));
+router.use('/logo-file', express.static(uploadDir, {
+  setHeaders: (res) => {
+    // Allow frontend apps on a different origin to render branch logos.
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  },
+}));
 
 router.use(protect);
 
