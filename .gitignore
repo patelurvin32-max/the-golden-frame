@@ -41,3 +41,13 @@ coverage/
 
 # Vite
 *.local
+
+# WhatsApp Web.js
+backend/.wwebjs_auth/
+backend/.wwebjs_cache/
+
+# Uploads
+backend/uploads/
+
+# Test
+backend/test/

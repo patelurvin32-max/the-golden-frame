@@ -143,3 +143,26 @@ export function hasPermission(user: User | null, permission: string): boolean {
 
   return staticPermissions[user.role]?.includes(permission) || false;
 }
+
+export function getPostLoginRoute(user: User): string {
+  if (user.role === 'super_admin' || user.role === 'admin' || user.role === 'branch_manager') {
+    return '/';
+  }
+
+  if (hasPermission(user, 'dashboard:view')) {
+    return '/';
+  }
+
+  const preferredRoutes = [
+    { path: '/tables', permission: 'tables:view' },
+    { path: '/customers', permission: 'customers:view' },
+    { path: '/reservations', permission: 'bookings:manage' },
+    { path: '/billing', permission: 'billing:manage' },
+    { path: '/pending-payments', permission: 'customers:view' },
+    { path: '/my-attendance', permission: null },
+    { path: '/notifications', permission: null },
+  ];
+
+  const landing = preferredRoutes.find((route) => !route.permission || hasPermission(user, route.permission));
+  return landing?.path || '/';
+}

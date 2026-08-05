@@ -19,6 +19,7 @@ const { doubleCsrfProtection, generateCsrfToken: generateTokenFn } = doubleCsrf(
   size: 64,
   ignoredMethods: ['GET', 'HEAD', 'OPTIONS'],
   skipCsrfProtection: (req) =>
+    req.path.startsWith('/api/internal/reports/') ||
     req.path.endsWith('/auth/login') ||
     req.path.endsWith('/auth/refresh') ||
     Boolean(req.headers.authorization?.startsWith('Bearer ')),

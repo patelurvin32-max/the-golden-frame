@@ -251,7 +251,7 @@ const resolveReportSettings = async (settings) => {
     return settings;
   }
 
-  const dbSettings = await Settings.findOne().lean();
+  const dbSettings = await Settings.findOne({ branch: { $exists: false } }).lean();
   return dbSettings || {};
 };
 
@@ -891,6 +891,8 @@ module.exports = {
   buildSubject,
   buildDailyReportHtml,
   buildPlainTextReport,
+  resolveReportSettings,
+  resolveBranchEmailConfig,
   generateDailyBusinessReportForBranch,
   runDailyBusinessReportForBranch,
   runDailyBusinessReport,

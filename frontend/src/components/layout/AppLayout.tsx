@@ -1,4 +1,5 @@
-import { Outlet } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Navbar } from './Navbar';
 import { BottomNav } from './BottomNav';
@@ -8,14 +9,19 @@ import { useIdleTimer } from '@/hooks/useIdleTimer';
 
 export const AppLayout = () => {
   const { sidebarOpen, setSidebarOpen } = useAppStore();
+  const { pathname } = useLocation();
   useIdleTimer();
 
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1024px)').matches) {
+      setSidebarOpen(false);
+    }
+  }, [pathname, setSidebarOpen]);
+
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      {/* Sidebar — fixed on mobile (overlay), static on desktop */}
+    <div className="flex h-screen min-w-0 overflow-hidden bg-background">
       <Sidebar />
 
-      {/* Mobile backdrop — tap to close sidebar */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-20 bg-black/50 lg:hidden"
@@ -23,17 +29,16 @@ export const AppLayout = () => {
         />
       )}
 
-      {/* Main content — full width on mobile, always shifted on desktop */}
       <div className={cn(
-        'flex-1 flex flex-col overflow-hidden transition-all duration-300',
-        'w-full',                      // full width on mobile
-        'lg:ml-64',                   // always shifted on desktop (sidebar is static)
+        'flex-1 min-w-0 flex flex-col overflow-hidden transition-all duration-300',
+        'w-full',
       )}>
         <Navbar />
-        <main className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 pb-20 lg:pb-6">
+        <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-3 sm:p-4 md:p-5 lg:p-6 pb-20 lg:pb-6">
           <Outlet />
         </main>
       </div>
+
       <BottomNav />
     </div>
   );

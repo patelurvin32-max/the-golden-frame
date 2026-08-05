@@ -163,7 +163,7 @@ export default function ExpensesPage() {
   };
 
   return (
-    <div className="space-y-3 sm:space-y-5 animate-fade-in">
+    <div className="space-y-5 animate-fade-in">
       <PageHeader
         title="Expenses"
         subtitle={canViewDashboard ? `Total: ${formatCurrency(totalExpenses)}` : undefined}
@@ -235,7 +235,7 @@ export default function ExpensesPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Pie chart - only visible for Super Admin and Admin */}
         {canViewDashboard && breakdown.length > 0 && (
           <Card>

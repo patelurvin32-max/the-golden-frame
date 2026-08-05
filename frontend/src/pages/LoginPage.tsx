@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { Eye, EyeOff } from 'lucide-react';
 import { useAuthStore } from '@/store';
 import { Button, Input, Label, useToast } from '@/components/ui';
+import { getPostLoginRoute } from '@/utils';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -31,8 +32,7 @@ export default function LoginPage() {
     setError('');
     try {
       const { user } = await login(form.email, form.password);
-      // Navigate after successful login - Staff goes to Customers, others to Dashboard
-      navigate(user?.role === 'staff' ? '/customers' : '/');
+      navigate(getPostLoginRoute(user), { replace: true });
     } catch (err: any) {
       const status = err?.response?.status;
       const errorMessage =
