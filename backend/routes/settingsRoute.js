@@ -10,7 +10,6 @@ const asyncHandler = require('../utils/asyncHandler');
 const AppError = require('../utils/AppError');
 
 const router = express.Router();
-router.use(protect);
 
 const uploadDir = path.join(__dirname, '../uploads/logos');
 if (!fs.existsSync(uploadDir)) {
@@ -38,7 +37,10 @@ const upload = multer({
   },
 });
 
+// Logo files must stay publicly readable so login and other unauthenticated pages can render them.
 router.use('/logo-file', express.static(uploadDir));
+
+router.use(protect);
 
 router.get(
   '/',
