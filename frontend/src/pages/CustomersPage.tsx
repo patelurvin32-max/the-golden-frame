@@ -10,6 +10,17 @@ import {
 } from '@/components/ui';
 import PaymentForm, { PaymentFormValues } from '@/components/PaymentForm';
 import { formatCurrency, formatDate, parseCurrencyValue, cn, downloadBlob } from '@/utils';
+import { Plus, Minus, Trash2, ShoppingCart, Utensils, Gamepad2, Tag, X } from 'lucide-react';
+
+export interface CartItem {
+  menuCategoryId: string;
+  categoryName: string;
+  menuItemId: string;
+  itemName: string;
+  quantity: number;
+  unitPrice: number;
+  totalAmount: number;
+}
 
 const TIERS: Record<string, { color: string; icon: string }> = {
   silver: { color: 'bg-slate-500/10 text-slate-300 border-slate-500/20', icon: '🥈' },
@@ -71,6 +82,72 @@ export default function CustomersPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<Customer | null>(null);
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [phoneError, setPhoneError] = useState('');
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cartCategoryId, setCartCategoryId] = useState<string>('');
+  const [cartItemId, setCartItemId] = useState<string>('');
+  const [validationError, setValidationError] = useState<{ field: string; message: string } | null>(null);
+
+  const handleAddToCart = (item: MenuItem, categoryName: string) => {
+    const price = item.price || item.fullPrice || 0;
+    const catId = typeof item.category === 'object' && item.category !== null
+      ? (item.category as any)._id
+      : (item.category as string);
+
+    setCart((prev) => {
+      const idx = prev.findIndex((c) => c.menuItemId === item._id);
+      if (idx > -1) {
+        const updated = [...prev];
+        const newQty = updated[idx].quantity + 1;
+        updated[idx] = {
+          ...updated[idx],
+          quantity: newQty,
+          totalAmount: newQty * price,
+        };
+        return updated;
+      } else {
+        return [
+          ...prev,
+          {
+            menuCategoryId: catId || '',
+            categoryName: categoryName || 'Menu',
+            menuItemId: item._id,
+            itemName: item.name,
+            quantity: 1,
+            unitPrice: price,
+            totalAmount: price,
+          },
+        ];
+      }
+    });
+  };
+
+  const handleRemoveFromCart = (menuItemId: string) => {
+    setCart((prev) => {
+      const idx = prev.findIndex((c) => c.menuItemId === menuItemId);
+      if (idx === -1) return prev;
+      const existing = prev[idx];
+      if (existing.quantity > 1) {
+        const updated = [...prev];
+        const newQty = existing.quantity - 1;
+        updated[idx] = {
+          ...existing,
+          quantity: newQty,
+          totalAmount: newQty * existing.unitPrice,
+        };
+        return updated;
+      } else {
+        return prev.filter((c) => c.menuItemId !== menuItemId);
+      }
+    });
+  };
+
+  const handleDeleteFromCart = (menuItemId: string) => {
+    setCart((prev) => prev.filter((c) => c.menuItemId !== menuItemId));
+  };
+
+  const cartSubtotal = useMemo(() => {
+    return cart.reduce((sum, item) => sum + (item.totalAmount || 0), 0);
+  }, [cart]);
 
   const userAssignedBranchId = user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)._id) : '';
   const effectiveBranch = selectedBranch || (user?.role !== 'super_admin' ? userAssignedBranchId : '');
@@ -130,6 +207,28 @@ export default function CustomersPage() {
     staleTime: 10 * 60 * 1000, // Cache for 10 minutes
     gcTime: 15 * 60 * 1000, // Keep in cache for 15 minutes
   });
+
+  const cartAllowedCategories = useMemo(() => {
+    return categories.filter((cat) => {
+      const name = (cat.name || '').trim().toLowerCase();
+      return name === 'beverages' || name === 'beverage' || name === 'accessories' || name === 'accessory';
+    });
+  }, [categories]);
+
+  const cartAllowedItems = useMemo(() => {
+    if (!cartCategoryId) return [];
+    const allItems: MenuItem[] = Array.isArray((allMenuItemsData as any)?.data?.items)
+      ? (allMenuItemsData as any).data.items
+      : [];
+
+    return allItems.filter((item: any) => {
+      if (item.status === 'Inactive') return false;
+      const catId = typeof item.category === 'object' && item.category !== null
+        ? item.category._id
+        : item.category;
+      return String(catId) === String(cartCategoryId);
+    });
+  }, [allMenuItemsData, cartCategoryId]);
 
   // Fetch menu items filtered by category and branch
   const menuParams: Record<string, string> = { limit: '1000', activeOnly: 'true' };
@@ -322,24 +421,29 @@ export default function CustomersPage() {
     if (numericPhone.length === 10) {
       setIsLookingUp(true);
       try {
-        const response = await customerService.lookup(numericPhone, selectedBranch || undefined);
+        const targetBranch = form.branch || selectedBranch || undefined;
+        const response = await customerService.lookup(numericPhone, targetBranch);
         const customer = response.data.data.customer;
         if (customer) {
           setForm((f) => ({
             ...f,
-            name: customer.name,
+            name: customer.name || f.name,
             phone: customer.phone,
-            email: customer.email || '',
-            notes: customer.notes || '',
+            email: customer.email || f.email,
+            notes: customer.notes || f.notes,
             walletBalance: customer.walletBalance || 0,
           }));
           toast.success('Customer found! Details populated.');
+        } else {
+          setForm((f) => ({ ...f, walletBalance: 0 }));
         }
       } catch (error) {
-        // Customer not found, allow creating new
+        setForm((f) => ({ ...f, walletBalance: 0 }));
       } finally {
         setIsLookingUp(false);
       }
+    } else {
+      setForm((f) => ({ ...f, walletBalance: 0 }));
     }
   };
 
@@ -379,21 +483,50 @@ export default function CustomersPage() {
     }
 
     // Validation
+    setValidationError(null);
+
     if (isAdminRole && !branch) {
+      setValidationError({ field: 'branch', message: 'Branch is required' });
       toast.error('Branch is required'); return;
     }
     if (!branch) {
       toast.error('Unable to determine your branch. Please contact an administrator.'); return;
     }
-    if (!form.name) { toast.error('Full Name is required'); return; }
-    if (!form.phone) { toast.error('Phone Number is required'); return; }
-    if (!form.menuCategoryId) { toast.error('Menu Category is required'); return; }
-    if (!form.menuItemId) { toast.error('Menu Item is required'); return; }
+    if (!form.name.trim()) {
+      setValidationError({ field: 'name', message: 'Full Name is required' });
+      toast.error('Full Name is required'); return;
+    }
+    if (!form.phone.trim()) {
+      setValidationError({ field: 'phone', message: 'Phone Number is required' });
+      toast.error('Phone Number is required'); return;
+    }
+    if (form.phone.length > 0 && form.phone.length < 10) {
+      setValidationError({ field: 'phone', message: 'Mobile number must contain exactly 10 digits.' });
+      toast.error('Mobile number must contain exactly 10 digits.'); return;
+    }
+    if (!form.menuCategoryId) {
+      setValidationError({ field: 'menuCategoryId', message: 'Playing Category is required' });
+      toast.error('Playing Category is required'); return;
+    }
+    if (!form.menuItemId) {
+      setValidationError({ field: 'menuItemId', message: 'Playing Item is required' });
+      toast.error('Playing Item is required'); return;
+    }
     // Only require Start Time for session-based categories (not Accessories or Beverages)
-    if (!isProductCategory && !form.startTime) { toast.error('Start Time is required'); return; }
-    if (!form.billAmount) { toast.error('Total Amount is required'); return; }
-    if (!form.paymentStatus) { toast.error('Payment Status is required'); return; }
+    if (!isProductCategory && !form.startTime) {
+      setValidationError({ field: 'startTime', message: 'Start Time is required' });
+      toast.error('Start Time is required'); return;
+    }
+    if (!form.billAmount) {
+      setValidationError({ field: 'billAmount', message: 'Total Amount is required' });
+      toast.error('Total Amount is required'); return;
+    }
+    if (!form.paymentStatus) {
+      setValidationError({ field: 'paymentStatus', message: 'Payment Status is required' });
+      toast.error('Payment Status is required'); return;
+    }
     if ((form.paymentStatus === 'paid' || form.paymentStatus === 'partial') && !form.paymentMethod) {
+      setValidationError({ field: 'paymentMethod', message: 'Payment Method is required' });
       toast.error('Payment Method is required');
       return;
     }
@@ -536,6 +669,7 @@ export default function CustomersPage() {
 
     const payload = {
       ...form,
+      addedItems: cart,
       branch,
       billAmount,
       paymentMethod: paymentMethodToSave,
@@ -584,7 +718,23 @@ export default function CustomersPage() {
   const openCreate = () => {
     setSelected(null);
     setForm(emptyForm);
+    setCart([]);
+    setCartCategoryId('');
+    setCartItemId('');
+    setValidationError(null);
     setModal('create');
+  };
+
+  const formatForDateTimeInput = (dateVal: any) => {
+    if (!dateVal) return '';
+    const d = new Date(dateVal);
+    if (isNaN(d.getTime())) return '';
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
   };
 
   const openEdit = (c: Customer) => {
@@ -599,9 +749,18 @@ export default function CustomersPage() {
         }))
       : [];
     
+    const existingAddedItems = Array.isArray((c as any).addedItems) ? (c as any).addedItems : [];
+    setCart(existingAddedItems);
+    setCartCategoryId('');
+    setCartItemId('');
+    setValidationError(null);
+
     const initialAmountReceived = ((c as any).amountReceived !== undefined && (c as any).amountReceived !== null && (c as any).amountReceived !== '')
       ? String((c as any).amountReceived)
       : (((c as any).cashAmount || (c as any).onlineAmount || (c as any).totalPaid) ? String((c as any).totalPaid || 0) : '0');
+
+    const rawStartTime = c.startTime || (c as any).reservation?.startTime || c.createdAt;
+    const rawEndTime = c.endTime || (c as any).reservation?.endTime || '';
 
     setForm({
       name: c.name,
@@ -611,8 +770,8 @@ export default function CustomersPage() {
       notes: c.notes || '',
       menuCategoryId: (c.menuCategoryId as any)?._id || c.menuCategoryId || '',
       menuItemId: (c.menuItemId as any)?._id || c.menuItemId || '',
-      startTime: c.startTime ? new Date(c.startTime).toISOString().slice(0, 16) : '',
-      endTime: c.endTime ? new Date(c.endTime).toISOString().slice(0, 16) : '',
+      startTime: formatForDateTimeInput(rawStartTime),
+      endTime: formatForDateTimeInput(rawEndTime),
       paymentStatus: c.paymentStatus,
       paymentMethod: (c.paymentMethod as any) || '',
       cashAmount: (c as any).cashAmount ? String((c as any).cashAmount) : '',
@@ -832,175 +991,474 @@ export default function CustomersPage() {
       <Modal
         open={modal === 'create' || modal === 'edit'}
         onClose={() => setModal(null)}
-        title={selected ? 'Edit Customer' : 'Add New Customer'}
+        title={selected ? 'Edit Customer & Add Items' : 'Add New Customer Session'}
         size="lg"
       >
-        <div className="space-y-4 max-h-[70vh] overflow-y-auto">
-          {/* Customer Info */}
-          <div className="space-y-3">
-            {(user?.role === 'admin' || user?.role === 'super_admin') && (
-              <div className="space-y-1.5">
-                <Label>Branch *</Label>
-                <Select
-                  value={form.branch}
-                  onChange={(e) => setForm((f) => ({ ...f, branch: e.target.value }))}
-                >
-                  <option value="">Select branch</option>
-                  {branches.map((branch) => (
-                    <option key={branch._id} value={branch._id}>{branch.name}</option>
-                  ))}
-                </Select>
-              </div>
-            )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Full Name *</Label>
-                <Input
-                  value={form.name}
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                  placeholder="Enter full name"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Phone Number *</Label>
-                <Input
-                  value={form.phone}
-                  onChange={(e) => handlePhoneChange(e.target.value)}
-                  placeholder="Enter phone number"
-                  disabled={isLookingUp}
-                  maxLength={10}
-                />
-                {phoneError && <p className="text-xs text-red-400">{phoneError}</p>}
-                {isLookingUp && <p className="text-xs text-muted-foreground">Looking up customer...</p>}
-              </div>
-            </div>
+        <div className="space-y-4 sm:space-y-5 max-h-[75vh] sm:max-h-[80vh] overflow-y-auto px-0.5 sm:px-1">
+          {(user?.role === 'admin' || user?.role === 'super_admin') && (
             <div className="space-y-1.5">
-              <Label>Email</Label>
-              <Input
-                type="email"
-                value={form.email}
-                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                placeholder="Enter email (optional)"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Additional Players</Label>
-              <Input
-                value={form.additionalPlayers}
-                onChange={(e) => setForm((f) => ({ ...f, additionalPlayers: e.target.value }))}
-                placeholder="Enter player names (e.g., Jinesh)"
-              />
-            </div>
-          </div>
-
-          {/* Menu Selection */}
-          <div className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Menu Category *</Label>
-                <Select
-                  value={form.menuCategoryId}
-                  onChange={(e) => setForm((f) => ({ ...f, menuCategoryId: e.target.value, menuItemId: '' }))}
-                >
-                  <option value="">Select category</option>
-                  {categories.map((cat) => (
-                    <option key={cat._id} value={cat._id}>{cat.name}</option>
-                  ))}
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label>Menu Item *</Label>
-                <Select
-                  value={form.menuItemId}
-                  onChange={(e) => setForm((f) => ({ ...f, menuItemId: e.target.value }))}
-                  disabled={!form.menuCategoryId || availableMenuItems.length === 0}
-                >
-                  <option value="">Select item</option>
-                  {availableMenuItems.map((item) => (
-                    <option key={item._id} value={item._id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </Select>
-                {form.menuCategoryId && availableMenuItems.length === 0 && !showMenuLoading && (
-                  <p className="text-xs text-muted-foreground">No available items for this category</p>
-                )}
-                {showMenuLoading && (
-                  <p className="text-xs text-blue-400 animate-pulse">Loading menu items...</p>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Session Details - Only show for session-based categories */}
-          {!isProductCategory && (
-            <div className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label>Start Time *</Label>
-                  <Input
-                    type="datetime-local"
-                    value={form.startTime}
-                    onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>End Time</Label>
-                  <Input
-                    type="datetime-local"
-                    value={form.endTime}
-                    onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
-                  />
-                </div>
-              </div>
+              <Label>Branch *</Label>
+              <Select
+                value={form.branch}
+                onChange={(e) => setForm((f) => ({ ...f, branch: e.target.value }))}
+              >
+                <option value="">Select branch</option>
+                {branches.map((branch) => (
+                  <option key={branch._id} value={branch._id}>{branch.name}</option>
+                ))}
+              </Select>
             </div>
           )}
 
-          {/* Total Amount */}
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label>Total Amount / Bill Amount *</Label>
-              <Input
-                type="number"
-                min="0"
-                step="any"
-                value={form.billAmount}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  // Preserve exact value entered by user
-                  setForm((f) => ({ ...f, billAmount: value }));
-                }}
-                placeholder="Enter total bill amount"
-              />
-            </div>
-          </div>
+          {/* ────────────────── CREATE WORKFLOW ────────────────── */}
+          {modal === 'create' && (
+            <>
+              <div className="space-y-3">
+                {/* 1st Row: Full Name * | Phone Number * */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Full Name *</Label>
+                    <Input
+                      value={form.name}
+                      onChange={(e) => {
+                        setForm((f) => ({ ...f, name: e.target.value }));
+                        if (validationError?.field === 'name') setValidationError(null);
+                      }}
+                      placeholder="Enter full name"
+                    />
+                    {validationError?.field === 'name' && (
+                      <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Phone Number *</Label>
+                    <Input
+                      value={form.phone}
+                      onChange={(e) => {
+                        handlePhoneChange(e.target.value);
+                        if (validationError?.field === 'phone') setValidationError(null);
+                      }}
+                      placeholder="Enter 10-digit mobile"
+                      disabled={isLookingUp}
+                      maxLength={10}
+                    />
+                    {validationError?.field === 'phone' ? (
+                      <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+                    ) : phoneError ? (
+                      <p className="text-xs text-red-400 mt-0.5">{phoneError}</p>
+                    ) : null}
+                    {isLookingUp && <p className="text-xs text-muted-foreground">Looking up customer...</p>}
+                    {form.phone && form.phone.length === 10 && !phoneError && !validationError && !isLookingUp && (
+                      <p className="text-xs font-semibold text-emerald-400 mt-0.5">
+                        Available Wallet Balance: {formatCurrency(form.walletBalance || 0)}
+                      </p>
+                    )}
+                  </div>
+                </div>
 
-          {/* Payment Info */}
-          <PaymentForm
-            values={form}
-            onChange={(paymentValues) => setForm((f) => ({ ...f, ...paymentValues }))}
-          />
+                {/* 2nd Row: Email (Optional) | Additional Players */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Email (Optional)</Label>
+                    <Input
+                      type="email"
+                      value={form.email}
+                      onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                      placeholder="Enter email"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Additional Players</Label>
+                    <Input
+                      value={form.additionalPlayers}
+                      onChange={(e) => setForm((f) => ({ ...f, additionalPlayers: e.target.value }))}
+                      placeholder="Enter extra player names"
+                    />
+                  </div>
+                </div>
 
-          {/* Notes */}
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label>Notes</Label>
-              <Input
-                value={form.notes}
-                onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
-                placeholder="Enter notes (optional)"
-              />
-            </div>
-          </div>
+                {/* 3rd Row: Playing Category * | Playing Item * */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium">Playing Category *</Label>
+                    <Select
+                      value={form.menuCategoryId}
+                      onChange={(e) => {
+                        setForm((f) => ({ ...f, menuCategoryId: e.target.value, menuItemId: '' }));
+                        if (validationError?.field === 'menuCategoryId') setValidationError(null);
+                      }}
+                    >
+                      <option value="">Select Category</option>
+                      {categories.map((cat) => (
+                        <option key={cat._id} value={cat._id}>{cat.name}</option>
+                      ))}
+                    </Select>
+                    {validationError?.field === 'menuCategoryId' && (
+                      <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium">Playing Item*</Label>
+                    <Select
+                      value={form.menuItemId}
+                      onChange={(e) => {
+                        const itemId = e.target.value;
+                        const selectedItem = availableMenuItems.find((i: any) => i._id === itemId);
+                        const itemPrice = selectedItem?.price || selectedItem?.fullPrice || 0;
+                        setForm((f) => ({
+                          ...f,
+                          menuItemId: itemId,
+                          ...(itemPrice > 0 && (!f.billAmount || f.billAmount === '0') ? { billAmount: String(itemPrice) } : {})
+                        }));
+                        if (validationError?.field === 'menuItemId') setValidationError(null);
+                      }}
+                      disabled={!form.menuCategoryId || availableMenuItems.length === 0}
+                    >
+                      <option value="">Select Playing Item</option>
+                      {availableMenuItems.map((item) => (
+                        <option key={item._id} value={item._id}>
+                          {item.name} {item.price ? `(₹${item.price})` : ''}
+                        </option>
+                      ))}
+                    </Select>
+                    {validationError?.field === 'menuItemId' && (
+                      <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+                    )}
+                    {form.menuCategoryId && availableMenuItems.length === 0 && !showMenuLoading && (
+                      <p className="text-xs text-muted-foreground">No active items for this category</p>
+                    )}
+                    {showMenuLoading && (
+                      <p className="text-xs text-blue-400 animate-pulse">Loading items...</p>
+                    )}
+                  </div>
+                </div>
+              </div>
 
-          <div className="flex gap-2 pt-2">
-            <Button variant="outline" className="flex-1" onClick={() => setModal(null)}>Cancel</Button>
+              {/* Step 4: Session Details */}
+              {!isProductCategory && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                    <div className="space-y-1.5">
+                      <Label>Start Time *</Label>
+                      <Input
+                        type="datetime-local"
+                        value={form.startTime}
+                        onChange={(e) => {
+                          setForm((f) => ({ ...f, startTime: e.target.value }));
+                          if (validationError?.field === 'startTime') setValidationError(null);
+                        }}
+                      />
+                      {validationError?.field === 'startTime' && (
+                        <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>End Time</Label>
+                      <Input
+                        type="datetime-local"
+                        value={form.endTime}
+                        onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 5: Bill Amount & Payment Info */}
+              <div className="space-y-3 pt-1 border-t border-border">
+                <div className="space-y-1.5">
+                  <Label>Total Bill Amount *</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={form.billAmount}
+                    onChange={(e) => {
+                      setForm((f) => ({ ...f, billAmount: e.target.value }));
+                      if (validationError?.field === 'billAmount') setValidationError(null);
+                    }}
+                    placeholder="Enter total bill amount"
+                  />
+                  {validationError?.field === 'billAmount' && (
+                    <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+                  )}
+                </div>
+                <PaymentForm
+                  values={form}
+                  onChange={(paymentValues) => {
+                    setForm((f) => ({ ...f, ...paymentValues }));
+                    if (validationError?.field === 'paymentStatus' || validationError?.field === 'paymentMethod') {
+                      setValidationError(null);
+                    }
+                  }}
+                  validationError={validationError}
+                />
+                <div className="space-y-1.5">
+                  <Label>Notes</Label>
+                  <Input
+                    value={form.notes}
+                    onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+                    placeholder="Enter notes (optional)"
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ────────────────── EDIT WORKFLOW: Customer Details + Category & Item Cart Selection ────────────────── */}
+          {modal === 'edit' && (
+            <>
+              {/* Customer & Playing Info Summary */}
+              <div className="p-3 sm:p-3.5 rounded-xl border border-border bg-card/50 space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Customer & Session Details</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Full Name *</Label>
+                    <Input
+                      value={form.name}
+                      onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                      placeholder="Full Name"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Phone Number *</Label>
+                    <Input
+                      value={form.phone}
+                      onChange={(e) => handlePhoneChange(e.target.value)}
+                      placeholder="10-digit mobile"
+                      maxLength={10}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Playing Category *</Label>
+                    <Select
+                      value={form.menuCategoryId}
+                      onChange={(e) => setForm((f) => ({ ...f, menuCategoryId: e.target.value, menuItemId: '' }))}
+                    >
+                      <option value="">Select Category</option>
+                      {categories.map((cat) => (
+                        <option key={cat._id} value={cat._id}>{cat.name}</option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Playing Item *</Label>
+                    <Select
+                      value={form.menuItemId}
+                      onChange={(e) => setForm((f) => ({ ...f, menuItemId: e.target.value }))}
+                      disabled={!form.menuCategoryId || availableMenuItems.length === 0}
+                    >
+                      <option value="">Select Item</option>
+                      {availableMenuItems.map((item) => (
+                        <option key={item._id} value={item._id}>{item.name}</option>
+                      ))}
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Start Time *</Label>
+                    <Input
+                      type="datetime-local"
+                      value={form.startTime}
+                      onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>End Time</Label>
+                    <Input
+                      type="datetime-local"
+                      value={form.endTime}
+                      onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* CATEGORY & ITEM DROPDOWN SELECTION */}
+              <div className="p-3 sm:p-4 rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 via-card to-card space-y-3.5 sm:space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-5 gap-2.5 sm:gap-3 items-end">
+                  <div className="sm:col-span-2 space-y-1.5">
+                    <Label className="text-xs font-medium">Category</Label>
+                    <Select
+                      value={cartCategoryId}
+                      onChange={(e) => {
+                        setCartCategoryId(e.target.value);
+                        setCartItemId('');
+                      }}
+                    >
+                      <option value="">Select Category</option>
+                      {cartAllowedCategories.map((cat) => (
+                        <option key={cat._id} value={cat._id}>
+                          {cat.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div className="sm:col-span-2 space-y-1.5">
+                    <Label className="text-xs font-medium">Item</Label>
+                    <Select
+                      value={cartItemId}
+                      onChange={(e) => setCartItemId(e.target.value)}
+                      disabled={!cartCategoryId || cartAllowedItems.length === 0}
+                    >
+                      <option value="">Select Item</option>
+                      {cartAllowedItems.map((item) => {
+                        const itemPrice = item.price || item.fullPrice || 0;
+                        return (
+                          <option key={item._id} value={item._id}>
+                            {item.name} {itemPrice ? `(₹${itemPrice})` : ''}
+                          </option>
+                        );
+                      })}
+                    </Select>
+                  </div>
+
+                  <div className="sm:col-span-1">
+                    <Button
+                      type="button"
+                      variant="success"
+                      className="w-full h-9 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-semibold border-0 shadow-md shadow-emerald-950/20 transition-all duration-150"
+                      disabled={!cartItemId}
+                      onClick={() => {
+                        const itemToAdd = cartAllowedItems.find((i) => i._id === cartItemId);
+                        const catObj = cartAllowedCategories.find((c) => c._id === cartCategoryId);
+                        if (itemToAdd) {
+                          handleAddToCart(itemToAdd, catObj?.name || 'Item');
+                          setCartItemId('');
+                        }
+                      }}
+                    >
+                      <Plus className="h-4 w-4 mr-1" />
+                      Add
+                    </Button>
+                  </div>
+                </div>
+
+                {/* 🛒 RUNNING CART SUMMARY AT THE BOTTOM */}
+                <div className="mt-3 rounded-xl border border-border/80 bg-background/90 p-2.5 sm:p-3 space-y-2.5 sm:space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5 pb-2 border-b border-border/60">
+                    <div className="flex items-center gap-2 text-xs font-bold text-foreground">
+                      <ShoppingCart className="h-4 w-4 text-emerald-400 flex-shrink-0" />
+                      <span>Running Cart Items ({cart.length})</span>
+                    </div>
+                    <span className="text-xs font-semibold text-emerald-400">
+                      Cart Total: ₹{cartSubtotal}
+                    </span>
+                  </div>
+
+                  {cart.length === 0 ? (
+                    <p className="text-xs text-muted-foreground text-center py-2">
+                      No additional products added to cart yet. Select a category & item above and click <span className="text-emerald-400 font-semibold">Add</span>.
+                    </p>
+                  ) : (
+                    <div className="space-y-2 max-h-40 overflow-y-auto pr-0.5">
+                      {cart.map((c) => (
+                        <div
+                          key={c.menuItemId}
+                          className="flex items-center justify-between gap-2 text-xs p-2 sm:p-2.5 rounded-lg bg-card/60 border border-border/40"
+                        >
+                          <div className="min-w-0 pr-1 flex-1">
+                            <p className="font-semibold text-foreground truncate">{c.itemName}</p>
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              {c.categoryName} · ₹{c.unitPrice} × {c.quantity}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+                            <div className="flex items-center gap-1 bg-secondary/80 rounded-md p-0.5">
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveFromCart(c.menuItemId)}
+                                className="h-6 w-6 rounded flex items-center justify-center hover:bg-background text-foreground text-xs font-bold active:scale-95 transition-all"
+                              >
+                                <Minus className="h-3 w-3" />
+                              </button>
+                              <span className="font-bold px-1.5 text-foreground text-xs">{c.quantity}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const itemObj = (allMenuItemsData?.data?.items || []).find((i: any) => i._id === c.menuItemId);
+                                  if (itemObj) handleAddToCart(itemObj, c.categoryName);
+                                }}
+                                className="h-6 w-6 rounded flex items-center justify-center hover:bg-background text-foreground text-xs font-bold active:scale-95 transition-all"
+                              >
+                                <Plus className="h-3 w-3" />
+                              </button>
+                            </div>
+                            <span className="font-bold text-foreground min-w-[2.5rem] sm:min-w-[3rem] text-right text-xs">₹{c.totalAmount}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteFromCart(c.menuItemId)}
+                              className="text-red-400 hover:text-red-300 transition-colors p-1 rounded hover:bg-red-500/10 active:scale-95"
+                              title="Remove item"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Grand Running Total Display */}
+                  <div className="flex items-center justify-between pt-2 border-t border-border/80 text-xs sm:text-sm">
+                    <span className="font-bold text-foreground">Grand Total (Session + Cart):</span>
+                    <span className="font-extrabold text-primary">
+                      {formatCurrency(parseCurrencyValue(form.billAmount) + (cart.length > 0 ? cartSubtotal : 0))}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Total Bill Amount Override & Payment Info */}
+              <div className="space-y-3 pt-1 border-t border-border">
+                <div className="space-y-1.5">
+                  <Label>Session Base Bill Amount *</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={form.billAmount}
+                    onChange={(e) => setForm((f) => ({ ...f, billAmount: e.target.value }))}
+                    placeholder="Enter base bill amount"
+                  />
+                  {cart.length > 0 && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Base bill ₹{form.billAmount || 0} + Cart items ₹{cartSubtotal} = Total ₹{(parseCurrencyValue(form.billAmount) || 0) + cartSubtotal}
+                    </p>
+                  )}
+                </div>
+
+                <PaymentForm
+                  values={form}
+                  onChange={(paymentValues) => setForm((f) => ({ ...f, ...paymentValues }))}
+                />
+
+                <div className="space-y-1.5">
+                  <Label>Notes</Label>
+                  <Input
+                    value={form.notes}
+                    onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+                    placeholder="Enter notes (optional)"
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          <div className="flex flex-col-reverse sm:flex-row gap-2.5 pt-3 border-t border-border/60">
+            <Button variant="outline" className="w-full sm:flex-1 h-10" onClick={() => setModal(null)}>Cancel</Button>
             <Button
-              className="flex-1"
+              className="w-full sm:flex-1 h-10"
               loading={createMutation.isPending || updateMutation.isPending}
               onClick={handleSave}
             >
-              {selected ? 'Update Customer' : 'Add Customer'}
+              {selected ? 'Save Changes & Cart' : 'Add Customer'}
             </Button>
           </div>
         </div>

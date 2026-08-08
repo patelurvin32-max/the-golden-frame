@@ -9,6 +9,10 @@ const PORT = process.env.PORT || 5000;
 // ── HTTP server ───────────────────────────────────────────────────────────────
 const server = http.createServer(app);
 
+// Keep HTTP connections alive — reduces TCP handshake overhead
+server.keepAliveTimeout = 65000;    // 65s (above AWS/Render's 60s LB timeout)
+server.headersTimeout = 66000;      // slightly above keepAliveTimeout
+
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 const isLocalNetworkOrigin = (origin) => {
   if (!origin) return true;
@@ -164,7 +168,25 @@ const start = async () => {
   const HOST = process.env.HOST || '0.0.0.0';
 
   server.listen(PORT, HOST, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`🚀 Server running on port ${PORT}`);
+
+    // ── Keep-alive: prevent Render free tier from sleeping ──────────────────
+    // Render sleeps servers after 15 min of inactivity.
+    // This pings the health endpoint every 14 minutes to keep it awake.
+    if (process.env.NODE_ENV === 'production' && process.env.RENDER_EXTERNAL_URL) {
+      const PING_INTERVAL = 14 * 60 * 1000; // 14 minutes in ms
+
+      setInterval(() => {
+        const url = `${process.env.RENDER_EXTERNAL_URL}/api/health`;
+        require('https').get(url, (res) => {
+          console.log(`[keep-alive] ${new Date().toISOString()} — status: ${res.statusCode}`);
+        }).on('error', (err) => {
+          console.warn(`[keep-alive] Ping failed: ${err.message}`);
+        });
+      }, PING_INTERVAL);
+
+      console.log(`✅ Keep-alive ping scheduled every 14 min → ${process.env.RENDER_EXTERNAL_URL}/api/health`);
+    }
   });
 };
 

@@ -1,5 +1,5 @@
 import api from './api';
-import type { ApiResponse, AttendanceHistoryStats, AttendanceRecord, AttendanceStats, Bill, Branch, Customer, DashboardStats, Expense, InventoryCategoryDoc, InventoryItem, InventoryReportItem, InventoryReportSummary, MenuItem, MyAttendanceResponse, Session, Table, User } from '@/types';
+import type { ApiResponse, AttendanceHistoryStats, AttendanceRecord, AttendanceStats, Bill, Branch, Customer, DashboardStats, Expense, InventoryCategoryDoc, InventoryItem, InventoryReportItem, InventoryReportSummary, MenuItem, MyAttendanceResponse, Session, Table, User, Wallet } from '@/types';
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 export const authService = {
@@ -50,10 +50,12 @@ export const sessionService = {
 // ── Customers ─────────────────────────────────────────────────────────────────
 export const customerService = {
   getAll: (params?: Record<string, string>) => api.get<ApiResponse<{ customers: Customer[] }>>('/customers', { params }),
+  getSuperAdminCustomers: (params?: Record<string, string>) => api.get<ApiResponse<{ customers: Customer[] }>>('/customers/super-admin', { params }),
   getOne: (id: string) => api.get<ApiResponse<{ customer: Customer }>>(`/customers/${id}`),
   lookup: (phone: string, branch?: string) => api.get<ApiResponse<{ customer: Customer | null }>>(`/customers/lookup/${phone}`, { params: { ...branch ? { branch } : {}, _t: Date.now() } }),
   create: (data: Record<string, any>) => api.post<ApiResponse<{ customer: Customer }>>('/customers', data),
   update: (id: string, data: Partial<Customer>) => api.patch<ApiResponse<{ customer: Customer }>>(`/customers/${id}`, data),
+  updateSuperAdminCustomer: (id: string, data: { name: string; phone: string }) => api.patch<ApiResponse<{ customer: Customer }>>(`/customers/super-admin/${id}`, data),
   delete: (id: string) => api.delete(`/customers/${id}`),
   receivePayment: (id: string, data: Record<string, unknown>) => api.post<ApiResponse<{ customer: Customer }>>(`/customers/${id}/receive-payment`, data),
   getPaymentHistory: (id: string) => api.get<ApiResponse<{ paymentHistory: any[] }>>(`/customers/${id}/payment-history`),
@@ -186,4 +188,14 @@ export const walletService = {
   getCustomerHistory: (customerId: string, params?: Record<string, string>) => api.get(`/wallet/customer/${customerId}`, { params }),
   addBalance: (data: { customerId: string; amount: number; description?: string; paymentMethod?: string }) => api.post('/wallet/add-balance', data),
   getSummary: (params?: Record<string, string>) => api.get('/wallet/summary', { params }),
+};
+
+// ── Wallet Management ─────────────────────────────────────────────────────────────
+export const walletManagementService = {
+  getAll: (params?: Record<string, string>) => api.get<ApiResponse<{ wallets: Wallet[] }>>('/wallet-management', { params }),
+  create: (data: Partial<Wallet>) => api.post<ApiResponse<{ wallet: Wallet }>>('/wallet-management', data),
+  update: (id: string, data: Partial<Wallet>) => api.patch<ApiResponse<{ wallet: Wallet }>>(`/wallet-management/${id}`, data),
+  delete: (id: string) => api.delete(`/wallet-management/${id}`),
+  downloadPDF: (id: string) => api.get(`/wallet-management/${id}/pdf`, { responseType: 'blob' }),
+  getStats: (params?: Record<string, string>) => api.get<ApiResponse<{ today: number; week: number; month: number; total: number; todayAmount: number; monthAmount: number }>>('/wallet-management/stats', { params }),
 };

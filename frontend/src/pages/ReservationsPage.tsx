@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
-import { reservationService, branchService, tableService, menuService } from '@/services';
+import { reservationService, branchService, tableService, menuService, customerService } from '@/services';
 import { useAppStore, useAuthStore } from '@/store';
 import { useSocket } from '@/hooks/useSocket';
 import {
@@ -9,7 +9,7 @@ import {
   Modal, PageHeader, Skeleton, EmptyState, useToast,
   Table2, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from '@/components/ui';
-import { formatDate, formatDateTime, cn } from '@/utils';
+import { formatDate, formatDateTime, formatCurrency, cn } from '@/utils';
 import PaymentForm from '@/components/PaymentForm';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -164,7 +164,10 @@ function ReservationForm({
   delete initialForm.table;
   const [form, setForm] = useState(initialForm);
   const [phoneError, setPhoneError] = useState('');
+  const [validationError, setValidationError] = useState<{ field: string; message: string } | null>(null);
   const qc = useQueryClient();
+  const toast = useToast();
+  const { selectedBranch } = useAppStore();
   const { user } = useAuthStore();
 
   // ── Availability state ──────────────────────────────────────────────────
@@ -237,6 +240,38 @@ function ReservationForm({
       setForm((prev: any) => ({ ...prev, branch: user.branches[0]._id || user.branches[0] }));
     }
   }, [canSelectBranch, user, initial._id]);
+
+  const [resWalletBalance, setResWalletBalance] = useState(0);
+
+  // Auto-lookup wallet balance when 10-digit mobile number is entered
+  useEffect(() => {
+    if (form.phoneNumber && form.phoneNumber.length === 10) {
+      const targetBranch = form.branch || selectedBranch || undefined;
+      customerService.lookup(form.phoneNumber, targetBranch)
+        .then((res) => {
+          const customer = res.data.data.customer;
+          if (customer) {
+            const bal = customer.walletBalance || 0;
+            setResWalletBalance(bal);
+            setForm((p: any) => ({
+              ...p,
+              walletBalance: bal,
+              ...(!p.customerName && customer.name ? { customerName: customer.name } : {}),
+            }));
+          } else {
+            setResWalletBalance(0);
+            setForm((p: any) => ({ ...p, walletBalance: 0 }));
+          }
+        })
+        .catch(() => {
+          setResWalletBalance(0);
+          setForm((p: any) => ({ ...p, walletBalance: 0 }));
+        });
+    } else {
+      setResWalletBalance(0);
+      setForm((p: any) => ({ ...p, walletBalance: 0 }));
+    }
+  }, [form.phoneNumber, form.branch, selectedBranch]);
 
   useEffect(() => {
     if (form.menuCategoryId && form.branch) {
@@ -360,13 +395,108 @@ function ReservationForm({
     return `${selectedItemName || 'This table'} is already booked from ${info.conflictTime} to ${info.conflictEnd}. Please select another table or choose a different time.`;
   }, [isSelectedItemBlocked, availabilityMap, form.menuItemId, selectedItemName]);
 
+  const handleSubmit = () => {
+    setValidationError(null);
+
+    // 1. Customer Name *
+    if (!form.customerName?.trim()) {
+      setValidationError({ field: 'customerName', message: 'Customer Name is required' });
+      toast.error('Customer Name is required');
+      return;
+    }
+
+    // 2. Mobile Number *
+    if (!form.phoneNumber?.trim()) {
+      setValidationError({ field: 'phoneNumber', message: 'Mobile Number is required' });
+      toast.error('Mobile Number is required');
+      return;
+    }
+    if (form.phoneNumber.length < 10) {
+      setValidationError({ field: 'phoneNumber', message: 'Mobile number must contain exactly 10 digits.' });
+      toast.error('Mobile number must contain exactly 10 digits.');
+      return;
+    }
+
+    // 3. Branch * (if canSelectBranch)
+    if (canSelectBranch && !form.branch) {
+      setValidationError({ field: 'branch', message: 'Branch is required' });
+      toast.error('Branch is required');
+      return;
+    }
+
+    // 4. Booking Date *
+    if (!form.reservationDate) {
+      setValidationError({ field: 'reservationDate', message: 'Booking Date is required' });
+      toast.error('Booking Date is required');
+      return;
+    }
+
+    // 5. Booking Time *
+    if (!form.reservationTime) {
+      setValidationError({ field: 'reservationTime', message: 'Booking Time is required' });
+      toast.error('Booking Time is required');
+      return;
+    }
+
+    // 6. Booking Category / Menu Category *
+    if (!form.menuCategoryId) {
+      setValidationError({ field: 'menuCategoryId', message: 'Booking Category is required' });
+      toast.error('Booking Category is required');
+      return;
+    }
+
+    // 7. Booking Item / Menu Item *
+    if (!form.menuItemId) {
+      setValidationError({ field: 'menuItemId', message: 'Booking Item / Table is required' });
+      toast.error('Booking Item / Table is required');
+      return;
+    }
+
+    if (isSelectedItemBlocked) {
+      setValidationError({ field: 'menuItemId', message: conflictMessage || 'Selected table/item is already booked for this time.' });
+      toast.error(conflictMessage || 'Selected table/item is already booked for this time.');
+      return;
+    }
+
+    // 8. Number of Guests *
+    if (!form.numberOfGuests || Number(form.numberOfGuests) <= 0) {
+      setValidationError({ field: 'numberOfGuests', message: 'Number of Guests is required' });
+      toast.error('Number of Guests is required');
+      return;
+    }
+
+    // 9. Payment Details
+    if (!form.paymentStatus) {
+      setValidationError({ field: 'paymentStatus', message: 'Payment Status is required' });
+      toast.error('Payment Status is required');
+      return;
+    }
+    if ((form.paymentStatus === 'paid' || form.paymentStatus === 'partial') && !form.paymentMethod) {
+      setValidationError({ field: 'paymentMethod', message: 'Payment Method is required' });
+      toast.error('Payment Method is required');
+      return;
+    }
+
+    onSubmit(form);
+  };
+
   return (
     <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
       {/* Customer */}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
           <Label>Name *</Label>
-          <Input value={form.customerName} onChange={(e) => set('customerName', e.target.value)} placeholder="Full name" />
+          <Input
+            value={form.customerName}
+            onChange={(e) => {
+              set('customerName', e.target.value);
+              if (validationError?.field === 'customerName') setValidationError(null);
+            }}
+            placeholder="Full name"
+          />
+          {validationError?.field === 'customerName' && (
+            <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+          )}
         </div>
         <div className="space-y-1.5">
           <Label>Mobile Number *</Label>
@@ -375,6 +505,7 @@ function ReservationForm({
             onChange={(e) => {
               const numericPhone = e.target.value.replace(/\D/g, '').slice(0, 10);
               set('phoneNumber', numericPhone);
+              if (validationError?.field === 'phoneNumber') setValidationError(null);
               if (numericPhone.length > 0 && numericPhone.length < 10) {
                 setPhoneError('Mobile number must contain exactly 10 digits.');
               } else {
@@ -384,7 +515,16 @@ function ReservationForm({
             placeholder="10-digit mobile number"
             maxLength={10}
           />
-          {phoneError && <p className="text-xs text-red-400">{phoneError}</p>}
+          {validationError?.field === 'phoneNumber' ? (
+            <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+          ) : phoneError ? (
+            <p className="text-xs text-red-400 mt-0.5">{phoneError}</p>
+          ) : null}
+          {form.phoneNumber && form.phoneNumber.length === 10 && !phoneError && !validationError && (
+            <p className="text-xs font-semibold text-emerald-400 mt-1">
+              Available Wallet Balance: {formatCurrency(resWalletBalance)}
+            </p>
+          )}
         </div>
       </div>
       <div className="space-y-1.5">
@@ -396,10 +536,19 @@ function ReservationForm({
       {canSelectBranch && (
         <div className="space-y-1.5">
           <Label>Branch *</Label>
-          <Select value={form.branch} onChange={(e) => { set('branch', e.target.value); }}>
+          <Select
+            value={form.branch}
+            onChange={(e) => {
+              set('branch', e.target.value);
+              if (validationError?.field === 'branch') setValidationError(null);
+            }}
+          >
             <option value="">Select branch</option>
             {(branches || []).map((b: any) => <option key={b._id} value={b._id}>{b.name}</option>)}
           </Select>
+          {validationError?.field === 'branch' && (
+            <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+          )}
         </div>
       )}
 
@@ -407,11 +556,32 @@ function ReservationForm({
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
           <Label>Bookings  Date *</Label>
-          <Input type="date" value={form.reservationDate} min={new Date().toISOString().slice(0,10)} onChange={(e) => set('reservationDate', e.target.value)} />
+          <Input
+            type="date"
+            value={form.reservationDate}
+            min={new Date().toISOString().slice(0,10)}
+            onChange={(e) => {
+              set('reservationDate', e.target.value);
+              if (validationError?.field === 'reservationDate') setValidationError(null);
+            }}
+          />
+          {validationError?.field === 'reservationDate' && (
+            <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+          )}
         </div>
         <div className="space-y-1.5">
           <Label>Bookings  Time *</Label>
-          <Input type="time" value={form.reservationTime} onChange={(e) => set('reservationTime', e.target.value)} />
+          <Input
+            type="time"
+            value={form.reservationTime}
+            onChange={(e) => {
+              set('reservationTime', e.target.value);
+              if (validationError?.field === 'reservationTime') setValidationError(null);
+            }}
+          />
+          {validationError?.field === 'reservationTime' && (
+            <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+          )}
         </div>
       </div>
 
@@ -428,6 +598,7 @@ function ReservationForm({
                 menuCategoryId: val,
                 menuItemId: prev.menuCategoryId === val ? prev.menuItemId : '',
               }));
+              if (validationError?.field === 'menuCategoryId') setValidationError(null);
             }}
           >
             <option value="">Select category</option>
@@ -435,12 +606,18 @@ function ReservationForm({
               <option key={cat._id} value={cat._id}>{cat.name}</option>
             ))}
           </Select>
+          {validationError?.field === 'menuCategoryId' && (
+            <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+          )}
         </div>
         <div className="space-y-1.5">
           <Label>Menu Item *</Label>
           <Select
             value={form.menuItemId}
-            onChange={(e) => set('menuItemId', e.target.value)}
+            onChange={(e) => {
+              set('menuItemId', e.target.value);
+              if (validationError?.field === 'menuItemId') setValidationError(null);
+            }}
             disabled={!form.menuCategoryId || menuItems.length === 0}
           >
             <option value="">Select item</option>
@@ -458,6 +635,9 @@ function ReservationForm({
               );
             })}
           </Select>
+          {validationError?.field === 'menuItemId' && (
+            <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+          )}
           {isCheckingAvailability && (
             <p className="text-xs text-muted-foreground">Checking availability...</p>
           )}
@@ -485,7 +665,19 @@ function ReservationForm({
         </div>
         <div className="space-y-1.5">
           <Label>Number of Guests *</Label>
-          <Input type="number" min={1} max={20} value={form.numberOfGuests} onChange={(e) => set('numberOfGuests', Number(e.target.value))} />
+          <Input
+            type="number"
+            min={1}
+            max={20}
+            value={form.numberOfGuests}
+            onChange={(e) => {
+              set('numberOfGuests', Number(e.target.value));
+              if (validationError?.field === 'numberOfGuests') setValidationError(null);
+            }}
+          />
+          {validationError?.field === 'numberOfGuests' && (
+            <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+          )}
         </div>
       </div>
 
@@ -513,14 +705,20 @@ function ReservationForm({
           className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none" />
       </div>
 
-            {/* Payment Information */}
+      {/* Payment Information */}
       <div className="rounded-xl border border-border p-4 bg-muted/20">
         <h4 className="text-sm font-semibold mb-3">Payment Details</h4>
         <PaymentForm 
           values={form} 
-          onChange={setForm} 
+          onChange={(paymentValues) => {
+            setForm(paymentValues);
+            if (validationError?.field === 'paymentStatus' || validationError?.field === 'paymentMethod') {
+              setValidationError(null);
+            }
+          }} 
           disabled={loading}
           showBillAmountField={true}
+          validationError={validationError}
         />
       </div>
 
@@ -528,12 +726,7 @@ function ReservationForm({
         <Button variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
         <Button className="flex-1" loading={loading}
           disabled={!!isSelectedItemBlocked}
-          onClick={() => {
-            if (!form.customerName || !form.phoneNumber || !form.menuCategoryId || !form.menuItemId || !form.reservationDate || !form.reservationTime) return;
-            if (canSelectBranch && !form.branch) return;
-            if (isSelectedItemBlocked) return;
-            onSubmit(form);
-          }}
+          onClick={handleSubmit}
         >
           {initial._id ? '💾 Update' : '+ Create Bookings '}
         </Button>
@@ -810,7 +1003,7 @@ function TodayTableAvailability({ branch }: { branch: string }) {
                   <div className="h-px flex-1 bg-border/40" />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                   {cat.items.map((item: any) => {
                     const isBooked = item.colorStatus === 'booked';
                     const isUpcoming = item.colorStatus === 'upcoming';
@@ -827,18 +1020,18 @@ function TodayTableAvailability({ branch }: { branch: string }) {
                       <div
                         key={item.menuItemId}
                         className={cn(
-                          'p-3 rounded-2xl border transition-all duration-200 flex flex-col justify-between space-y-2',
+                          'p-3 rounded-2xl border transition-all duration-200 flex flex-col justify-between space-y-2 min-w-0 overflow-hidden',
                           cardBorder
                         )}
                       >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-center gap-1.5 font-semibold text-sm">
-                            <span>{dotColor}</span>
+                        <div className="flex items-start justify-between gap-2 min-w-0">
+                          <div className="flex items-center gap-1.5 font-semibold text-sm min-w-0 flex-1">
+                            <span className="shrink-0">{dotColor}</span>
                             <span className="truncate">{item.name}</span>
                           </div>
                           <span
                             className={cn(
-                              'text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider',
+                              'text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider shrink-0 whitespace-nowrap',
                               isBooked
                                 ? 'bg-red-500/15 text-red-400 border-red-500/30'
                                 : isUpcoming
@@ -1040,6 +1233,8 @@ export default function ReservationsPage() {
     qc.invalidateQueries({ queryKey: ['reservation-stats'] });
     qc.invalidateQueries({ queryKey: ['reservation-tables'] });
     qc.invalidateQueries({ queryKey: ['today-availability'] });
+    qc.invalidateQueries({ queryKey: ['customers'] });
+    qc.invalidateQueries({ queryKey: ['customer-orders'] });
   };
 
   const syncReservationCaches = useCallback((mode: 'create' | 'update' | 'delete', reservation: any) => {

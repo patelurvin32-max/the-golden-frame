@@ -451,6 +451,7 @@ export default function TablesPage() {
   });
 
   const [startForm, setStartForm] = useState({ customerId: '', customerSearch: '', customerName: '', phoneNumber: '', extraPlayers: '' });
+  const [startSessionWalletBalance, setStartSessionWalletBalance] = useState(0);
 
   const [extendMinutes, setExtendMinutes] = useState(30);
 
@@ -459,6 +460,36 @@ export default function TablesPage() {
   const [phoneError, setPhoneError] = useState('');
 
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Determine branch context for tables
+
+  const tableBranch = selectedBranch || (user?.role !== 'super_admin' && user?.role !== 'admin' 
+
+    ? (typeof user?.branches?.[0] === 'string' ? user.branches[0] : user?.branches?.[0]?._id)
+
+    : undefined);
+
+  // Auto-lookup wallet balance for Start Session modal when 10-digit mobile number is entered
+  useEffect(() => {
+    if (startForm.phoneNumber && startForm.phoneNumber.length === 10) {
+      const branchToUse = tableBranch || (activeTable?.branch as any)?._id || (activeTable?.branch as any) || selectedBranch || undefined;
+      customerService.lookup(startForm.phoneNumber, branchToUse)
+        .then((res) => {
+          const customer = res.data.data.customer;
+          if (customer) {
+            setStartSessionWalletBalance(customer.walletBalance || 0);
+            if (!startForm.customerName && customer.name) {
+              setStartForm((f) => ({ ...f, customerName: customer.name }));
+            }
+          } else {
+            setStartSessionWalletBalance(0);
+          }
+        })
+        .catch(() => setStartSessionWalletBalance(0));
+    } else {
+      setStartSessionWalletBalance(0);
+    }
+  }, [startForm.phoneNumber, tableBranch, activeTable?.branch, selectedBranch]);
 
 
 
@@ -611,16 +642,6 @@ export default function TablesPage() {
   const [stopForm, setStopForm] = useState<PaymentFormValues & { notes: string }>(emptyStopForm);
 
   const [stopLoading, setStopLoading] = useState(false);
-
-
-
-  // Determine branch context for tables
-
-  const tableBranch = selectedBranch || (user?.role !== 'super_admin' && user?.role !== 'admin' 
-
-    ? (typeof user?.branches?.[0] === 'string' ? user.branches[0] : user?.branches?.[0]?._id)
-
-    : undefined);
 
 
 
@@ -894,6 +915,9 @@ export default function TablesPage() {
 
 
 
+      const phone = session.phoneNumber || (typeof session.customer === 'object' ? (session.customer?.phone || session.customer?.mobileNumber) : '') || '';
+      const initialWalletBal = (typeof session.customer === 'object' ? session.customer?.walletBalance : 0) || 0;
+
       setStopForm({
 
         paymentStatus: 'paid',
@@ -916,13 +940,25 @@ export default function TablesPage() {
 
         extraAmount: '0',
 
-        walletBalance: (session.customer as any)?.walletBalance || 0,
+        walletBalance: initialWalletBal,
 
         notes: '',
 
       });
 
       setModal('stop');
+
+      if (phone && phone.length === 10) {
+        const branchToUse = tableBranch || (table.branch as any)?._id || (table.branch as any) || selectedBranch || undefined;
+        customerService.lookup(phone, branchToUse)
+          .then((res) => {
+            const customer = res.data.data.customer;
+            if (customer) {
+              setStopForm((f) => ({ ...f, walletBalance: customer.walletBalance || 0 }));
+            }
+          })
+          .catch(() => {});
+      }
 
     }
 
@@ -1347,6 +1383,16 @@ export default function TablesPage() {
             />
 
             {phoneError && <p className="text-xs text-red-400">{phoneError}</p>}
+
+            {startForm.phoneNumber && startForm.phoneNumber.length === 10 && !phoneError && (
+
+              <p className="text-xs font-semibold text-emerald-400 mt-1">
+
+                Available Wallet Balance: {formatCurrency(startSessionWalletBalance)}
+
+              </p>
+
+            )}
 
           </div>
 

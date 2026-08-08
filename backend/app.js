@@ -20,6 +20,7 @@ const inventoryRoutes = require('./routes/inventoryRoutes');
 const menuRoutes = require('./routes/menuRoutes');
 const reservationRoutes = require('./routes/reservationRoutes');
 const walletRoutes = require('./routes/walletRoutes');
+const walletManagementRoutes = require('./routes/walletManagementRoutes');
 const {
   expenseRouter, attendanceRouter, reportsRouter,
   logsRouter, notifRouter, schedulerRouter,
@@ -39,6 +40,18 @@ app.set('trust proxy', true);
 app.use(helmet());
 app.use(compression({ level: 6, threshold: 1024 }));
 app.use(mongoSanitize());
+
+// Log slow requests (helps identify remaining bottlenecks)
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    if (duration > 500) {
+      console.warn(`🐢 SLOW: ${req.method} ${req.path} — ${duration}ms`);
+    }
+  });
+  next();
+});
 
 // Disable rate limiting in development for easier testing
 if (process.env.NODE_ENV !== 'production') {
@@ -148,10 +161,17 @@ if (process.env.NODE_ENV !== 'test') {
   app.use(morgan(process.env.NODE_ENV === 'development' ? 'dev' : 'combined'));
 }
 
-// ── Health check ─────────────────────────────────────────────────────────────
-app.get('/api/health', (req, res) =>
-  res.json({ success: true, message: 'The Golden Frame API is running 🎱', timestamp: new Date() })
-);
+// ── Health check — used by keep-alive ping and monitoring ───────────────────
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    env: process.env.NODE_ENV,
+    success: true,
+    message: 'The Golden Frame API is running 🎱',
+  });
+});
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
@@ -165,6 +185,7 @@ app.use('/api/inventory', inventoryRoutes);
 app.use('/api/menu', menuRoutes);
 app.use('/api/reservations', reservationRoutes);
 app.use('/api/wallet', walletRoutes);
+app.use('/api/wallet-management', walletManagementRoutes);
 app.use('/api/expenses', expenseRouter);
 app.use('/api/attendance', attendanceRouter);
 app.use('/api/reports', reportsRouter);

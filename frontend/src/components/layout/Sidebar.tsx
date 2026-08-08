@@ -2,7 +2,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, LogOut } from 'lucide-react';
-import { cn, hasPermission, resolveApiUrl } from '@/utils';
+import { cn, hasPermission } from '@/utils';
 import { useAuthStore, useAppStore } from '@/store';
 import { settingsService } from '@/services';
 
@@ -22,6 +22,8 @@ const NAV_ITEMS = [
   { path: '/users', label: 'Staff', icon: '👤', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], parent: 'master', permission: 'staff:view' },
   { path: '/branches', label: 'Branches', icon: '🏢', roles: ['super_admin'], parent: 'master' },
   { path: '/settings', label: 'Settings', icon: '⚙️', roles: ['super_admin', 'branch_admin'], parent: 'master' },
+  { path: '/wallet', label: 'Wallet', icon: '💼', roles: ['super_admin', 'branch_admin'], parent: 'master' },
+  { path: '/central-customers', label: 'Central Customers', icon: '📇', roles: ['super_admin'], parent: 'master' },
   { path: '/logs', label: 'Audit Logs', icon: '📋', roles: ['super_admin'], parent: 'master' },
   { id: 'master', label: 'Master', icon: '⚙️', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], isParent: true },
 ];
@@ -32,7 +34,7 @@ export const Sidebar = () => {
   const { sidebarOpen, setSidebarOpen, masterMenuOpen, toggleMasterMenu, selectedBranch } = useAppStore();
   const role = user?.role || 'staff';
 
-  // Fetch branch-specific settings for logo
+  // Fetch branch-specific settings for business name
   const settingsBranch: string | undefined = selectedBranch || (user?.role === 'super_admin' ? undefined : (typeof user?.branches?.[0] === 'string' ? user.branches[0] : user?.branches?.[0]?._id));
   const { data: settingsData } = useQuery({
     queryKey: ['settings', settingsBranch],
@@ -40,11 +42,7 @@ export const Sidebar = () => {
     staleTime: 5 * 60 * 1000,
   });
 
-  const logoUrl = resolveApiUrl((settingsData as any)?.data?.settings?.logoUrl) || '/assets/tgf.jpg';
-
-  const handleLogoError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
-    (e.target as HTMLImageElement).src = '/assets/tgf.jpg';
-  };
+  const businessName = (settingsData as any)?.data?.settings?.businessName || 'The Golden Frame';
 
   const filtered = NAV_ITEMS.filter((item) => {
     // If it's the master parent item, show if they can see any of its children
@@ -77,7 +75,7 @@ export const Sidebar = () => {
   // Custom ordering for Super Admin / Admin role
   const superAdminOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master'];
   // Custom ordering for Master children
-  const masterChildOrder = ['menu', 'users', 'inventory', 'branches', 'settings', 'logs'];
+  const masterChildOrder = ['menu', 'users', 'inventory', 'wallet', 'central-customers', 'branches', 'settings', 'logs'];
 
   const orderedFiltered = role === 'staff'
     ? filtered.filter((item) => !item.isParent).sort((a, b) => {
@@ -108,12 +106,11 @@ export const Sidebar = () => {
   // Extract sidebar content into a component for reuse
   const SidebarContent = () => (
     <>
-      {/* Logo */}
-      <div className="flex items-center gap-3 px-6 py-5 border-b border-border">
-        <img src={logoUrl} alt="The Golden Frame" className="h-9 w-9 rounded-xl object-contain" onError={handleLogoError} />
-        <div>
-          <p className="font-bold text-foreground leading-none">The Golden Frame</p>
-        </div>
+      {/* Business Name Header */}
+      <div className="h-14 px-4 flex items-center justify-center border-b border-border flex-shrink-0">
+        <h2 className="text-lg sm:text-xl font-extrabold text-foreground text-center truncate tracking-tight">
+          {businessName}
+        </h2>
       </div>
 
       {/* Navigation */}
@@ -222,8 +219,8 @@ export const Sidebar = () => {
   return (
     <>
       {/* Desktop sidebar — always visible, static (not overlay) */}
-      <div className="hidden lg:flex flex-col w-64 border-r border-border bg-card h-screen flex-shrink-0">
-        <SidebarContent />
+      <div className={cn('hidden lg:flex flex-col h-screen flex-shrink-0 overflow-hidden border-r border-border bg-card transition-[width] duration-300 ease-in-out', sidebarOpen ? 'w-64' : 'w-0 border-r-0')} aria-hidden={!sidebarOpen}>
+        {sidebarOpen && <SidebarContent />}
       </div>
 
       {/* Mobile sidebar — overlay drawer, only when open */}

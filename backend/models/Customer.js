@@ -33,6 +33,11 @@ const customerSchema = new mongoose.Schema(
       createdAt: { type: Date, default: Date.now },
     }],
     isActive: { type: Boolean, default: true },
+    sourceModule: {
+      type: String,
+      enum: ['Customer', 'Billing', 'Booking', 'Live Tables', 'Pending Payments'],
+      default: 'Customer',
+    },
   },
   { timestamps: true }
 );

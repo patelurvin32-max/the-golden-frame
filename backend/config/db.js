@@ -6,7 +6,19 @@ const mongoose = require('mongoose');
  */
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI);
+    await mongoose.connect(process.env.MONGO_URI, {
+      // Keep connections warm in a pool
+      maxPoolSize: 10,               // up to 10 simultaneous connections
+      minPoolSize: 2,                // always keep 2 connections ready
+      
+      // Fail fast instead of hanging
+      serverSelectionTimeoutMS: 5000,  // give up finding server in 5s
+      socketTimeoutMS: 45000,          // close idle sockets after 45s
+      connectTimeoutMS: 10000,         // give up initial connect in 10s
+      
+      // Detect broken connections quickly
+      heartbeatFrequencyMS: 10000,     // heartbeat every 10s
+    });
 
     // Production safety net: Drop stale orderId index if present
     try {

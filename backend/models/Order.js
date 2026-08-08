@@ -24,6 +24,7 @@ const orderSchema = new mongoose.Schema(
     notes: { type: String, trim: true },
     parentOrder: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
     parentOrderId: { type: String, trim: true },
+    reservation: { type: mongoose.Schema.Types.ObjectId, ref: 'Reservation' },
     pendingPlayers: [
       {
         id: { type: String },
@@ -39,6 +40,17 @@ const orderSchema = new mongoose.Schema(
     ],
     table: { type: mongoose.Schema.Types.ObjectId, ref: 'Table' },
     session: { type: mongoose.Schema.Types.ObjectId, ref: 'Session' },
+    addedItems: [
+      {
+        menuCategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuCategory' },
+        menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem' },
+        categoryName: { type: String, trim: true },
+        itemName: { type: String, trim: true },
+        quantity: { type: Number, required: true, default: 1 },
+        unitPrice: { type: Number, required: true, default: 0 },
+        totalAmount: { type: Number, required: true, default: 0 },
+      }
+    ],
     isActive: { type: Boolean, default: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

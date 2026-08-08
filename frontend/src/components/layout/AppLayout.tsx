@@ -13,6 +13,19 @@ export const AppLayout = () => {
   useIdleTimer();
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const syncSidebarState = () => {
+      setSidebarOpen(!window.matchMedia('(max-width: 1024px)').matches);
+    };
+
+    syncSidebarState();
+    window.addEventListener('resize', syncSidebarState);
+
+    return () => window.removeEventListener('resize', syncSidebarState);
+  }, [setSidebarOpen]);
+
+  useEffect(() => {
     if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1024px)').matches) {
       setSidebarOpen(false);
     }

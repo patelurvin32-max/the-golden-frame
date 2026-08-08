@@ -138,7 +138,7 @@ export const useAppStore = create<AppState>()(
     (set) => ({
       selectedBranch: null,
       isDarkMode: true,
-      sidebarOpen: false,
+      sidebarOpen: typeof window !== 'undefined' ? !window.matchMedia('(max-width: 1024px)').matches : true,
       masterMenuOpen: false,
       setSelectedBranch: (id) => set({ selectedBranch: id }),
       toggleDarkMode: () => set((s) => ({ isDarkMode: !s.isDarkMode })),

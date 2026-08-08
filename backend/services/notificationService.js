@@ -35,12 +35,15 @@ const createBranchNotification = async ({
   cleanedMessage = cleanedMessage.replace(/in branch [0-9a-fA-F]{24}/gi, `in ${branchName} branch`);
   cleanedMessage = cleanedMessage.replace(/[0-9a-fA-F]{24}/gi, branchName);
 
+  const isSuperAdminActor = actor?.role === 'super_admin' || actor?.role === ROLES.SUPER_ADMIN;
+  const computedTargetRoles = targetRoles || (superAdminOnly || isSuperAdminActor ? ['super_admin'] : ['super_admin', ROLES.BRANCH_ADMIN, ROLES.BRANCH_MANAGER, ROLES.STAFF]);
+
   const notification = {
     branch: branchId,
     type: 'general',
     title,
     message: cleanedMessage,
-    targetRoles: targetRoles || (superAdminOnly ? ['super_admin'] : ['super_admin', ROLES.BRANCH_ADMIN, ROLES.BRANCH_MANAGER, ROLES.STAFF]),
+    targetRoles: computedTargetRoles,
     meta: {
       actorId: actor?._id?.toString(),
       actorName: actor?.name || 'User',
@@ -66,9 +69,13 @@ const createBranchNotification = async ({
   try {
     const socketIo = io || (req && req.app && req.app.get('io'));
     if (socketIo) {
-      socketIo.emit('notification:new', populatedNotif);
-      if (branchId) {
-        socketIo.to(`branch:${branchId.toString()}`).emit('notification:new', populatedNotif);
+      if (isSuperAdminActor || (computedTargetRoles.length === 1 && computedTargetRoles[0] === 'super_admin')) {
+        socketIo.to('role:super_admin').emit('notification:new', populatedNotif);
+      } else {
+        socketIo.emit('notification:new', populatedNotif);
+        if (branchId) {
+          socketIo.to(`branch:${branchId.toString()}`).emit('notification:new', populatedNotif);
+        }
       }
     }
   } catch (err) {

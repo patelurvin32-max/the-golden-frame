@@ -4,6 +4,10 @@ const OrderCounter = require('../models/OrderCounter');
 const CustomerCounter = require('../models/CustomerCounter');
 const WalletTransaction = require('../models/WalletTransaction');
 const PaymentHistory = require('../models/PaymentHistory');
+const { Bill } = require('../models/Billing');
+const Reservation = require('../models/Reservation');
+const Session = require('../models/Session');
+const Wallet = require('../models/Wallet');
 const { Inventory, MenuItem, StockTransaction } = require('../models/Operations');
 const Branch = require('../models/Branch');
 const AppError = require('../utils/AppError');
@@ -19,6 +23,32 @@ const parseCurrencyValue = (value) => {
 };
 
 const { getBusinessDayDateString } = require('../utils/businessDay');
+
+/**
+ * Ensures customer.walletBalance includes any un-refunded Wallet top-ups for their phone number if uninitialized.
+ */
+const syncCustomerWalletBalance = async (customer) => {
+  if (!customer || !customer.phone) return 0;
+  try {
+    const phone = customer.phone.trim();
+    if (customer.walletBalance === undefined || customer.walletBalance === null) {
+      const walletDocs = await Wallet.find({
+        mobileNumber: phone,
+        paymentStatus: { $ne: 'refunded' },
+      }).select('amount').lean();
+
+      const walletSum = walletDocs.reduce((sum, w) => sum + (Number(w.amount) || 0), 0);
+
+      if (walletSum > 0) {
+        customer.walletBalance = walletSum;
+        await customer.save();
+      }
+    }
+  } catch (err) {
+    console.error('Error syncing customer wallet balance:', err);
+  }
+  return customer.walletBalance || 0;
+};
 
 // Helper function to generate custom Order ID with thread-safety using atomic counter
 const generateOrderId = async (branchId, date = new Date()) => {
@@ -245,11 +275,10 @@ exports.getCustomers = asyncHandler(async (req, res) => {
     filter.paymentStatus = req.query.paymentStatus;
   } else {
     // On the main Customers page (no paymentStatus filter), exclude sub-orders generated for pending players,
-    // as well as orders originating from Billing/Sessions or Bookings/Reservations.
+    // as well as orders originating strictly from Billing/Sessions.
     filter.additionalPlayers = { $not: /^Pending player payment for order/ };
     filter.session = { $exists: false };
     filter.bill = { $exists: false };
-    filter.notes = { $not: /reservation/i };
   }
 
   const page = parseInt(req.query.page, 10) || 1;
@@ -313,30 +342,64 @@ exports.getCustomer = asyncHandler(async (req, res, next) => {
   res.status(200).json({ success: true, data: { customer } });
 });
 
-// GET /api/customers/lookup/:phone
+// GET /api/customers/lookup/:phone?branch=...
 exports.lookupCustomer = asyncHandler(async (req, res) => {
   const { phone } = req.params;
-  // Phone is now globally unique, search without branch filter
-  const customer = await Customer.findOne({
-    phone,
-    isActive: true,
-  })
-    .select('customerId name phone email branch walletBalance')
-    .populate('branch', 'name code')
-    .lean(); // Use lean() for faster queries
+  const branchFilter = req.query.branch;
 
-  if (!customer) {
-    return res.status(200).json({ success: true, data: { customer: null } });
+  const customerQuery = { phone, isActive: true };
+  if (branchFilter) {
+    customerQuery.branch = branchFilter;
   }
 
-  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+  const [customerDoc, walletDocs] = await Promise.all([
+    Customer.findOne(customerQuery)
+      .select('customerId name phone email branch walletBalance notes')
+      .populate('branch', 'name code')
+      .lean(),
+    Wallet.find({
+      mobileNumber: phone,
+      ...(branchFilter ? { branch: branchFilter } : {}),
+      paymentStatus: { $ne: 'refunded' },
+    }).select('amount name branch').lean(),
+  ]);
+
+  // Branch access check for non-admin users
+  if (customerDoc && req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
     const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
-    if (!userBranchIds.includes(customer.branch?._id?.toString() || customer.branch?.toString())) {
+    const custBranchId = customerDoc.branch?._id?.toString() || customerDoc.branch?.toString();
+    if (!userBranchIds.includes(custBranchId)) {
       return res.status(200).json({ success: true, data: { customer: null } });
     }
   }
 
-  res.status(200).json({ success: true, data: { customer } });
+  if (customerDoc) {
+    return res.status(200).json({
+      success: true,
+      data: {
+        customer: customerDoc,
+      },
+    });
+  }
+
+  const walletSum = walletDocs.reduce((sum, w) => sum + (Number(w.amount) || 0), 0);
+
+  if (walletSum > 0) {
+    const sampleWallet = walletDocs[0];
+    return res.status(200).json({
+      success: true,
+      data: {
+        customer: {
+          name: sampleWallet?.name || '',
+          phone,
+          branch: sampleWallet?.branch,
+          walletBalance: walletSum,
+        },
+      },
+    });
+  }
+
+  res.status(200).json({ success: true, data: { customer: null } });
 });
 
 // POST /api/customers
@@ -497,6 +560,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   
   // Validate wallet balance if using wallet
   if (walletAmount > 0) {
+    await syncCustomerWalletBalance(customer);
     if (customer.walletBalance < walletAmount) {
       return next(new AppError(`Insufficient wallet balance. Available: ₹${customer.walletBalance}, Required: ₹${walletAmount}`, 400));
     }
@@ -1031,6 +1095,7 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
   if (walletDifference !== 0) {
     // If wallet amount increased, debit more from wallet
     if (walletDifference > 0) {
+      await syncCustomerWalletBalance(customer);
       if (customer.walletBalance < walletDifference) {
         return next(new AppError(`Insufficient wallet balance for update. Available: ₹${customer.walletBalance}, Required: ₹${walletDifference}`, 400));
       }
@@ -1289,6 +1354,7 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
   
   // Validate wallet balance if using wallet
   if (walletAmount > 0) {
+    await syncCustomerWalletBalance(customer);
     if (customer.walletBalance < walletAmount) {
       return next(new AppError(`Insufficient wallet balance. Available: ₹${customer.walletBalance}, Required: ₹${walletAmount}`, 400));
     }
@@ -1467,6 +1533,326 @@ exports.deleteCustomer = asyncHandler(async (req, res, next) => {
 
   await Order.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
   res.status(200).json({ success: true, message: 'Order removed.' });
+});
+
+// GET /api/customers/super-admin
+exports.getSuperAdminCustomers = asyncHandler(async (req, res, next) => {
+  if (req.user.role !== ROLES.SUPER_ADMIN) {
+    return next(new AppError('Only Super Admin can access central customer management.', 403));
+  }
+
+  const filter = { isActive: true };
+  if (req.query.branch) {
+    filter.branch = req.query.branch;
+  }
+
+  if (req.query.search) {
+    const searchRegex = new RegExp(req.query.search.trim(), 'i');
+    filter.$or = [
+      { name: searchRegex },
+      { phone: searchRegex },
+      { email: searchRegex },
+      { customerId: searchRegex },
+    ];
+  }
+
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 25;
+  const skip = (page - 1) * limit;
+
+  const sortBy = req.query.sortBy || 'createdAt';
+  const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+  const sort = { [sortBy]: sortOrder };
+
+  const [customerDocs, total] = await Promise.all([
+    Customer.find(filter)
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .populate('branch', 'name code')
+      .lean(),
+    Customer.countDocuments(filter),
+  ]);
+
+  // For each customer, determine sourceModule dynamically if not set
+  const customers = await Promise.all(
+    customerDocs.map(async (cust) => {
+      let sourceModule = cust.sourceModule;
+      if (!sourceModule || sourceModule === 'Customer') {
+        const branchId = cust.branch?._id || cust.branch;
+        const [firstRes, firstSession, firstBill, firstOrder] = await Promise.all([
+          Reservation.findOne({ branch: branchId, phoneNumber: cust.phone }).select('createdAt').sort({ createdAt: 1 }).lean(),
+          Session.findOne({ branch: branchId, $or: [{ customer: cust._id }, { phoneNumber: cust.phone }] }).select('createdAt').sort({ createdAt: 1 }).lean(),
+          Bill.findOne({ branch: branchId, $or: [{ customer: cust._id }, { customerPhone: cust.phone }] }).select('createdAt').sort({ createdAt: 1 }).lean(),
+          Order.findOne({ branch: branchId, customer: cust._id }).select('createdAt paymentStatus additionalPlayers').sort({ createdAt: 1 }).lean(),
+        ]);
+
+        const candidates = [];
+        if (firstRes) candidates.push({ module: 'Booking', date: new Date(firstRes.createdAt) });
+        if (firstSession) candidates.push({ module: 'Live Tables', date: new Date(firstSession.createdAt) });
+        if (firstBill) candidates.push({ module: 'Billing', date: new Date(firstBill.createdAt) });
+        if (firstOrder) {
+          const mod = (firstOrder.paymentStatus === 'unpaid' || firstOrder.paymentStatus === 'partial' || (firstOrder.additionalPlayers && firstOrder.additionalPlayers.includes('Pending')))
+            ? 'Pending Payments'
+            : 'Customer';
+          candidates.push({ module: mod, date: new Date(firstOrder.createdAt) });
+        }
+
+        if (candidates.length > 0) {
+          candidates.sort((a, b) => a.date - b.date);
+          sourceModule = candidates[0].module;
+        } else {
+          sourceModule = 'Customer';
+        }
+      }
+
+      return {
+        ...cust,
+        sourceModule,
+      };
+    })
+  );
+
+  res.status(200).json({
+    success: true,
+    results: customers.length,
+    total,
+    filtered: total,
+    page,
+    pages: Math.ceil(total / limit),
+    limit,
+    data: { customers },
+  });
+});
+
+// PATCH /api/customers/super-admin/:id
+exports.updateSuperAdminCustomer = asyncHandler(async (req, res, next) => {
+  if (req.user.role !== ROLES.SUPER_ADMIN) {
+    return next(new AppError('Only Super Admin can edit customer information.', 403));
+  }
+
+  const { id } = req.params;
+  const { name, phone } = req.body;
+
+  if (!name || typeof name !== 'string' || name.trim() === '') {
+    return next(new AppError('Customer Name is required.', 400));
+  }
+
+  if (!phone || typeof phone !== 'string') {
+    return next(new AppError('Mobile Number is required.', 400));
+  }
+
+  const cleanedPhone = phone.trim().replace(/\D/g, '');
+  if (!/^\d{10}$/.test(cleanedPhone)) {
+    return next(new AppError('Mobile Number must contain exactly 10 numeric digits.', 400));
+  }
+
+  const newName = name.trim();
+  const customer = await Customer.findById(id);
+  if (!customer || !customer.isActive) {
+    return next(new AppError('Customer not found.', 404));
+  }
+
+  const branchId = customer.branch; // Target branch only!
+  const oldPhone = customer.phone;
+  const oldName = customer.name;
+
+  // Check phone uniqueness within the target branch only!
+  if (cleanedPhone !== oldPhone) {
+    const existingInBranch = await Customer.findOne({
+      branch: branchId,
+      phone: cleanedPhone,
+      _id: { $ne: id },
+      isActive: true,
+    });
+
+    if (existingInBranch) {
+      return next(new AppError('Mobile number already exists in this branch.', 400));
+    }
+  }
+
+  // Perform synchronized updates across all modules STRICTLY scoped to branchId!
+  const targetIdStr = id.toString();
+  const updatePromises = [];
+
+  // 1. Update Customer doc
+  customer.name = newName;
+  customer.phone = cleanedPhone;
+  updatePromises.push(customer.save());
+
+  // 2. Update Bill collection (in this branch only)
+  updatePromises.push(
+    Bill.updateMany(
+      { branch: branchId, $or: [{ customer: id }, { customerPhone: oldPhone }] },
+      { $set: { customerName: newName, customerPhone: cleanedPhone } }
+    )
+  );
+
+  // Update pendingPlayers in Bill (in this branch only)
+  updatePromises.push(
+    Bill.updateMany(
+      {
+        branch: branchId,
+        $or: [
+          { 'pendingPlayers.id': targetIdStr },
+          { 'pendingPlayers.customerId': targetIdStr },
+          { 'pendingPlayers.mobileNumber': oldPhone },
+          { 'pendingPlayers.mobile': oldPhone },
+        ],
+      },
+      {
+        $set: {
+          'pendingPlayers.$[elem].playerName': newName,
+          'pendingPlayers.$[elem].name': newName,
+          'pendingPlayers.$[elem].mobileNumber': cleanedPhone,
+          'pendingPlayers.$[elem].mobile': cleanedPhone,
+        },
+      },
+      {
+        arrayFilters: [
+          {
+            $or: [
+              { 'elem.id': targetIdStr },
+              { 'elem.customerId': targetIdStr },
+              { 'elem.mobileNumber': oldPhone },
+              { 'elem.mobile': oldPhone },
+            ],
+          },
+        ],
+      }
+    )
+  );
+
+  // 3. Update Reservation collection (in this branch only)
+  updatePromises.push(
+    Reservation.updateMany(
+      { branch: branchId, $or: [{ phoneNumber: oldPhone }, { customerName: oldName }] },
+      { $set: { customerName: newName, phoneNumber: cleanedPhone } }
+    )
+  );
+
+  // Update pendingPlayers in Reservation (in this branch only)
+  updatePromises.push(
+    Reservation.updateMany(
+      {
+        branch: branchId,
+        $or: [
+          { 'pendingPlayers.mobileNumber': oldPhone },
+          { 'pendingPlayers.mobile': oldPhone },
+        ],
+      },
+      {
+        $set: {
+          'pendingPlayers.$[elem].playerName': newName,
+          'pendingPlayers.$[elem].name': newName,
+          'pendingPlayers.$[elem].mobileNumber': cleanedPhone,
+          'pendingPlayers.$[elem].mobile': cleanedPhone,
+        },
+      },
+      {
+        arrayFilters: [
+          {
+            $or: [
+              { 'elem.mobileNumber': oldPhone },
+              { 'elem.mobile': oldPhone },
+            ],
+          },
+        ],
+      }
+    )
+  );
+
+  // 4. Update Session collection (in this branch only)
+  updatePromises.push(
+    Session.updateMany(
+      { branch: branchId, $or: [{ customer: id }, { phoneNumber: oldPhone }] },
+      { $set: { customerName: newName, phoneNumber: cleanedPhone } }
+    )
+  );
+
+  // 5. Update Order collection (in this branch only)
+  updatePromises.push(
+    Order.updateMany(
+      {
+        branch: branchId,
+        $or: [
+          { 'pendingPlayers.id': targetIdStr },
+          { 'pendingPlayers.customerId': targetIdStr },
+          { 'pendingPlayers.mobileNumber': oldPhone },
+          { 'pendingPlayers.mobile': oldPhone },
+        ],
+      },
+      {
+        $set: {
+          'pendingPlayers.$[elem].playerName': newName,
+          'pendingPlayers.$[elem].name': newName,
+          'pendingPlayers.$[elem].mobileNumber': cleanedPhone,
+          'pendingPlayers.$[elem].mobile': cleanedPhone,
+        },
+      },
+      {
+        arrayFilters: [
+          {
+            $or: [
+              { 'elem.id': targetIdStr },
+              { 'elem.customerId': targetIdStr },
+              { 'elem.mobileNumber': oldPhone },
+              { 'elem.mobile': oldPhone },
+            ],
+          },
+        ],
+      }
+    )
+  );
+
+  // 6. Update PaymentHistory collection (in this branch only)
+  updatePromises.push(
+    PaymentHistory.updateMany(
+      { branch: branchId, $or: [{ customer: id }, { customerPhone: oldPhone }] },
+      { $set: { customerName: newName, customerPhone: cleanedPhone } }
+    )
+  );
+
+  // 7. Update Wallet collection (in this branch only)
+  updatePromises.push(
+    Wallet.updateMany(
+      { branch: branchId, mobileNumber: oldPhone },
+      { $set: { name: newName, mobileNumber: cleanedPhone } }
+    )
+  );
+
+  // 8. Update WalletTransaction collection (in this branch only)
+  updatePromises.push(
+    WalletTransaction.updateMany(
+      { branch: branchId, $or: [{ customer: id }, { customerPhone: oldPhone }] },
+      { $set: { customerName: newName, customerPhone: cleanedPhone } }
+    )
+  );
+
+  await Promise.all(updatePromises);
+
+  // Log activity
+  try {
+    const { logActivity } = require('../services/activityLogService');
+    await logActivity({
+      userId: req.user._id,
+      branchId,
+      action: 'customer.super_admin_update',
+      entity: 'Customer',
+      entityId: id,
+      description: `${req.user.name} (Super Admin) updated customer ${oldName} (${oldPhone}) -> ${newName} (${cleanedPhone}) in branch ${branchId}`,
+      ipAddress: req.ip,
+    });
+  } catch (err) {
+    console.error('Error logging super admin customer update:', err);
+  }
+
+  const updatedCustomer = await Customer.findById(id).populate('branch', 'name code').lean();
+  res.status(200).json({
+    success: true,
+    message: 'Customer information updated and synchronized across all modules for this branch.',
+    data: { customer: updatedCustomer },
+  });
 });
 
 exports.generateOrderId = generateOrderId;

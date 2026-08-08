@@ -112,7 +112,7 @@ export default function PendingPaymentsPage() {
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to generate invoice'),
   });
 
-  const handleReceivePayment = (customer: Customer) => {
+  const handleReceivePayment = async (customer: Customer) => {
     setSelectedCustomer(customer);
     const billAmount = (customer as any).billAmount || 0;
     const totalPaid = (customer as any).totalPaid || 0;
@@ -127,6 +127,19 @@ export default function PendingPaymentsPage() {
       paymentNotes: '',
     });
     setPaymentModal(true);
+
+    if (customer.phone && customer.phone.length === 10) {
+      try {
+        const branchToUse = (customer as any).branch?._id || (customer as any).branch || selectedBranch || undefined;
+        const res = await customerService.lookup(customer.phone, branchToUse);
+        const freshCustomer = res.data.data.customer;
+        if (freshCustomer) {
+          setSelectedCustomer((prev: any) => prev ? { ...prev, walletBalance: freshCustomer.walletBalance || 0 } : prev);
+        }
+      } catch (e) {
+        // Fallback
+      }
+    }
   };
 
   const handleSavePayment = () => {
@@ -449,7 +462,7 @@ export default function PendingPaymentsPage() {
                     onChange={(e) => setPaymentForm((f) => ({ ...f, walletAmount: e.target.value }))}
                     placeholder="Enter wallet amount"
                   />
-                  <p className="text-xs text-muted-foreground">Available: {formatCurrency((selectedCustomer as any).walletBalance || 0)}</p>
+                  <p className="text-xs font-semibold text-emerald-400 mt-1">Available Wallet Balance: {formatCurrency((selectedCustomer as any).walletBalance || 0)}</p>
                 </div>
                 
                 {/* Payment Summary */}

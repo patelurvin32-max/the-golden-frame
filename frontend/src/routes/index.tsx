@@ -19,10 +19,12 @@ const MyAttendancePage = lazy(() => import('@/pages/MyAttendancePage'));
 const SettingsPage = lazy(() => import('@/pages/SettingsPage'));
 const ReservationsPage = lazy(() => import('@/pages/ReservationsPage'));
 const PendingPaymentsPage = lazy(() => import('@/pages/PendingPaymentsPage'));
+const WalletPage = lazy(() => import('@/pages/WalletPage'));
 const NotificationsPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.NotificationsPage })));
 const BranchesPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.BranchesPage })));
 const UsersPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.UsersPage })));
 const LogsPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.LogsPage })));
+const CentralCustomersPage = lazy(() => import('@/pages/CentralCustomersPage').then((m) => ({ default: m.CentralCustomersPage })));
 
 // ── Auth guard ─────────────────────────────────────────────────────────────────
 function ProtectedRoute({ children, roles, permission }: { children: React.ReactNode; roles?: string[]; permission?: string }) {
@@ -118,7 +120,9 @@ export function AppRoutes() {
               <Route path="users" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager', 'branch_admin']} permission="staff:view"><UsersPage /></ProtectedRoute>} />
               <Route path="branches" element={<ProtectedRoute roles={['super_admin']}><BranchesPage /></ProtectedRoute>} />
               <Route path="settings" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><SettingsPage /></ProtectedRoute>} />
+              <Route path="wallet" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><WalletPage /></ProtectedRoute>} />
               <Route path="logs" element={<ProtectedRoute roles={['super_admin']}><LogsPage /></ProtectedRoute>} />
+              <Route path="central-customers" element={<ProtectedRoute roles={['super_admin']}><CentralCustomersPage /></ProtectedRoute>} />
             </Route>
 
             {/* Fallback */}

@@ -126,7 +126,13 @@ const { Notification } = require('../models/System');
 const notifRouter = express.Router();
 notifRouter.use(protect);
 notifRouter.get('/', asyncHandler(async (req, res) => {
+  const isSuperAdmin = req.user.role === ROLES.SUPER_ADMIN;
   const filter = { $or: [{ targetUser: req.user._id }, { targetRoles: { $in: [req.user.role] } }] };
+
+  if (!isSuperAdmin) {
+    filter['meta.actorRole'] = { $ne: ROLES.SUPER_ADMIN };
+  }
+
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
     const branches = Array.isArray(req.user.branches) ? req.user.branches.map(b => b._id || b) : [];
     filter.branch = { $in: branches };
@@ -189,7 +195,13 @@ notifRouter.get('/', asyncHandler(async (req, res) => {
   });
 }));
 notifRouter.patch('/read-all', asyncHandler(async (req, res) => {
+  const isSuperAdmin = req.user.role === ROLES.SUPER_ADMIN;
   const filter = { $or: [{ targetUser: req.user._id }, { targetRoles: { $in: [req.user.role] } }], isRead: false };
+
+  if (!isSuperAdmin) {
+    filter['meta.actorRole'] = { $ne: ROLES.SUPER_ADMIN };
+  }
+
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
     const branches = Array.isArray(req.user.branches) ? req.user.branches.map(b => b._id || b) : [];
     filter.branch = { $in: branches };

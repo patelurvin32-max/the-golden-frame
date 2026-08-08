@@ -1,11 +1,26 @@
 const express = require('express');
 const { body } = require('express-validator');
-const { protect, requirePermission } = require('../middleware/auth');
+const { protect, requirePermission, restrictTo } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 const customerController = require('../controllers/customerController');
 const { MenuCategory } = require('../models/Operations');
+const { ROLES } = require('../config/constants');
 
 const router = express.Router();
+
+// Super Admin Central Customer Management Routes (Accessible strictly to Super Admin)
+router.get('/super-admin', protect, restrictTo(ROLES.SUPER_ADMIN), customerController.getSuperAdminCustomers);
+router.patch(
+  '/super-admin/:id',
+  protect,
+  restrictTo(ROLES.SUPER_ADMIN),
+  [
+    body('name').notEmpty().withMessage('Customer Name is required'),
+    body('phone').matches(/^\d{10}$/).withMessage('Mobile number must contain exactly 10 digits'),
+  ],
+  validate,
+  customerController.updateSuperAdminCustomer
+);
 
 // Customer Routes - GET uses customers:view, others use customers:manage
 router

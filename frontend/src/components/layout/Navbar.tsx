@@ -44,7 +44,10 @@ export const Navbar = () => {
     refetchInterval: 300000,
   });
 
-  const notifications: Notification[] = notifData?.data?.notifications || [];
+  const rawNotifications: Notification[] = notifData?.data?.notifications || [];
+  const notifications = user?.role === 'super_admin'
+    ? rawNotifications
+    : rawNotifications.filter((n: any) => n.meta?.actorRole !== 'super_admin');
   const unread = notifications.filter((n) => !n.isRead).length;
 
   const assignedBranchId = user?.branches?.[0]

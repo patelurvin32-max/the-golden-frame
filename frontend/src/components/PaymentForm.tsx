@@ -31,6 +31,8 @@ interface PaymentFormProps {
   readOnlyBillAmount?: boolean;
   hideWalletBalance?: boolean;
   hideAmountReceived?: boolean;
+  hidePendingPlayers?: boolean;
+  validationError?: { field: string; message: string } | null;
 }
 
 const PAYMENT_STATUSES = ['paid', 'partial', 'unpaid', 'refunded'] as const;
@@ -43,7 +45,9 @@ export default function PaymentForm({
   showBillAmountField = false,
   readOnlyBillAmount = false,
   hideWalletBalance = false,
-  hideAmountReceived = false
+  hideAmountReceived = false,
+  hidePendingPlayers = false,
+  validationError
 }: PaymentFormProps) {
   // Reset split payment fields when switching to 'mixed' method so all inputs start blank
   // Reset split payment fields when switching to 'mixed' method if it was defaulted to full bill amount
@@ -128,6 +132,9 @@ export default function PaymentForm({
               <option key={status} value={status} className="capitalize">{status}</option>
             ))}
           </Select>
+          {validationError?.field === 'paymentStatus' && (
+            <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+          )}
         </div>
         {values.paymentStatus !== 'unpaid' && (
           <div className="space-y-1.5">
@@ -144,6 +151,9 @@ export default function PaymentForm({
                 </option>
               ))}
             </Select>
+            {validationError?.field === 'paymentMethod' && (
+              <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
+            )}
           </div>
         )}
       </div>
@@ -251,33 +261,35 @@ export default function PaymentForm({
       {/* Mixed Payment Fields */}
       {values.paymentMethod === 'mixed' && (
         <div className="space-y-3 mt-3 p-3 bg-muted/30 rounded-lg border border-border">
-          {values.walletBalance > 0 && (
+          {!hideWalletBalance && (
             <div className="flex items-center justify-between pb-2 border-b border-border">
               <div className="space-y-1">
-                <p className="text-xs text-muted-foreground">Available Wallet Balance</p>
-                <p className="text-sm font-semibold text-green-400">
-                  {formatCurrency(values.walletBalance)}
+                <p className="text-xs text-muted-foreground font-medium">Available Wallet Balance</p>
+                <p className="text-sm font-semibold text-emerald-400">
+                  {formatCurrency(values.walletBalance || 0)}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="useWallet"
-                  checked={values.walletAmount !== ''}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      handleFieldChange('walletAmount', String(Math.min(values.walletBalance, Number(values.billAmount) || 0)));
-                    } else {
-                      handleFieldChange('walletAmount', '');
-                    }
-                  }}
-                  className="w-4 h-4"
-                  disabled={disabled}
-                />
-                <label htmlFor="useWallet" className="text-sm cursor-pointer">
-                  Use Wallet Balance
-                </label>
-              </div>
+              {values.walletBalance > 0 && (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="useWallet"
+                    checked={values.walletAmount !== ''}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        handleFieldChange('walletAmount', String(Math.min(values.walletBalance, Number(values.billAmount) || 0)));
+                      } else {
+                        handleFieldChange('walletAmount', '');
+                      }
+                    }}
+                    className="w-4 h-4"
+                    disabled={disabled}
+                  />
+                  <label htmlFor="useWallet" className="text-sm cursor-pointer">
+                    Use Wallet Balance
+                  </label>
+                </div>
+              )}
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">
@@ -428,7 +440,7 @@ export default function PaymentForm({
       )}
 
       {/* Pending Player Payments Section */}
-      {values.paymentStatus !== 'refunded' && (
+      {!hidePendingPlayers && values.paymentStatus !== 'refunded' && (
         <div className="space-y-3 pt-3 border-t border-border animate-fade-in">
           <div className="flex items-center justify-between">
             <Label className="text-sm font-semibold text-foreground">

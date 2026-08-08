@@ -786,21 +786,38 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
 
   const customer = order.customer;
 
-  // Build line items from order's billAmount
+  // Build line items from order's menuItemId and addedItems (cart items)
   const items = [];
   let subtotal = 0;
 
+  const addedItemsTotal = Array.isArray(order.addedItems)
+    ? order.addedItems.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0)
+    : 0;
+
   if (order.menuItemId) {
     const menuItem = order.menuItemId;
-    const itemTotal = order.billAmount || menuItem.price || 0;
+    const primaryItemTotal = Math.max(0, (order.billAmount || menuItem.price || 0) - addedItemsTotal);
     items.push({
-      description: `${order.menuCategoryId?.name || 'Menu'} - ${menuItem.name}`,
+      description: `${order.menuCategoryId?.name || 'Session'} - ${menuItem.name}`,
       quantity: 1,
-      unitPrice: order.billAmount || menuItem.price || 0,
-      total: itemTotal,
+      unitPrice: primaryItemTotal,
+      total: primaryItemTotal,
       type: 'other',
     });
-    subtotal += itemTotal;
+    subtotal += primaryItemTotal;
+  }
+
+  if (Array.isArray(order.addedItems) && order.addedItems.length > 0) {
+    order.addedItems.forEach((added) => {
+      items.push({
+        description: `${added.categoryName || 'Menu'} - ${added.itemName}`,
+        quantity: added.quantity || 1,
+        unitPrice: added.unitPrice || 0,
+        total: added.totalAmount || 0,
+        type: 'other',
+      });
+      subtotal += (added.totalAmount || 0);
+    });
   }
 
   // Tax calculation

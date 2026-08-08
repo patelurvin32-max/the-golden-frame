@@ -122,10 +122,12 @@ export interface Session {
 
 export interface Customer {
   _id: string;
+  customerId?: string;
   name: string;
   phone: string;
   email?: string;
-  branch: string;
+  branch: string | { _id: string; name: string; code: string };
+  sourceModule?: 'Customer' | 'Billing' | 'Booking' | 'Live Tables' | 'Pending Payments';
   visits: number;
   totalSpending: number;
   favoriteGame?: TableType;
@@ -220,6 +222,26 @@ export interface Expense {
   onlineAmount?: number;
   walletAmount?: number;
   pendingAmount?: number;
+}
+
+export interface Wallet {
+  _id: string;
+  walletId: string;
+  name: string;
+  mobileNumber: string;
+  email?: string;
+  amount: number;
+  paymentStatus: 'paid' | 'partial' | 'unpaid' | 'refunded';
+  paymentMethod?: 'cash' | 'upi' | 'mixed' | 'wallet' | '';
+  branch: Branch;
+  createdBy: User;
+  notes?: string;
+  cashAmount?: number;
+  onlineAmount?: number;
+  walletAmount?: number;
+  pendingAmount?: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface InventoryCategoryDoc {

@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { billingService, menuService } from '@/services';
+import { billingService, menuService, customerService } from '@/services';
 import { useAppStore, useAuthStore } from '@/store';
 import type { Bill, MenuCategoryDoc, MenuItem, SessionItem } from '@/types';
 import {
@@ -245,6 +245,20 @@ export default function BillingPage() {
         }));
         if (freshOrder.notes || (freshBill as any).notes) {
           setNotes(freshOrder.notes || (freshBill as any).notes);
+        }
+        if (freshBill.customer) {
+          const customerPhone = (freshBill.customer as any)?.phone || (freshBill as any)?.customerPhone;
+          if (customerPhone && customerPhone.length === 10) {
+            const branchToUse = (freshBill.branch as any)?._id || (freshBill.branch as any) || selectedBranch || undefined;
+            customerService.lookup(customerPhone, branchToUse)
+              .then((cRes) => {
+                const customer = cRes.data.data.customer;
+                if (customer) {
+                  setPaymentValues((prev) => ({ ...prev, walletBalance: customer.walletBalance || 0 }));
+                }
+              })
+              .catch(() => {});
+          }
         }
       }
     }).catch(() => {/* ignore error */});

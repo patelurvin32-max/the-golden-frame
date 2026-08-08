@@ -1,7 +1,131 @@
 const Reservation = require('../models/Reservation');
 const Table = require('../models/Table');
 const Customer = require('../models/Customer');
+const Wallet = require('../models/Wallet');
 const Order = require('../models/Order');
+
+/**
+ * Ensures customer.walletBalance includes any un-refunded Wallet top-ups for their phone number if uninitialized.
+ */
+const syncCustomerWalletBalance = async (customer) => {
+  if (!customer || !customer.phone) return 0;
+  try {
+    const phone = customer.phone.trim();
+    if (customer.walletBalance === undefined || customer.walletBalance === null) {
+      const walletDocs = await Wallet.find({
+        mobileNumber: phone,
+        paymentStatus: { $ne: 'refunded' },
+      }).select('amount').lean();
+
+      const walletSum = walletDocs.reduce((sum, w) => sum + (Number(w.amount) || 0), 0);
+
+      if (walletSum > 0) {
+        customer.walletBalance = walletSum;
+        await customer.save();
+      }
+    }
+  } catch (err) {
+    console.error('Error syncing customer wallet balance in reservationController:', err);
+  }
+  return customer.walletBalance || 0;
+};
+
+async function handleReservationStatusTransition(reservation, newStatus, user, req) {
+  const now = new Date();
+
+  if (newStatus === 'seated') {
+    if (!reservation.startTime) {
+      reservation.startTime = now;
+      reservation.seatedAt = now;
+    }
+
+    let customer = await Customer.findOne({ phone: reservation.phoneNumber, isActive: true });
+    if (!customer) {
+      customer = await Customer.findOne({ phone: reservation.phoneNumber });
+    }
+    if (!customer) {
+      const custId = await generateCustomerId(reservation.branch);
+      customer = await Customer.create({
+        customerId: custId,
+        name: reservation.customerName,
+        phone: reservation.phoneNumber,
+        email: reservation.email || '',
+        branch: reservation.branch,
+        sourceModule: 'Booking',
+        isActive: true,
+      });
+    }
+
+    let order = await Order.findOne({
+      $or: [
+        { reservation: reservation._id },
+        { orderId: reservation.reservationId },
+      ],
+      isActive: { $ne: false },
+    });
+
+    const pBill = parseCurrencyValue(reservation.billAmount || 0);
+    const pCash = parseCurrencyValue(reservation.cashAmount || 0);
+    const pOnline = parseCurrencyValue(reservation.onlineAmount || 0);
+    const pWallet = parseCurrencyValue(reservation.walletAmount || 0);
+    const pReceived = parseCurrencyValue(reservation.amountReceived || 0);
+    const totalPaid = pCash + pOnline + pWallet;
+    const mainPending = parseCurrencyValue(reservation.pendingPaymentAmount || (pBill > totalPaid ? pBill - totalPaid : 0));
+
+    if (!order) {
+      order = await Order.create({
+        orderId: reservation.reservationId || (await generateOrderId(reservation.branch)),
+        reservation: reservation._id,
+        customer: customer._id,
+        branch: reservation.branch,
+        table: reservation.table,
+        menuCategoryId: reservation.menuCategoryId,
+        menuItemId: reservation.menuItemId,
+        startTime: reservation.startTime || now,
+        paymentStatus: reservation.paymentStatus || (totalPaid >= pBill ? 'paid' : (totalPaid > 0 ? 'partial' : 'unpaid')),
+        paymentMethod: reservation.paymentMethod || null,
+        cashAmount: pCash,
+        onlineAmount: pOnline,
+        walletAmount: pWallet,
+        pendingPaymentAmount: mainPending,
+        amountReceived: pReceived > 0 ? pReceived : totalPaid,
+        totalPaid,
+        billAmount: pBill,
+        notes: reservation.notes || `Order for reservation ${reservation.reservationId}`,
+        additionalPlayers: reservation.additionalPlayers || '',
+        pendingPlayers: reservation.pendingPlayers || [],
+        createdBy: user._id,
+      });
+    } else {
+      let orderUpdated = false;
+      if (!order.startTime) { order.startTime = reservation.startTime || now; orderUpdated = true; }
+      if (!order.table && reservation.table) { order.table = reservation.table; orderUpdated = true; }
+      if (!order.reservation) { order.reservation = reservation._id; orderUpdated = true; }
+      if (orderUpdated) await order.save();
+    }
+  }
+
+  if (newStatus === 'completed') {
+    if (!reservation.endTime) {
+      reservation.endTime = now;
+      reservation.completedAt = now;
+    }
+
+    let order = await Order.findOne({
+      $or: [
+        { reservation: reservation._id },
+        { orderId: reservation.reservationId },
+      ],
+      isActive: { $ne: false },
+    });
+
+    if (order) {
+      order.endTime = reservation.endTime || now;
+      if (reservation.paymentStatus) order.paymentStatus = reservation.paymentStatus;
+      await order.save();
+    }
+  }
+}
 const PaymentHistory = require('../models/PaymentHistory');
 const WalletTransaction = require('../models/WalletTransaction');
 const OrderCounter = require('../models/OrderCounter');
@@ -672,8 +796,11 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
   const pReceived = parseCurrencyValue(amountReceived);
   const pBill = parseCurrencyValue(billAmount);
 
-  if (pWallet > 0 && customer.walletBalance < pWallet) {
-    return next(new AppError(`Insufficient wallet balance. Available: ₹${customer.walletBalance}, Required: ₹${pWallet}`, 400));
+  if (pWallet > 0) {
+    await syncCustomerWalletBalance(customer);
+    if (customer.walletBalance < pWallet) {
+      return next(new AppError(`Insufficient wallet balance. Available: ₹${customer.walletBalance}, Required: ₹${pWallet}`, 400));
+    }
   }
 
   let totalPaid = pCash + pOnline + pWallet;
@@ -963,6 +1090,7 @@ exports.updateReservation = asyncHandler(async (req, res, next) => {
   }
 
   if (req.body.status && req.body.status !== reservation.status) {
+    await handleReservationStatusTransition(reservation, req.body.status, req.user, req);
     reservation.statusHistory.push({
       status: req.body.status,
       changedBy: req.user._id,
@@ -1284,6 +1412,8 @@ exports.changeStatus = asyncHandler(async (req, res, next) => {
       return next(new AppError('You do not have access to this branch\'s data.', 403));
     }
   }
+
+  await handleReservationStatusTransition(reservation, status, req.user, req);
 
   reservation.statusHistory.push({ status, changedBy: req.user._id, changedAt: new Date(), note });
   reservation.status = status;

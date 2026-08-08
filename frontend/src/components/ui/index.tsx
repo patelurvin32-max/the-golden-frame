@@ -208,7 +208,7 @@ export const PageHeader = ({ title, subtitle, actions }: PageHeaderProps) => (
       <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{title}</h1>
       {subtitle && <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 sm:mt-1">{subtitle}</p>}
     </div>
-    {actions && <div className="flex min-w-0 w-full flex-wrap items-stretch gap-2 sm:w-auto sm:items-center">{actions}</div>}
+    {actions && <div className="flex min-w-0 w-full flex-wrap items-stretch justify-end gap-2 sm:w-auto sm:items-center">{actions}</div>}
   </div>
 );
 

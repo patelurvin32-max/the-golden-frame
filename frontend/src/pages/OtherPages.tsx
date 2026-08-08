@@ -1042,7 +1042,11 @@ export function NotificationsPage() {
     },
   });
 
-  const notifications: any[] = notifData?.data?.notifications || [];
+  const { user } = useAuthStore();
+  const rawNotifications: any[] = notifData?.data?.notifications || [];
+  const notifications = user?.role === 'super_admin'
+    ? rawNotifications
+    : rawNotifications.filter((n: any) => n.meta?.actorRole !== 'super_admin');
   const pagination = notifData?.data?.pagination || { total: 0, page: 1, limit: pageSize, pages: 1 };
   const totalRecords = pagination.total;
   const totalPages = Math.max(1, pagination.pages);
