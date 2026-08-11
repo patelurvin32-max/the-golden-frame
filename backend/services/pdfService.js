@@ -24,6 +24,7 @@ const generateInvoicePDF = (bill, settings = {}) => {
 
     const receiptHeader = {
       showLogo: true,
+      showBusinessName: true,
       showAddress: true,
       showPhone: true,
       showEmail: false,
@@ -130,8 +131,8 @@ const generateInvoicePDF = (bill, settings = {}) => {
 
     // Calculate required height for 80mm POS Thermal Receipt
     let h = 20; // margins
-    if (showLogo) h += 40;
-    h += 16; // bizName
+    if (showLogo) h += 70;
+    if (receiptHeader.showBusinessName) h += 16; // bizName
     if (branchName) h += 12;
     if (showAddress && headerAddress) h += 16;
     if (showPhone && headerPhone) h += 12;
@@ -193,25 +194,27 @@ const generateInvoicePDF = (bill, settings = {}) => {
           logoPath = localLogoPath;
         }
       }
-      const logoWidth = 45;
+      const logoWidth = 80;
       const logoX = (pageWidth - logoWidth) / 2;
       if (logoPath) {
         try {
-          doc.image(logoPath, logoX, y, { fit: [logoWidth, 35], align: 'center' });
-          y += 38;
+          doc.image(logoPath, logoX, y, { fit: [logoWidth, 60], align: 'center' });
+          y += 65;
         } catch (err) {
           y += 5;
         }
       } else {
-        doc.rect(logoX, y, logoWidth, 26).strokeColor('#000000').lineWidth(0.6).stroke();
-        doc.fontSize(7).font('Courier-Bold').fillColor('#000000').text('LOGO', logoX, y + 9, { width: logoWidth, align: 'center' });
-        y += 32;
+        doc.rect(logoX, y, logoWidth, 45).strokeColor('#000000').lineWidth(0.6).stroke();
+        doc.fontSize(10).font('Courier-Bold').fillColor('#000000').text('LOGO', logoX, y + 18, { width: logoWidth, align: 'center' });
+        y += 55;
       }
     }
 
     // 2. Business details
-    doc.fontSize(10.5).font(fontBold).fillColor('#000000').text(bizName.toUpperCase(), margin, y, { width: contentWidth, align: 'center' });
-    y += 14;
+    if (receiptHeader.showBusinessName) {
+      doc.fontSize(10.5).font(fontBold).fillColor('#000000').text(bizName.toUpperCase(), margin, y, { width: contentWidth, align: 'center' });
+      y += 14;
+    }
 
     if (branchName) {
       doc.fontSize(8).font(fontRegular).fillColor('#000000').text(branchName, margin, y, { width: contentWidth, align: 'center' });

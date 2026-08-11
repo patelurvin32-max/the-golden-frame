@@ -9,17 +9,31 @@ const { ROLES } = require('../config/constants');
 const router = express.Router();
 
 // Super Admin Central Customer Management Routes (Accessible strictly to Super Admin)
-router.get('/super-admin', protect, restrictTo(ROLES.SUPER_ADMIN), customerController.getSuperAdminCustomers);
+router.get('/super-admin', protect, restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN), customerController.getSuperAdminCustomers);
 router.patch(
   '/super-admin/:id',
   protect,
-  restrictTo(ROLES.SUPER_ADMIN),
+  restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN),
   [
     body('name').notEmpty().withMessage('Customer Name is required'),
     body('phone').matches(/^\d{10}$/).withMessage('Mobile number must contain exactly 10 digits'),
   ],
   validate,
   customerController.updateSuperAdminCustomer
+);
+router.post(
+  '/super-admin',
+  protect,
+  restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN),
+  [
+    body('name').notEmpty().withMessage('Customer Name is required'),
+    body('phone').matches(/^\d{10}$/).withMessage('Mobile number must contain exactly 10 digits'),
+    body('branch').notEmpty().isMongoId().withMessage('Branch is required'),
+    body('email').optional({ checkFalsy: true }).isEmail().withMessage('Invalid email'),
+    body('address').optional({ checkFalsy: true }),
+  ],
+  validate,
+  customerController.createSuperAdminCustomer
 );
 
 // Customer Routes - GET uses customers:view, others use customers:manage
@@ -32,15 +46,16 @@ router
         .matches(/^\d{10}$/).withMessage('Mobile number must contain exactly 10 digits'),
       // Branch is optional - will be auto-assigned from user for Branch Manager/Staff
       body('branch').optional().isMongoId().withMessage('Invalid Branch ID'),
-      body('menuCategoryId').optional().isMongoId().withMessage('Invalid Menu Category ID'),
-      body('menuItemId').optional().isMongoId().withMessage('Invalid Menu Item ID'),
+      body('address').optional({ checkFalsy: true }),
+      body('menuCategoryId').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid Menu Category ID'),
+      body('menuItemId').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid Menu Item ID'),
       body('startTime').custom(async (value, { req }) => {
         if (!req.body.menuCategoryId) return true;
         // Check if the selected category is Accessories or Beverage (product purchases)
         const category = await MenuCategory.findById(req.body.menuCategoryId);
         const categoryName = category?.name?.toLowerCase() || '';
-        if (categoryName === 'accessories' || categoryName === 'beverage' || categoryName === 'beverages') {
-          // startTime is optional for product categories
+        if (categoryName === 'accessories' || categoryName === 'beverage' || categoryName === 'beverages' || categoryName === 'extra') {
+          // startTime is optional for product and extra categories
           return true;
         }
         // startTime is required for session-based categories
@@ -63,11 +78,21 @@ router
         return true;
       }),
       body('billAmount')
-        .notEmpty().withMessage('Total Amount is required')
-        .custom((value) => {
-          const text = typeof value === 'number' ? String(value) : value;
-          return /^\d+(\.\d{1,2})?$/.test(text);
-        }).withMessage('Total Amount must be a valid number with up to two decimals'),
+        .custom(async (value, { req }) => {
+          if (!value && value !== 0) {
+            if (req.body.menuCategoryId) {
+              const category = await MenuCategory.findById(req.body.menuCategoryId);
+              if (category?.name?.toLowerCase() === 'extra') return true;
+            }
+            throw new Error('Total Amount is required');
+          }
+          const text = typeof value === 'number' ? String(value) : String(value || '');
+          if (text === '') return true; // Handled by the check above
+          if (!/^\d+(\.\d{1,2})?$/.test(text)) {
+            throw new Error('Total Amount must be a valid number with up to two decimals');
+          }
+          return true;
+        }),
       body('cashAmount').optional({ checkFalsy: true }).custom((value) => {
         if (!value) return true;
         const text = typeof value === 'number' ? String(value) : value;

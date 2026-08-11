@@ -127,6 +127,8 @@ const ATTENDANCE_STATUS = ['present', 'absent', 'half_day', 'leave', 'weekly_off
 
 const DEFAULT_BRANCHES = ['Daman', 'DNH'];
 
+const BUSINESS_SHORT_CODE = 'TGF'; // The Golden Frame — used as Customer ID prefix
+
 module.exports = {
   ROLES,
   ROLE_LIST,
@@ -140,4 +142,5 @@ module.exports = {
   SESSION_STATUS,
   ATTENDANCE_STATUS,
   DEFAULT_BRANCHES,
+  BUSINESS_SHORT_CODE,
 };

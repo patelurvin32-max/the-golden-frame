@@ -10,7 +10,8 @@
     "test": "node --test",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "create-indexes": "node scripts/createIndexes.js"
+    "create-indexes": "node scripts/createIndexes.js",
+    "migrate-customer-ids": "node scripts/migrateCustomerIds.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -489,7 +489,8 @@ function ReservationForm({
           <Input
             value={form.customerName}
             onChange={(e) => {
-              set('customerName', e.target.value);
+              const val = e.target.value.replace(/[^a-zA-Z\s]/g, '');
+              set('customerName', val);
               if (validationError?.field === 'customerName') setValidationError(null);
             }}
             placeholder="Full name"

@@ -122,7 +122,7 @@ export function AppRoutes() {
               <Route path="settings" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><SettingsPage /></ProtectedRoute>} />
               <Route path="wallet" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><WalletPage /></ProtectedRoute>} />
               <Route path="logs" element={<ProtectedRoute roles={['super_admin']}><LogsPage /></ProtectedRoute>} />
-              <Route path="central-customers" element={<ProtectedRoute roles={['super_admin']}><CentralCustomersPage /></ProtectedRoute>} />
+              <Route path="central-customers" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><CentralCustomersPage /></ProtectedRoute>} />
             </Route>
 
             {/* Fallback */}

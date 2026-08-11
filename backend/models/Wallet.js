@@ -34,5 +34,6 @@ walletSchema.index({ createdAt: -1 });
 // Compound indexes for common queries
 walletSchema.index({ branch: 1, paymentStatus: 1, createdAt: -1 });
 walletSchema.index({ branch: 1, mobileNumber: 1 });
+walletSchema.index({ name: 1 });
 
 module.exports = mongoose.model('Wallet', walletSchema);

@@ -29,9 +29,11 @@ const TIERS: Record<string, { color: string; icon: string }> = {
 };
 
 const emptyForm: PaymentFormValues & {
+  customerId: string;
   name: string;
   phone: string;
   email: string;
+  address: string;
   branch: string;
   notes: string;
   menuCategoryId: string;
@@ -41,9 +43,11 @@ const emptyForm: PaymentFormValues & {
   numberOfPlayers: string;
   additionalPlayers: string;
 } = {
+  customerId: '',
   name: '',
   phone: '',
   email: '',
+  address: '',
   branch: '',
   notes: '',
   menuCategoryId: '',
@@ -405,45 +409,64 @@ export default function CustomersPage() {
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to generate invoice'),
   });
 
+  // Generic Customer lookup by term (Customer ID or Mobile Number)
+  const lookupCustomerByTerm = async (term: string, isPhone: boolean) => {
+    setIsLookingUp(true);
+    try {
+      const targetBranch = form.branch || selectedBranch || undefined;
+      const response = await customerService.lookup(term, targetBranch);
+      const customer = response.data.data.customer;
+      if (customer) {
+        setForm((f) => ({
+          ...f,
+          customerId: customer.customerId || f.customerId,
+          name: customer.name || f.name,
+          phone: customer.phone || f.phone,
+          email: customer.email || f.email,
+          address: customer.address || f.address,
+          notes: customer.notes || f.notes,
+          walletBalance: customer.walletBalance || 0,
+        }));
+        toast.success('Customer profile found! Details loaded.');
+      } else {
+        if (isPhone) {
+          setForm((f) => ({ ...f, customerId: '', walletBalance: 0 }));
+        } else {
+          setForm((f) => ({ ...f, walletBalance: 0 }));
+        }
+      }
+    } catch (error) {
+      setForm((f) => ({ ...f, walletBalance: 0 }));
+    } finally {
+      setIsLookingUp(false);
+    }
+  };
+
+  const handleCustomerIdChange = (val: string) => {
+    const term = val.trim().toUpperCase();
+    setForm((f) => ({ ...f, customerId: term }));
+    if (/^[A-Z0-9]{3,}$/.test(term)) {
+      lookupCustomerByTerm(term, false);
+    }
+  };
+
   // Auto-lookup customer by phone number
   const handlePhoneChange = async (phone: string) => {
     // Only allow numeric digits (0-9), limit to 10 digits
     const numericPhone = phone.replace(/\D/g, '').slice(0, 10);
     setForm((f) => ({ ...f, phone: numericPhone }));
-    
+
     // Set validation error if phone is provided but not 10 digits
     if (numericPhone.length > 0 && numericPhone.length < 10) {
       setPhoneError('Mobile number must contain exactly 10 digits.');
     } else {
       setPhoneError('');
     }
-    
+
     if (numericPhone.length === 10) {
-      setIsLookingUp(true);
-      try {
-        const targetBranch = form.branch || selectedBranch || undefined;
-        const response = await customerService.lookup(numericPhone, targetBranch);
-        const customer = response.data.data.customer;
-        if (customer) {
-          setForm((f) => ({
-            ...f,
-            name: customer.name || f.name,
-            phone: customer.phone,
-            email: customer.email || f.email,
-            notes: customer.notes || f.notes,
-            walletBalance: customer.walletBalance || 0,
-          }));
-          toast.success('Customer found! Details populated.');
-        } else {
-          setForm((f) => ({ ...f, walletBalance: 0 }));
-        }
-      } catch (error) {
-        setForm((f) => ({ ...f, walletBalance: 0 }));
-      } finally {
-        setIsLookingUp(false);
-      }
+      lookupCustomerByTerm(numericPhone, true);
     } else {
-      setForm((f) => ({ ...f, walletBalance: 0 }));
+      setForm((f) => ({ ...f, customerId: '', walletBalance: 0 }));
     }
   };
 
@@ -508,16 +531,18 @@ export default function CustomersPage() {
       setValidationError({ field: 'menuCategoryId', message: 'Playing Category is required' });
       toast.error('Playing Category is required'); return;
     }
-    if (!form.menuItemId) {
+    const isExtraCategory = categories.find(c => c._id === form.menuCategoryId)?.name?.toLowerCase() === 'extra';
+
+    if (!isExtraCategory && !form.menuItemId) {
       setValidationError({ field: 'menuItemId', message: 'Playing Item is required' });
       toast.error('Playing Item is required'); return;
     }
-    // Only require Start Time for session-based categories (not Accessories or Beverages)
-    if (!isProductCategory && !form.startTime) {
+    // Only require Start Time for session-based categories (not Accessories or Beverages or Extra)
+    if (!isExtraCategory && !isProductCategory && !form.startTime) {
       setValidationError({ field: 'startTime', message: 'Start Time is required' });
       toast.error('Start Time is required'); return;
     }
-    if (!form.billAmount) {
+    if (!isExtraCategory && !form.billAmount) {
       setValidationError({ field: 'billAmount', message: 'Total Amount is required' });
       toast.error('Total Amount is required'); return;
     }
@@ -531,7 +556,7 @@ export default function CustomersPage() {
       return;
     }
 
-    const billAmount = parseCurrencyValue(form.billAmount);
+    const billAmount = parseCurrencyValue(form.billAmount) + (cart.length > 0 ? cartSubtotal : 0);
     
     if (Number.isNaN(billAmount)) {
       toast.error('Total Amount must be a valid number with up to two decimals');
@@ -543,17 +568,21 @@ export default function CustomersPage() {
     let walletAmount = parseCurrencyValue(form.walletAmount) || 0;
     const amountReceived = parseCurrencyValue(form.amountReceived) || 0;
     
+    // For simple payment methods (cash, upi), override individual amounts with amountReceived
+    // This ensures that when editing an entry (where cashAmount might not be 0), 
+    // the newly entered amountReceived properly overrides it.
+    if (form.paymentMethod === 'cash') {
+      cashAmount = amountReceived > 0 ? amountReceived : cashAmount;
+      onlineAmount = 0;
+      walletAmount = 0;
+    } else if (form.paymentMethod === 'upi') {
+      onlineAmount = amountReceived > 0 ? amountReceived : onlineAmount;
+      cashAmount = 0;
+      walletAmount = 0;
+    }
+    
     // Calculate total paid from individual payment methods
     let totalPaid = cashAmount + onlineAmount + walletAmount;
-    
-    // For simple payment methods (cash, upi), use amountReceived if individual amounts are not provided
-    if (form.paymentMethod === 'cash' && cashAmount === 0 && amountReceived > 0) {
-      cashAmount = amountReceived;
-      totalPaid = amountReceived;
-    } else if (form.paymentMethod === 'upi' && onlineAmount === 0 && amountReceived > 0) {
-      onlineAmount = amountReceived;
-      totalPaid = amountReceived;
-    }
     
     // Round values to avoid floating-point precision issues
     const roundedBillAmount = Math.round(billAmount * 100) / 100;
@@ -750,6 +779,8 @@ export default function CustomersPage() {
       : [];
     
     const existingAddedItems = Array.isArray((c as any).addedItems) ? (c as any).addedItems : [];
+    const initialCartSubtotal = existingAddedItems.reduce((sum: number, item: any) => sum + (Number(item.totalAmount) || 0), 0);
+    
     setCart(existingAddedItems);
     setCartCategoryId('');
     setCartItemId('');
@@ -761,11 +792,17 @@ export default function CustomersPage() {
 
     const rawStartTime = c.startTime || (c as any).reservation?.startTime || c.createdAt;
     const rawEndTime = c.endTime || (c as any).reservation?.endTime || '';
+    
+    // c.billAmount is the total bill (session + cart).
+    // The form's billAmount field represents the Session Bill Amount.
+    const sessionBillAmount = Math.max(0, (Number((c as any).billAmount) || 0) - initialCartSubtotal);
 
     setForm({
+      customerId: c.customerId || (c as any).customer?.customerId || '',
       name: c.name,
       phone: c.phone,
       email: c.email || '',
+      address: c.address || '',
       branch: (c.branch as any)?._id || c.branch || '',
       notes: c.notes || '',
       menuCategoryId: (c.menuCategoryId as any)?._id || c.menuCategoryId || '',
@@ -781,7 +818,7 @@ export default function CustomersPage() {
       pendingPaymentAmount: (c as any).pendingPaymentAmount ? String((c as any).pendingPaymentAmount) : '',
       numberOfPlayers: c.numberOfPlayers ? String(c.numberOfPlayers) : '',
       additionalPlayers: (c as any).additionalPlayers || '',
-      billAmount: String((c as any).billAmount || ''),
+      billAmount: String(sessionBillAmount || ''),
       addToWallet: false,
       extraAmount: '',
       walletBalance: (c as any).walletBalance || 0,
@@ -920,6 +957,7 @@ export default function CustomersPage() {
               <TableBody>
                 {customers.map((c) => {
                   const canDelete = user?.role === 'super_admin' || user?.role === 'admin';
+                  const totalBillAmount = (c as any).billAmount || 0;
                   
                   return (
                     <TableRow key={c._id}>
@@ -927,7 +965,7 @@ export default function CustomersPage() {
                       <TableCell className="text-sm font-medium">{c.name}</TableCell>
                       <TableCell className="text-sm">{(c as any).menuCategoryId?.name || '—'}</TableCell>
                       <TableCell className="text-sm">{(c as any).menuItemId?.name || '—'}</TableCell>
-                      <TableCell className="text-sm font-medium">{formatCurrency((c as any).billAmount || 0)}</TableCell>
+                      <TableCell className="text-sm font-medium">{formatCurrency(totalBillAmount)}</TableCell>
                       <TableCell className="text-sm capitalize">{c.paymentMethod}</TableCell>
                       <TableCell>
                         <Badge variant={(c as any).paymentStatus === 'paid' ? 'success' : (c as any).paymentStatus === 'partial' ? 'warning' : 'danger'}>
@@ -1011,9 +1049,28 @@ export default function CustomersPage() {
           )}
 
           {/* ────────────────── CREATE WORKFLOW ────────────────── */}
-          {modal === 'create' && (
+          {modal === 'create' && (() => {
+            const isExtraCategory = categories.find(c => c._id === form.menuCategoryId)?.name?.toLowerCase() === 'extra';
+            return (
             <>
               <div className="space-y-3">
+                {/* Top Row: Read-only Customer ID */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Customer ID
+                  </Label>
+                  <Input
+                    value={form.customerId}
+                    onChange={(e) => handleCustomerIdChange(e.target.value)}
+                    placeholder="Enter Customer ID (e.g. TGF00001) or leave empty for auto-generation"
+                    readOnly={Boolean(form.customerId && form.name)}
+                    disabled={isLookingUp}
+                    className={cn(
+                      "font-mono text-sm font-semibold text-primary",
+                      Boolean(form.customerId && form.name) && "bg-accent/40 cursor-not-allowed"
+                    )}
+                  />
+                </div>
                 {/* 1st Row: Full Name * | Phone Number * */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
                   <div className="space-y-1.5">
@@ -1021,7 +1078,8 @@ export default function CustomersPage() {
                     <Input
                       value={form.name}
                       onChange={(e) => {
-                        setForm((f) => ({ ...f, name: e.target.value }));
+                        const val = e.target.value.replace(/[^a-zA-Z\s]/g, '');
+                        setForm((f) => ({ ...f, name: val }));
                         if (validationError?.field === 'name') setValidationError(null);
                       }}
                       placeholder="Enter full name"
@@ -1097,6 +1155,7 @@ export default function CustomersPage() {
                       <p className="text-xs text-red-400 mt-0.5">{validationError.message}</p>
                     )}
                   </div>
+                  {!isExtraCategory && (
                   <div className="space-y-1.5">
                     <Label className="text-xs font-medium">Playing Item*</Label>
                     <Select
@@ -1131,11 +1190,12 @@ export default function CustomersPage() {
                       <p className="text-xs text-blue-400 animate-pulse">Loading items...</p>
                     )}
                   </div>
+                  )}
                 </div>
               </div>
 
               {/* Step 4: Session Details */}
-              {!isProductCategory && (
+              {!isProductCategory && !isExtraCategory && (
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
                     <div className="space-y-1.5">
@@ -1167,7 +1227,7 @@ export default function CustomersPage() {
               {/* Step 5: Bill Amount & Payment Info */}
               <div className="space-y-3 pt-1 border-t border-border">
                 <div className="space-y-1.5">
-                  <Label>Total Bill Amount *</Label>
+                  <Label>Total Bill Amount {isExtraCategory ? '' : '*'}</Label>
                   <Input
                     type="number"
                     min="0"
@@ -1185,6 +1245,7 @@ export default function CustomersPage() {
                 </div>
                 <PaymentForm
                   values={form}
+                  hidePendingPlayers={isExtraCategory}
                   onChange={(paymentValues) => {
                     setForm((f) => ({ ...f, ...paymentValues }));
                     if (validationError?.field === 'paymentStatus' || validationError?.field === 'paymentMethod') {
@@ -1203,14 +1264,24 @@ export default function CustomersPage() {
                 </div>
               </div>
             </>
-          )}
+            );
+          })()}
 
           {/* ────────────────── EDIT WORKFLOW: Customer Details + Category & Item Cart Selection ────────────────── */}
           {modal === 'edit' && (
             <>
               {/* Customer & Playing Info Summary */}
               <div className="p-3 sm:p-3.5 rounded-xl border border-border bg-card/50 space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Customer & Session Details</p>
+                {/* Read-only Customer ID */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Customer ID</Label>
+                  <Input
+                    value={form.customerId || '—'}
+                    readOnly
+                    disabled
+                    className="bg-accent/40 font-mono text-sm font-semibold cursor-not-allowed text-primary"
+                  />
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
                   <div className="space-y-1.5">
                     <Label>Full Name *</Label>
@@ -1229,6 +1300,16 @@ export default function CustomersPage() {
                       maxLength={10}
                     />
                   </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label>Email</Label>
+                  <Input
+                    type="email"
+                    value={form.email}
+                    onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                    placeholder="Enter email"
+                  />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
@@ -1276,6 +1357,18 @@ export default function CustomersPage() {
                       onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
                     />
                   </div>
+                </div>
+
+                <div className="space-y-1.5 pt-1">
+                  <Label>Session Bill Amount *</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={form.billAmount}
+                    onChange={(e) => setForm((f) => ({ ...f, billAmount: e.target.value }))}
+                    placeholder="Enter session bill amount"
+                  />
                 </div>
               </div>
 
@@ -1405,38 +1498,27 @@ export default function CustomersPage() {
                     </div>
                   )}
 
-                  {/* Grand Running Total Display */}
-                  <div className="flex items-center justify-between pt-2 border-t border-border/80 text-xs sm:text-sm">
-                    <span className="font-bold text-foreground">Grand Total (Session + Cart):</span>
-                    <span className="font-extrabold text-primary">
-                      {formatCurrency(parseCurrencyValue(form.billAmount) + (cart.length > 0 ? cartSubtotal : 0))}
-                    </span>
-                  </div>
                 </div>
               </div>
 
-              {/* Total Bill Amount Override & Payment Info */}
+              {/* Total Bill Amount & Payment Info */}
               <div className="space-y-3 pt-1 border-t border-border">
-                <div className="space-y-1.5">
-                  <Label>Session Base Bill Amount *</Label>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={form.billAmount}
-                    onChange={(e) => setForm((f) => ({ ...f, billAmount: e.target.value }))}
-                    placeholder="Enter base bill amount"
-                  />
-                  {cart.length > 0 && (
-                    <p className="text-[11px] text-muted-foreground">
-                      Base bill ₹{form.billAmount || 0} + Cart items ₹{cartSubtotal} = Total ₹{(parseCurrencyValue(form.billAmount) || 0) + cartSubtotal}
-                    </p>
-                  )}
+                <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-card/50">
+                  <span className="font-bold text-foreground">Total Bill Amount</span>
+                  <span className="font-extrabold text-primary text-lg">
+                    {formatCurrency(parseCurrencyValue(form.billAmount) + (cart.length > 0 ? cartSubtotal : 0))}
+                  </span>
                 </div>
 
                 <PaymentForm
-                  values={form}
-                  onChange={(paymentValues) => setForm((f) => ({ ...f, ...paymentValues }))}
+                  values={{
+                    ...form,
+                    billAmount: String(parseCurrencyValue(form.billAmount) + (cart.length > 0 ? cartSubtotal : 0))
+                  }}
+                  onChange={(paymentValues) => {
+                    const { billAmount, ...rest } = paymentValues;
+                    setForm((f) => ({ ...f, ...rest }));
+                  }}
                 />
 
                 <div className="space-y-1.5">

@@ -10,6 +10,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ROLES } = require('../config/constants');
 const { createBranchNotification } = require('../services/notificationService');
 const { generateInvoicePDF } = require('../services/pdfService');
+const mongoose = require('mongoose');
 
 // Helper to extract clean branch ObjectId string regardless of populated objects
 const getBranchIdString = (b) => {
@@ -50,6 +51,8 @@ const generateWalletId = async (branchId, date = new Date()) => {
   return `${dateStr}/W${Date.now()}`;
 };
 
+exports.generateWalletId = generateWalletId;
+
 // GET /api/wallet-management/stats
 exports.getWalletStats = asyncHandler(async (req, res) => {
   const filter = {};
@@ -57,9 +60,9 @@ exports.getWalletStats = asyncHandler(async (req, res) => {
   
   // Branch filtering: Super Admin can see all, Branch Admin only their branch
   if (req.user.role === ROLES.BRANCH_ADMIN) {
-    filter.branch = { $in: userBranchIds };
+    filter.branch = { $in: userBranchIds.map(id => new mongoose.Types.ObjectId(id)) };
   } else if (req.user.role === ROLES.SUPER_ADMIN && req.query.branch) {
-    filter.branch = req.query.branch;
+    filter.branch = new mongoose.Types.ObjectId(req.query.branch);
   }
 
   // Get date ranges
@@ -69,31 +72,38 @@ exports.getWalletStats = asyncHandler(async (req, res) => {
   weekStart.setDate(weekStart.getDate() - weekStart.getDay()); // Start of week (Sunday)
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  // Get counts and totals
-  const [todayCount, weekCount, monthCount, totalCount, todayTotal, monthTotal] = await Promise.all([
-    Wallet.countDocuments({ ...filter, createdAt: { $gte: todayStart } }),
-    Wallet.countDocuments({ ...filter, createdAt: { $gte: weekStart } }),
-    Wallet.countDocuments({ ...filter, createdAt: { $gte: monthStart } }),
-    Wallet.countDocuments(filter),
-    Wallet.aggregate([
-      { $match: { ...filter, createdAt: { $gte: todayStart } } },
-      { $group: { _id: null, total: { $sum: '$amount' } } },
-    ]),
-    Wallet.aggregate([
-      { $match: { ...filter, createdAt: { $gte: monthStart } } },
-      { $group: { _id: null, total: { $sum: '$amount' } } },
-    ]),
+  // Get counts and totals using a single aggregation for much faster load times
+  const statsResult = await Wallet.aggregate([
+    { $match: filter },
+    {
+      $facet: {
+        totalCount: [{ $count: 'count' }],
+        todayCount: [{ $match: { createdAt: { $gte: todayStart } } }, { $count: 'count' }],
+        weekCount: [{ $match: { createdAt: { $gte: weekStart } } }, { $count: 'count' }],
+        monthCount: [{ $match: { createdAt: { $gte: monthStart } } }, { $count: 'count' }],
+        todayTotal: [
+          { $match: { createdAt: { $gte: todayStart } } },
+          { $group: { _id: null, total: { $sum: '$amount' } } }
+        ],
+        monthTotal: [
+          { $match: { createdAt: { $gte: monthStart } } },
+          { $group: { _id: null, total: { $sum: '$amount' } } }
+        ]
+      }
+    }
   ]);
 
+  const stats = statsResult[0] || {};
+  
   res.status(200).json({
     success: true,
     data: {
-      today: todayCount,
-      week: weekCount,
-      month: monthCount,
-      total: totalCount,
-      todayAmount: todayTotal[0]?.total || 0,
-      monthAmount: monthTotal[0]?.total || 0,
+      today: stats.todayCount?.[0]?.count || 0,
+      week: stats.weekCount?.[0]?.count || 0,
+      month: stats.monthCount?.[0]?.count || 0,
+      total: stats.totalCount?.[0]?.count || 0,
+      todayAmount: stats.todayTotal?.[0]?.total || 0,
+      monthAmount: stats.monthTotal?.[0]?.total || 0,
     },
   });
 });

@@ -59,14 +59,18 @@ exports.login = asyncHandler(async (req, res, next) => {
 
   const normalizedEmail = String(email).trim().toLowerCase();
   const user = await User.findOne({ email: normalizedEmail })
-    .select('+password +refreshTokens +failedLoginAttempts +lockedUntil +lastFailedLogin');
+    .select('+password +refreshTokens +failedLoginAttempts +lockedAt +lockedUntil +lastFailedLogin');
 
   // ── Step 1: Check lockout BEFORE checking password (prevents timing attacks) ──
   if (user?.lockedUntil && user.lockedUntil > new Date()) {
     const minutesLeft = Math.ceil((user.lockedUntil - new Date()) / 60_000);
-    return next(
-      new AppError(`Account locked due to too many failed attempts. Try again in ${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}.`, 429)
-    );
+    return res.status(429).json({
+      success: false,
+      message: `Account locked due to too many failed attempts. Try again in ${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}.`,
+      locked: true,
+      lockedAt: user.lockedAt,
+      lockedUntil: user.lockedUntil,
+    });
   }
 
   // ── Step 2: Generic message for non-existent user (no enumeration) ──
@@ -82,14 +86,20 @@ exports.login = asyncHandler(async (req, res, next) => {
     user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
     user.lastFailedLogin = new Date();
 
-    // Lock after 10 failed attempts for 15 minutes
-    if (user.failedLoginAttempts >= 10) {
-      user.lockedUntil = new Date(Date.now() + 15 * 60_000);
+    // Lock after 3 failed attempts for 30 minutes
+    if (user.failedLoginAttempts >= 3) {
+      const now = new Date();
+      user.lockedAt = now;
+      user.lockedUntil = new Date(now.getTime() + 30 * 60_000);
       await user.save({ validateBeforeSave: false });
 
-      return next(
-        new AppError('Account locked due to too many failed attempts. Try again in 15 minutes.', 429)
-      );
+      return res.status(429).json({
+        success: false,
+        message: 'Account locked due to too many failed attempts. Try again in 30 minutes.',
+        locked: true,
+        lockedAt: user.lockedAt,
+        lockedUntil: user.lockedUntil,
+      });
     }
 
     await user.save({ validateBeforeSave: false });
@@ -104,6 +114,7 @@ exports.login = asyncHandler(async (req, res, next) => {
   // ── Step 5: Successful login — reset lockout counters ──
   if (user.failedLoginAttempts > 0 || user.lockedUntil) {
     user.failedLoginAttempts = 0;
+    user.lockedAt = null;
     user.lockedUntil = null;
     user.lastFailedLogin = null;
     await user.save({ validateBeforeSave: false });

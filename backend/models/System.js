@@ -73,6 +73,7 @@ const settingsSchema = new mongoose.Schema(
   {
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
     businessName: { type: String, default: 'The Golden Frame' },
+    shortBusinessName: { type: String, trim: true, default: '' },
     logoUrl: { type: String },
     currency: { type: String, default: 'INR' },
     currencySymbol: { type: String, default: '₹' },

@@ -129,24 +129,82 @@ const buildReservationConfirmationEmail = ({ customerName, reservationId, branch
   ],
 });
 
-const buildBookingConfirmationEmail = ({ customerName, bookingId, branchName, tableName, date, time, durationMinutes }) => buildBrandEmailShell({
-  title: 'Booking Confirmed',
-  preheader: `Booking ${bookingId || ''} confirmed.`,
-  intro: `Your booking is confirmed${customerName ? `, ${customerName}` : ''}.`,
-  sections: [
+const buildBookingConfirmationEmail = ({
+  customerName,
+  bookingId,
+  phoneNumber,
+  branchName,
+  tableName,
+  categoryName,
+  itemName,
+  date,
+  startTime,
+  endTime,
+  durationMinutes,
+  numberOfGuests,
+  specialRequests,
+  notes,
+  status,
+  paymentStatus,
+  paymentMethod,
+  billAmount,
+  totalPaid,
+  pendingPaymentAmount,
+  pendingPlayers = [],
+}) => {
+  const sections = [
     {
       title: 'Booking Details',
       items: [
+        { label: 'Customer Name', value: customerName || '—' },
         { label: 'Booking ID', value: bookingId || '—' },
+        { label: 'Mobile Number', value: phoneNumber || '—' },
         { label: 'Branch', value: branchName || '—' },
-        { label: 'Table', value: tableName || '—' },
-        { label: 'Date', value: date || '—' },
-        { label: 'Time', value: time || '—' },
+        { label: 'Category', value: categoryName || '—' },
+        { label: 'Table / Item', value: itemName || tableName || '—' },
+        { label: 'Booking Date', value: date || '—' },
+        { label: 'Start Time', value: startTime || '—' },
+        { label: 'End Time', value: endTime || '—' },
         { label: 'Duration', value: durationMinutes ? `${durationMinutes} min` : '—' },
+        ...(numberOfGuests ? [{ label: 'Guests', value: String(numberOfGuests) }] : []),
+        ...(status ? [{ label: 'Booking Status', value: String(status).toUpperCase() }] : []),
+        ...(specialRequests ? [{ label: 'Special Requests', value: specialRequests }] : []),
+        ...(notes ? [{ label: 'Notes', value: notes }] : []),
       ],
     },
-  ],
-});
+  ];
+
+  if (billAmount !== undefined && billAmount !== null) {
+    sections.push({
+      title: 'Payment Breakdown',
+      items: [
+        { label: 'Bill Amount', value: money(billAmount) },
+        { label: 'Total Paid', value: money(totalPaid || 0) },
+        ...(pendingPaymentAmount ? [{ label: 'Pending Payment', value: money(pendingPaymentAmount) }] : []),
+        { label: 'Payment Status', value: (paymentStatus || 'unpaid').toUpperCase() },
+        ...(paymentMethod ? [{ label: 'Payment Method', value: String(paymentMethod).toUpperCase() }] : []),
+      ],
+    });
+  }
+
+  if (Array.isArray(pendingPlayers) && pendingPlayers.length > 0) {
+    sections.push({
+      title: 'Pending Players',
+      items: pendingPlayers.map((player, idx) => ({
+        label: player.name || player.playerName || `Player ${idx + 1}`,
+        value: `${player.mobile || player.mobileNumber || ''} — ${money(player.amount || player.pendingAmount || 0)}`,
+      })),
+    });
+  }
+
+  return buildBrandEmailShell({
+    title: 'Booking Confirmed',
+    preheader: `Booking ${bookingId || ''} confirmed.`,
+    intro: `Your booking is confirmed${customerName ? `, ${customerName}` : ''}. We look forward to hosting you!`,
+    sections,
+    footerNote: 'Thank you for choosing The Golden Frame. Please present your Booking ID upon arrival.',
+  });
+};
 
 const buildPaymentConfirmationEmail = ({ customerName, orderId, amountReceived, billAmount, paymentMethod, pendingAmount = 0 }) => buildBrandEmailShell({
   title: 'Payment Confirmation',

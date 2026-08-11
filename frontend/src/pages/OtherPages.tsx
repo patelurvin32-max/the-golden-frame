@@ -355,9 +355,21 @@ export function UsersPage() {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [form, setForm] = useState<StaffFormState>(createEmptyStaffForm());
   const [showPassword, setShowPassword] = useState(false);
+  const [showLockedOnly, setShowLockedOnly] = useState(false);
 
   const { data: branchesData } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
   const { data, isLoading } = useQuery({ queryKey: ['users'], queryFn: () => userService.getAll().then((r) => r.data.data.users) });
+
+  const isUserLocked = (u: User) => Boolean(u.lockedUntil && new Date(u.lockedUntil) > new Date());
+
+  const resetLockoutMutation = useMutation({
+    mutationFn: (userId: string) => userService.resetLockout(userId),
+    onSuccess: (res) => {
+      toast.success(res?.data?.message || 'Lockout reset successfully.');
+      qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to reset lockout.'),
+  });
 
   const createMutation = useMutation({
     mutationFn: (d: any) => userService.create(d),
@@ -389,6 +401,7 @@ export function UsersPage() {
   });
 
   const users: User[] = data || [];
+  const visibleUsers = showLockedOnly ? users.filter(isUserLocked) : users;
   const branches: Branch[] = branchesData || [];
   const roleColor: Record<string, string> = { super_admin: 'default', admin: 'secondary', branch_admin: 'success', branch_manager: 'info', staff: 'outline', cashier: 'warning' };
 
@@ -480,11 +493,28 @@ export function UsersPage() {
   return (
     <div className="space-y-3 sm:space-y-5 animate-fade-in">
       <PageHeader title="Staff Management" 
-        actions={<Button size="sm" onClick={openCreateModal}>+ Add Staff</Button>}
+        actions={
+          <div className="flex items-center gap-2">
+            <Button
+              variant={showLockedOnly ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setShowLockedOnly(!showLockedOnly)}
+            >
+              🔒 Locked Only {users.filter(isUserLocked).length > 0 && `(${users.filter(isUserLocked).length})`}
+            </Button>
+            <Button size="sm" onClick={openCreateModal}>+ Add Staff</Button>
+          </div>
+        }
       />
       <Card>
         {isLoading ? <div className="p-3 sm:p-4 space-y-3">{[...Array(4)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
-          : users.length === 0 ? <EmptyState icon="👤" title="No staff accounts" action={<Button size="sm" onClick={openCreateModal}>+ Add Staff</Button>} />
+          : visibleUsers.length === 0 ? (
+            <EmptyState
+              icon="👤"
+              title={showLockedOnly ? "No locked accounts" : "No staff accounts"}
+              action={<Button size="sm" onClick={openCreateModal}>+ Add Staff</Button>}
+            />
+          )
           : (
             <>
               {/* Desktop table */}
@@ -501,67 +531,123 @@ export function UsersPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {users.map((user) => (
-                      <TableRow key={user._id}>
-                        <TableCell className="font-semibold">{user.name}</TableCell>
-                        <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
-                        <TableCell><Badge variant={roleColor[user.role] as any} className="capitalize">{user.role.replace('_', ' ')}</Badge></TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{(user.branches as any[]).map((b: any) => b.name || b).join(', ') || '—'}</TableCell>
-                        <TableCell><Badge variant={user.isActive ? 'success' : 'danger'}>{user.isActive ? 'Active' : 'Inactive'}</Badge></TableCell>
-                        <TableCell>
-                          <div className="flex flex-wrap gap-2">
-                            {canEditUser(currentUser, user) && (
-                              <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300" onClick={() => openEditModal(user)}>
-                                <PencilIcon />
-                                Edit
-                              </Button>
+                    {visibleUsers.map((user) => {
+                      const locked = isUserLocked(user);
+                      return (
+                        <TableRow key={user._id}>
+                          <TableCell className="font-semibold">
+                            <div className="flex items-center gap-2">
+                              <span>{user.name}</span>
+                              {locked && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-500/10 text-red-600 border border-red-500/20">
+                                  🔒 Locked
+                                </span>
+                              )}
+                            </div>
+                            {locked && user.lockedAt && user.lockedUntil && (
+                              <div className="text-[11px] text-red-500/90 font-normal mt-0.5 space-y-0.5">
+                                <div>Locked at: {new Date(user.lockedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</div>
+                                <div>Unlocks at: {new Date(user.lockedUntil).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</div>
+                              </div>
                             )}
-                            {user.isActive && canEditUser(currentUser, user) && (
-                              <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-300"
-                                onClick={() => { if (window.confirm('Deactivate this user?')) deactivateMutation.mutate(user._id); }}
-                              >
-                                Deactivate
-                              </Button>
-                            )}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
+                          <TableCell><Badge variant={roleColor[user.role] as any} className="capitalize">{user.role.replace('_', ' ')}</Badge></TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{(user.branches as any[]).map((b: any) => b.name || b).join(', ') || '—'}</TableCell>
+                          <TableCell><Badge variant={user.isActive ? 'success' : 'danger'}>{user.isActive ? 'Active' : 'Inactive'}</Badge></TableCell>
+                          <TableCell>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {canEditUser(currentUser, user) && (
+                                <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300" onClick={() => openEditModal(user)}>
+                                  <PencilIcon />
+                                  Edit
+                                </Button>
+                              )}
+                              {user.isActive && canEditUser(currentUser, user) && (
+                                <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-300"
+                                  onClick={() => { if (window.confirm('Deactivate this user?')) deactivateMutation.mutate(user._id); }}
+                                >
+                                  Deactivate
+                                </Button>
+                              )}
+                              {isSuperAdmin && locked && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-red-500/30 text-red-500 hover:bg-red-500/10 text-xs px-2.5 h-8"
+                                  disabled={resetLockoutMutation.isPending}
+                                  onClick={() => resetLockoutMutation.mutate(user._id)}
+                                >
+                                  {resetLockoutMutation.isPending ? 'Resetting…' : 'Reset Lockout'}
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table2>
               </div>
               {/* Mobile card layout */}
               <div className="sm:hidden divide-y divide-border">
-                {users.map((user) => (
-                  <div key={user._id} className="p-3">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-semibold text-sm truncate">{user.name}</span>
-                      <Badge variant={user.isActive ? 'success' : 'danger'} className="shrink-0 ml-2">{user.isActive ? 'Active' : 'Inactive'}</Badge>
-                    </div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <Badge variant={roleColor[user.role] as any} className="capitalize text-[10px]">{user.role.replace('_', ' ')}</Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground truncate">{user.email}</p>
-                    {(user.branches as any[]).length > 0 && (
-                      <p className="text-xs text-muted-foreground mt-0.5">{(user.branches as any[]).map((b: any) => b.name || b).join(', ')}</p>
-                    )}
-                    {canEditUser(currentUser, user) && (
-                      <div className="flex gap-2 mt-2">
-                        <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300 h-8 text-xs px-2" onClick={() => openEditModal(user)}>
-                          <PencilIcon />
-                          Edit
-                        </Button>
-                        {user.isActive && (
+                {visibleUsers.map((user) => {
+                  const locked = isUserLocked(user);
+                  return (
+                    <div key={user._id} className="p-3">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="flex items-center gap-1.5 truncate">
+                          <span className="font-semibold text-sm truncate">{user.name}</span>
+                          {locked && (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-600 border border-red-500/20 shrink-0">
+                              🔒 Locked
+                            </span>
+                          )}
+                        </div>
+                        <Badge variant={user.isActive ? 'success' : 'danger'} className="shrink-0 ml-2">{user.isActive ? 'Active' : 'Inactive'}</Badge>
+                      </div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <Badge variant={roleColor[user.role] as any} className="capitalize text-[10px]">{user.role.replace('_', ' ')}</Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+                      {(user.branches as any[]).length > 0 && (
+                        <p className="text-xs text-muted-foreground mt-0.5">{(user.branches as any[]).map((b: any) => b.name || b).join(', ')}</p>
+                      )}
+                      {locked && user.lockedAt && user.lockedUntil && (
+                        <div className="text-[11px] text-red-500/90 font-normal mt-1 space-y-0.5 bg-red-500/5 p-2 rounded-lg border border-red-500/10">
+                          <div>Locked at: {new Date(user.lockedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</div>
+                          <div>Unlocks at: {new Date(user.lockedUntil).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</div>
+                        </div>
+                      )}
+                      <div className="flex flex-wrap items-center gap-2 mt-2">
+                        {canEditUser(currentUser, user) && (
+                          <Button size="sm" variant="ghost" className="text-blue-400 hover:text-blue-300 h-8 text-xs px-2" onClick={() => openEditModal(user)}>
+                            <PencilIcon />
+                            Edit
+                          </Button>
+                        )}
+                        {user.isActive && canEditUser(currentUser, user) && (
                           <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-300 h-8 text-xs px-2"
                             onClick={() => { if (window.confirm('Deactivate this user?')) deactivateMutation.mutate(user._id); }}
                           >
                             Deactivate
                           </Button>
                         )}
+                        {isSuperAdmin && locked && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="border-red-500/30 text-red-500 hover:bg-red-500/10 text-xs px-2.5 h-8"
+                            disabled={resetLockoutMutation.isPending}
+                            onClick={() => resetLockoutMutation.mutate(user._id)}
+                          >
+                            {resetLockoutMutation.isPending ? 'Resetting…' : 'Reset Lockout'}
+                          </Button>
+                        )}
                       </div>
-                    )}
-                  </div>
-                ))}
+                    </div>
+                  );
+                })}
               </div>
             </>
           )}

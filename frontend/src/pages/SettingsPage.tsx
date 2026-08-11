@@ -17,6 +17,7 @@ export type BranchReportConfig = {
 
 type SettingsState = {
   businessName: string;
+  shortBusinessName: string;
   logoUrl: string;
   currency: string;
   currencySymbol: string;
@@ -34,6 +35,7 @@ type SettingsState = {
     fontStyle: 'Helvetica' | 'Courier' | 'Times-Roman';
     header: {
       showLogo: boolean;
+      showBusinessName: boolean;
       businessName: string;
       addressLine1: string;
       addressLine2: string;
@@ -101,6 +103,7 @@ type SettingsState = {
 
 const createDefaultSettings = (): SettingsState => ({
   businessName: 'The Golden Frame',
+  shortBusinessName: '',
   logoUrl: '',
   currency: 'INR',
   currencySymbol: '₹',
@@ -118,6 +121,7 @@ const createDefaultSettings = (): SettingsState => ({
     fontStyle: 'Helvetica',
     header: {
       showLogo: true,
+      showBusinessName: true,
       businessName: '',
       addressLine1: '',
       addressLine2: '',
@@ -346,11 +350,11 @@ function ReceiptPreview({ settings }: { settings: SettingsState }) {
       {/* Logo */}
       {header.showLogo && logoSrc ? (
         <div className="flex justify-center mb-2">
-          <img src={logoSrc} alt="Logo" className="h-12 w-12 object-contain" />
+          <img src={logoSrc} alt="Logo" className="h-20 w-auto max-w-[140px] object-contain" />
         </div>
       ) : header.showLogo ? (
         <div className="flex justify-center mb-2">
-          <div className="flex h-12 w-12 items-center justify-center rounded border border-dashed border-black text-xs font-bold font-mono">
+          <div className="flex h-20 w-32 items-center justify-center rounded border border-dashed border-black text-sm font-bold font-mono">
             LOGO
           </div>
         </div>
@@ -358,7 +362,9 @@ function ReceiptPreview({ settings }: { settings: SettingsState }) {
 
       {/* Business Header */}
       <div className="text-center font-mono">
-        <p className="text-sm font-bold uppercase tracking-wider">{businessName}</p>
+        {header.showBusinessName && (
+          <p className="text-sm font-bold uppercase tracking-wider">{businessName}</p>
+        )}
         <p className="text-xs">Indiranagar Branch</p>
         {header.showAddress && (
           <p className="text-[10px] text-gray-700 leading-tight mt-0.5">
@@ -653,6 +659,7 @@ export default function SettingsPage() {
         ...defaults,
         ...settingsResponse,
         businessName: settingsResponse.businessName || defaults.businessName,
+        shortBusinessName: settingsResponse.shortBusinessName || '',
         logoUrl: settingsResponse.logoUrl || '',
         currency: settingsResponse.currency || defaults.currency,
         currencySymbol: settingsResponse.currencySymbol || defaults.currencySymbol,
@@ -997,6 +1004,14 @@ export default function SettingsPage() {
                     <Input value={settings.businessName} onChange={(e) => setTop('businessName', e.target.value)} />
                   </div>
                   <div className="space-y-1.5">
+                    <Label>Short Business Name</Label>
+                    <Input
+                      value={settings.shortBusinessName}
+                      onChange={(e) => setTop('shortBusinessName', e.target.value)}
+                      placeholder="e.g. TGF or TGF-D (used as Customer ID prefix)"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
                     <Label>Timezone</Label>
                     <Select value={settings.timezone} onChange={(e) => setTop('timezone', e.target.value)}>
                       <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
@@ -1071,7 +1086,11 @@ export default function SettingsPage() {
                   checked={settings.receipt.header.showLogo}
                   onChange={(value) => setHeader('showLogo', value)}
                 />
-                <ToggleRow label="Business Name" checked onChange={() => {}}>
+                <ToggleRow
+                  label="Business Name"
+                  checked={settings.receipt.header.showBusinessName}
+                  onChange={(value) => setHeader('showBusinessName', value)}
+                >
                   <div className="space-y-1.5">
                     <Label>Business Name</Label>
                     <Input

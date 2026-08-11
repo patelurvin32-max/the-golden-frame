@@ -3,10 +3,11 @@ const { MEMBERSHIP_TIERS } = require('../config/constants');
 
 const customerSchema = new mongoose.Schema(
   {
-    customerId: { type: String, required: true },
+    customerId: { type: String, required: true, unique: true },
     name: { type: String, required: true, trim: true },
     phone: { type: String, required: true, trim: true },
     email: { type: String, trim: true, lowercase: true },
+    address: { type: String, trim: true, default: '' },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     visits: { type: Number, default: 0 },
     totalSpending: { type: Number, default: 0 },
@@ -43,7 +44,7 @@ const customerSchema = new mongoose.Schema(
 );
 
 // Indexes for performance
-customerSchema.index({ branch: 1, customerId: 1 }, { unique: true });
+// customerId is globally unique (see schema definition) — no compound index needed
 customerSchema.index({ branch: 1, phone: 1 }, { unique: true });
 customerSchema.index({ name: 'text', phone: 'text', email: 'text' });
 customerSchema.index({ name: 1 });
@@ -54,5 +55,6 @@ customerSchema.index({ walletBalance: 1 });
 // Compound indexes for common queries
 customerSchema.index({ branch: 1, isActive: 1, createdAt: -1 });
 customerSchema.index({ walletBalance: 1, branch: 1 });
+customerSchema.index({ phone: 1 });
 
 module.exports = mongoose.model('Customer', customerSchema);

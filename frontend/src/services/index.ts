@@ -55,7 +55,8 @@ export const customerService = {
   lookup: (phone: string, branch?: string) => api.get<ApiResponse<{ customer: Customer | null }>>(`/customers/lookup/${phone}`, { params: { ...branch ? { branch } : {}, _t: Date.now() } }),
   create: (data: Record<string, any>) => api.post<ApiResponse<{ customer: Customer }>>('/customers', data),
   update: (id: string, data: Partial<Customer>) => api.patch<ApiResponse<{ customer: Customer }>>(`/customers/${id}`, data),
-  updateSuperAdminCustomer: (id: string, data: { name: string; phone: string }) => api.patch<ApiResponse<{ customer: Customer }>>(`/customers/super-admin/${id}`, data),
+  updateSuperAdminCustomer: (id: string, data: { name: string; phone: string; email?: string; address?: string }) => api.patch<ApiResponse<{ customer: Customer }>>(`/customers/super-admin/${id}`, data),
+  createSuperAdminCustomer: (data: { name: string; phone: string; email?: string; address?: string; branch: string }) => api.post<ApiResponse<{ customer: Customer }>>('/customers/super-admin', data),
   delete: (id: string) => api.delete(`/customers/${id}`),
   receivePayment: (id: string, data: Record<string, unknown>) => api.post<ApiResponse<{ customer: Customer }>>(`/customers/${id}/receive-payment`, data),
   getPaymentHistory: (id: string) => api.get<ApiResponse<{ paymentHistory: any[] }>>(`/customers/${id}/payment-history`),
@@ -119,6 +120,7 @@ export const userService = {
   create: (data: Partial<User> & { password: string }) => api.post<ApiResponse<{ user: User }>>('/users', data),
   update: (id: string, data: Partial<User>) => api.patch<ApiResponse<{ user: User }>>(`/users/${id}`, data),
   delete: (id: string) => api.delete(`/users/${id}`),
+  resetLockout: (userId: string) => api.patch<ApiResponse<{ user: User }>>(`/users/${userId}/reset-lockout`),
 };
 
 // ── Reports ───────────────────────────────────────────────────────────────────

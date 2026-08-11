@@ -36,4 +36,7 @@ router.patch('/:id', restrictTo(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_MAN
 // DELETE /api/users/:id - Super Admin, Admin, Branch Manager, and Branch Admin
 router.delete('/:id', restrictTo(ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_MANAGER, ROLES.BRANCH_ADMIN), requirePermission('staff:manage'), userController.deactivateUser);
 
+// PATCH /api/users/:id/reset-lockout - Super Admin only
+router.patch('/:id/reset-lockout', restrictTo(ROLES.SUPER_ADMIN), userController.resetLockout);
+
 module.exports = router;

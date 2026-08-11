@@ -3,6 +3,7 @@ const Table = require('../models/Table');
 const Customer = require('../models/Customer');
 const Wallet = require('../models/Wallet');
 const Order = require('../models/Order');
+const { sendTemplatedEmail } = require('../services/emailService');
 
 /**
  * Ensures customer.walletBalance includes any un-refunded Wallet top-ups for their phone number if uninitialized.
@@ -1034,6 +1035,56 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     description: `${req.user.name} created reservation ${reservation.reservationId} for ${customerName}`,
     ipAddress: req.ip,
   });
+
+  const recipientEmail = (populated.email || email || '').trim();
+  const isBookingEmailEnabled = String(process.env.ENABLE_BOOKING_CONFIRMATION_EMAIL || 'false').toLowerCase() === 'true';
+
+  if (recipientEmail && isBookingEmailEnabled) {
+    const formattedDate = populated.reservationDate
+      ? new Date(populated.reservationDate).toLocaleDateString('en-IN', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        })
+      : reservationDate;
+
+    const startMinutes = timeToBusinessMinutes(populated.reservationTime || reservationTime);
+    const endMinutes = startMinutes + (populated.durationMinutes || durationMinutes || 60);
+    const endTimeFormatted = formatBusinessMinutesToTime(endMinutes);
+
+    void sendTemplatedEmail({
+      to: recipientEmail,
+      template: 'booking_confirmation',
+      subject: `Booking Confirmed - ${populated.reservationId || reservation.reservationId}`,
+      relatedModel: 'Reservation',
+      relatedId: reservation._id,
+      data: {
+        customerName: populated.customerName || customerName,
+        bookingId: populated.reservationId || reservation.reservationId,
+        phoneNumber: populated.phoneNumber || phoneNumber,
+        branchName: populated.branch?.name || '',
+        tableName: populated.table?.name || '',
+        categoryName: populated.menuCategoryId?.name || '',
+        itemName: populated.menuItemId?.name || '',
+        date: formattedDate,
+        startTime: populated.reservationTime || reservationTime,
+        endTime: endTimeFormatted,
+        durationMinutes: populated.durationMinutes || durationMinutes || 60,
+        numberOfGuests: populated.numberOfGuests || numberOfGuests,
+        specialRequests: populated.specialRequests || specialRequests,
+        notes: populated.notes || notes,
+        status: populated.status || status,
+        paymentStatus: populated.paymentStatus || paymentStatus,
+        paymentMethod: populated.paymentMethod || paymentMethod,
+        billAmount: populated.billAmount ?? billAmount ?? 0,
+        totalPaid: populated.totalPaid ?? 0,
+        pendingPaymentAmount: populated.pendingPaymentAmount ?? 0,
+        pendingPlayers: populated.pendingPlayers || pendingPlayers || [],
+      },
+    }).catch((emailErr) => {
+      console.error('[BookingConfirmationEmail] Failed to send email for reservation', reservation.reservationId, ':', emailErr.message);
+    });
+  }
 });
 
 exports.updateReservation = asyncHandler(async (req, res, next) => {

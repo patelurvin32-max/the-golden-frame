@@ -34,9 +34,25 @@ export default function LoginPage() {
       const { user } = await login(form.email, form.password);
       navigate(getPostLoginRoute(user), { replace: true });
     } catch (err: any) {
-      const status = err?.response?.status;
-      const errorMessage =
-        status === 401 ? 'Incorrect email or password' : (err?.response?.data?.message || 'Login failed');
+      const data = err?.response?.data;
+      let errorMessage = 'Login failed. Please try again.';
+
+      if (data?.locked && data?.lockedAt && data?.lockedUntil) {
+        const lockedAtStr = new Date(data.lockedAt).toLocaleString('en-IN', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        });
+        const lockedUntilStr = new Date(data.lockedUntil).toLocaleString('en-IN', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        });
+        errorMessage = `Account locked. Locked at ${lockedAtStr}. Unlocks at ${lockedUntilStr}.`;
+      } else if (err?.response?.status === 401) {
+        errorMessage = 'Incorrect email or password';
+      } else if (data?.message) {
+        errorMessage = data.message;
+      }
+
       setError(errorMessage);
       toast.error(errorMessage);
     } finally {

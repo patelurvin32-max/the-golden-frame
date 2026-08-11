@@ -31,6 +31,7 @@ export default function BillingPage() {
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editItems, setEditItems] = useState<SessionItem[]>([]);
   const [notes, setNotes] = useState('');
+  const [billingCustomerId, setBillingCustomerId] = useState<string>('');
 
   const emptyPaymentValues: PaymentFormValues = {
     paymentStatus: 'paid',
@@ -214,6 +215,8 @@ export default function BillingPage() {
     });
 
     setEditModalOpen(true);
+    // Seed Customer ID immediately from the bill's embedded customer record
+    setBillingCustomerId((bill.customer as any)?.customerId || '');
 
     // Fetch fresh bill & order data to ensure latest pendingPlayers and amounts are loaded
     billingService.getOne(bill._id).then((res) => {
@@ -255,6 +258,7 @@ export default function BillingPage() {
                 const customer = cRes.data.data.customer;
                 if (customer) {
                   setPaymentValues((prev) => ({ ...prev, walletBalance: customer.walletBalance || 0 }));
+                  if (customer.customerId) setBillingCustomerId(customer.customerId);
                 }
               })
               .catch(() => {});
@@ -544,6 +548,7 @@ export default function BillingPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Invoice #</TableHead>
+                <TableHead>Customer ID</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Category</TableHead>
                 <TableHead>Item</TableHead>
@@ -558,6 +563,9 @@ export default function BillingPage() {
                 <TableRow key={bill._id}>
                   <TableCell className="font-mono text-xs font-semibold">
                     {bill.invoiceNumber}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs font-semibold text-primary">
+                    {(bill.customer as any)?.customerId || <span className="text-muted-foreground italic">—</span>}
                   </TableCell>
                   <TableCell>
                     {bill.customer?.name || (bill.session as any)?.customerName || (
@@ -635,6 +643,12 @@ export default function BillingPage() {
             <div>
               <span className="text-muted-foreground block">Invoice Number</span>
               <strong className="text-foreground font-mono font-semibold">{selectedBill?.invoiceNumber}</strong>
+            </div>
+            <div>
+              <span className="text-muted-foreground block">Customer ID</span>
+              <strong className="font-mono font-semibold text-primary">
+                {billingCustomerId || (selectedBill?.customer as any)?.customerId || '—'}
+              </strong>
             </div>
             <div>
               <span className="text-muted-foreground block">Customer Name</span>

@@ -11,7 +11,7 @@ const NAV_ITEMS = [
   { path: '/tables', label: 'Live Tables', icon: '🎱', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'tables:view' },
   { path: '/billing', label: 'Billing', icon: '🧾', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'billing:manage' },
   { path: '/reservations', label: 'Bookings', icon: '🗓️', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'bookings:manage' },
-  { path: '/customers', label: 'Customers', icon: '👥', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'customers:view' },
+  { path: '/customers', label: 'Entry', icon: '👥', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'customers:view' },
   { path: '/menu', label: 'Menu', icon: '🎯', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], parent: 'master', permission: 'menu:view' },
   { path: '/inventory', label: 'Inventory', icon: '📦', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], parent: 'master', permission: 'inventory:manage' },
   { path: '/pending-payments', label: 'Pending Payments', icon: '💳', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'customers:view' },
@@ -23,7 +23,7 @@ const NAV_ITEMS = [
   { path: '/branches', label: 'Branches', icon: '🏢', roles: ['super_admin'], parent: 'master' },
   { path: '/settings', label: 'Settings', icon: '⚙️', roles: ['super_admin', 'branch_admin'], parent: 'master' },
   { path: '/wallet', label: 'Wallet', icon: '💼', roles: ['super_admin', 'branch_admin'], parent: 'master' },
-  { path: '/central-customers', label: 'Central Customers', icon: '📇', roles: ['super_admin'], parent: 'master' },
+  { path: '/central-customers', label: 'Central Customers', icon: '📇', roles: ['super_admin', 'branch_admin'], parent: 'master' },
   { path: '/logs', label: 'Audit Logs', icon: '📋', roles: ['super_admin'], parent: 'master' },
   { id: 'master', label: 'Master', icon: '⚙️', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], isParent: true },
 ];

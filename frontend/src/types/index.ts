@@ -29,6 +29,9 @@ export interface User {
   avatar?: string;
   isActive: boolean;
   lastLogin?: string;
+  failedLoginAttempts?: number;
+  lockedAt?: string;
+  lockedUntil?: string;
   createdAt: string;
 }
 
@@ -126,6 +129,7 @@ export interface Customer {
   name: string;
   phone: string;
   email?: string;
+  address?: string;
   branch: string | { _id: string; name: string; code: string };
   sourceModule?: 'Customer' | 'Billing' | 'Booking' | 'Live Tables' | 'Pending Payments';
   visits: number;

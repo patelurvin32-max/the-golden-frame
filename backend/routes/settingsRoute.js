@@ -126,6 +126,7 @@ router.patch(
       // Allow only brand and receipt settings for Branch Admin
       const branchAdminAllowed = [
         'businessName',
+        'shortBusinessName',
         'logoUrl',
         'currency',
         'currencySymbol',
@@ -158,6 +159,7 @@ router.patch(
 
     const allowed = [
       'businessName',
+      'shortBusinessName',
       'logoUrl',
       'currency',
       'currencySymbol',

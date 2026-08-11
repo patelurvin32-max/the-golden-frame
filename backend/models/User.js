@@ -27,6 +27,7 @@ const userSchema = new mongoose.Schema(
     passwordResetExpires: { type: Date },
     // Account lockout fields
     failedLoginAttempts: { type: Number, default: 0, select: false },
+    lockedAt: { type: Date, default: null, select: false },
     lockedUntil: { type: Date, default: null, select: false },
     lastFailedLogin: { type: Date, default: null, select: false },
   },
@@ -72,6 +73,7 @@ userSchema.methods.toSafeObject = function toSafeObject() {
   delete obj.passwordResetToken;
   delete obj.passwordResetExpires;
   delete obj.failedLoginAttempts;
+  delete obj.lockedAt;
   delete obj.lockedUntil;
   delete obj.lastFailedLogin;
   return obj;

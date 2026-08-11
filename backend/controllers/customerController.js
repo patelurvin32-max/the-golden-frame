@@ -8,11 +8,11 @@ const { Bill } = require('../models/Billing');
 const Reservation = require('../models/Reservation');
 const Session = require('../models/Session');
 const Wallet = require('../models/Wallet');
-const { Inventory, MenuItem, StockTransaction } = require('../models/Operations');
+const { Inventory, MenuItem, StockTransaction, MenuCategory } = require('../models/Operations');
 const Branch = require('../models/Branch');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
-const { ROLES } = require('../config/constants');
+const { ROLES, BUSINESS_SHORT_CODE } = require('../config/constants');
 const { createBranchNotification } = require('../services/notificationService');
 
 const parseCurrencyValue = (value) => {
@@ -86,12 +86,22 @@ const generateOrderId = async (branchId, date = new Date()) => {
   return `${dateStr}/${timestamp}-${random}`;
 };
 
-// Helper function to generate Customer ID atomically
+// Helper function to generate Customer ID atomically (per-branch counter, branch-configured prefix)
 const generateCustomerId = async (branchId) => {
-  let counterKey = 'customer_seq';
+  // Look up the branch-specific Settings to get the configured Short Business Name
+  let prefix = BUSINESS_SHORT_CODE; // fallback
   if (branchId) {
-    counterKey = `customer_seq_${branchId}`;
+    try {
+      const { Settings } = require('../models/System');
+      const branchSettings = await Settings.findOne({ branch: branchId }).select('shortBusinessName').lean();
+      if (branchSettings?.shortBusinessName?.trim()) {
+        prefix = branchSettings.shortBusinessName.trim().toUpperCase();
+      }
+    } catch (_) { /* keep fallback prefix */ }
   }
+
+  // Use a per-branch counter key so sequences are independent across branches
+  const counterKey = branchId ? `customer_seq_branch_${branchId}` : 'customer_seq_global';
 
   let attempts = 0;
   while (attempts < 50) {
@@ -101,15 +111,16 @@ const generateCustomerId = async (branchId) => {
       { $inc: { seq: 1 } },
       { new: true, upsert: true }
     );
-    const customerId = `CUST${String(counter.seq).padStart(6, '0')}`;
+    const customerId = `${prefix}${String(counter.seq).padStart(5, '0')}`;
 
-    const exists = await Customer.findOne({ branch: branchId, customerId });
+    // Uniqueness is enforced at schema level; this check is an extra safety guard
+    const exists = await Customer.findOne({ customerId });
     if (!exists) {
       return customerId;
     }
   }
 
-  return `CUST${Date.now()}`;
+  return `${prefix}${Date.now()}`;
 };
 
 // Helper function to enrich order document with pendingPlayers list
@@ -198,8 +209,9 @@ const enrichOrderWithPendingPlayers = async (orderDoc) => {
 };
 
 // GET /api/customers/stats
+// GET /api/customers/stats
 exports.getCustomerStats = asyncHandler(async (req, res) => {
-  const filter = { isActive: true };
+  const filter = { isActive: true, billAmount: { $gt: 0 } };
   const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
   
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
@@ -235,8 +247,9 @@ exports.getCustomerStats = asyncHandler(async (req, res) => {
 });
 
 // GET /api/customers?search=&branch=&page=&limit=&sortBy=&sortOrder=
+// GET /api/customers?search=&branch=&page=&limit=&sortBy=&sortOrder=
 exports.getCustomers = asyncHandler(async (req, res) => {
-  const filter = { isActive: true };
+  const filter = { isActive: true, billAmount: { $gt: 0 } };
   const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
   
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
@@ -272,7 +285,11 @@ exports.getCustomers = asyncHandler(async (req, res) => {
   
   // Filter by payment status if provided
   if (req.query.paymentStatus) {
-    filter.paymentStatus = req.query.paymentStatus;
+    if (req.query.paymentStatus.includes(',')) {
+      filter.paymentStatus = { $in: req.query.paymentStatus.split(',') };
+    } else {
+      filter.paymentStatus = req.query.paymentStatus;
+    }
   } else {
     // On the main Customers page (no paymentStatus filter), exclude sub-orders generated for pending players,
     // as well as orders originating strictly from Billing/Sessions.
@@ -290,7 +307,25 @@ exports.getCustomers = asyncHandler(async (req, res) => {
   const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
   const sort = { [sortBy]: sortOrder };
 
-  const [orders, total] = await Promise.all([
+  const overdueDate = new Date();
+  overdueDate.setDate(overdueDate.getDate() - 30); // 30 days ago
+
+  const mongoose = require('mongoose');
+  const aggregateFilter = { ...filter };
+  
+  if (aggregateFilter.branch) {
+    if (aggregateFilter.branch.$in) {
+      aggregateFilter.branch.$in = aggregateFilter.branch.$in.map(b => new mongoose.Types.ObjectId(b));
+    } else {
+      aggregateFilter.branch = new mongoose.Types.ObjectId(aggregateFilter.branch);
+    }
+  }
+  
+  if (aggregateFilter.menuCategoryId) {
+    aggregateFilter.menuCategoryId = new mongoose.Types.ObjectId(aggregateFilter.menuCategoryId);
+  }
+
+  const [orders, total, statsResult] = await Promise.all([
     Order.find(filter)
       .sort(sort)
       .skip(skip)
@@ -302,7 +337,34 @@ exports.getCustomers = asyncHandler(async (req, res) => {
       .populate('table', 'name type')
       .lean(), // Use lean() for faster queries
     Order.countDocuments(filter),
+    Order.aggregate([
+      { $match: aggregateFilter },
+      {
+        $group: {
+          _id: null,
+          totalPendingAmount: { 
+            $sum: { 
+              $max: [0, { $subtract: [{ $ifNull: ["$billAmount", 0] }, { $ifNull: ["$totalPaid", 0] }] }] 
+            } 
+          },
+          totalPendingCustomers: { $sum: 1 },
+          overdueCustomersCount: {
+            $sum: { $cond: [{ $lt: ["$createdAt", overdueDate] }, 1, 0] }
+          },
+          highValueCustomersCount: {
+            $sum: { $cond: [{ $gt: [{ $ifNull: ["$billAmount", 0] }, 5000] }, 1, 0] }
+          }
+        }
+      }
+    ])
   ]);
+
+  const stats = statsResult[0] || {
+    totalPendingAmount: 0,
+    totalPendingCustomers: 0,
+    overdueCustomersCount: 0,
+    highValueCustomersCount: 0
+  };
 
   // Transform orders to match the expected customer structure for frontend compatibility
   const customers = await batchEnrichOrdersWithPendingPlayers(orders);
@@ -316,6 +378,7 @@ exports.getCustomers = asyncHandler(async (req, res) => {
     pages: Math.ceil(total / limit),
     limit,
     data: { customers },
+    stats,
   });
 });
 
@@ -345,16 +408,22 @@ exports.getCustomer = asyncHandler(async (req, res, next) => {
 // GET /api/customers/lookup/:phone?branch=...
 exports.lookupCustomer = asyncHandler(async (req, res) => {
   const { phone } = req.params;
+  const term = req.params.phone ? req.params.phone.trim() : '';
   const branchFilter = req.query.branch;
 
-  const customerQuery = { phone, isActive: true };
+  const isPhoneSearch = /^\d{10}$/.test(term);
+  const customerQuery = {
+    isActive: true,
+    ...(isPhoneSearch ? { phone: term } : { customerId: term.toUpperCase() })
+  };
+
   if (branchFilter) {
     customerQuery.branch = branchFilter;
   }
 
   const [customerDoc, walletDocs] = await Promise.all([
     Customer.findOne(customerQuery)
-      .select('customerId name phone email branch walletBalance notes')
+      .select('customerId name phone email address branch walletBalance notes')
       .populate('branch', 'name code')
       .lean(),
     Wallet.find({
@@ -508,7 +577,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
 
   // Validate stock and find customer concurrently
   const [menuItem, existingCustomer] = await Promise.all([
-    MenuItem.findById(req.body.menuItemId).populate('inventoryItem'),
+    req.body.menuItemId ? MenuItem.findById(req.body.menuItemId).populate('inventoryItem') : Promise.resolve(null),
     Customer.findOne({ phone: req.body.phone, isActive: true })
   ]);
 
@@ -529,6 +598,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       name: req.body.name,
       phone: req.body.phone,
       email: req.body.email,
+      address: req.body.address || '',
       branch: req.body.branch,
       notes: req.body.notes,
       favoriteGame: req.body.favoriteGame,
@@ -557,6 +627,109 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       await customer.save();
     }
   }
+
+  // Check if it's "Extra" category
+  let isExtra = false;
+  if (req.body.menuCategoryId) {
+    const category = await MenuCategory.findById(req.body.menuCategoryId).lean();
+    if (category && category.name && category.name.toLowerCase() === 'extra') {
+      isExtra = true;
+    }
+  }
+
+  // Handle "Extra" automatic settlement
+  if (isExtra) {
+    // For "Extra", use the bill amount as the payment amount.
+    let amountToProcess = billAmount;
+    
+    if (amountToProcess > 0) {
+      // 1. Pay off pending payments
+      const pendingOrders = await Order.find({
+        customer: customer._id,
+        paymentStatus: { $in: ['unpaid', 'partial'] },
+        isActive: true
+      }).sort({ createdAt: 1 }); // Oldest first
+
+      for (const pOrder of pendingOrders) {
+        if (amountToProcess <= 0) break;
+
+        const pBill = parseCurrencyValue(pOrder.billAmount) || 0;
+        const pPaid = parseCurrencyValue(pOrder.totalPaid) || 0;
+        const pPending = Math.max(0, pBill - pPaid);
+
+        if (pPending > 0) {
+          const deduction = Math.min(pPending, amountToProcess);
+          pOrder.totalPaid = pPaid + deduction;
+          pOrder.amountReceived = parseCurrencyValue(pOrder.amountReceived || 0) + deduction;
+          pOrder.paymentStatus = (pOrder.totalPaid >= pBill) ? 'paid' : 'partial';
+          
+          await pOrder.save();
+
+          const lastPayment = await PaymentHistory.findOne({ order: pOrder._id }).sort('-paymentNumber');
+          const nextPaymentNumber = lastPayment ? (lastPayment.paymentNumber || 0) + 1 : 1;
+
+          // Log payment history for this order
+          await PaymentHistory.create({
+            order: pOrder._id,
+            orderId: pOrder.orderId,
+            customer: customer._id,
+            customerName: customer.name,
+            customerPhone: customer.phone,
+            branch: pOrder.branch,
+            paymentMethod: paymentMethod || 'cash',
+            cashAmount: (!paymentMethod || paymentMethod === 'cash') ? deduction : 0,
+            onlineAmount: paymentMethod === 'upi' ? deduction : 0,
+            walletAmount: paymentMethod === 'wallet' ? deduction : 0,
+            totalPaid: deduction,
+            billAmount: pBill,
+            pendingAmount: Math.max(0, pBill - pOrder.totalPaid),
+            paymentStatus: pOrder.paymentStatus,
+            notes: 'Automatic deduction from Extra category',
+            createdBy: req.user._id,
+            paymentNumber: nextPaymentNumber
+          });
+
+          amountToProcess -= deduction;
+        }
+      }
+
+      // 2. Add remaining amount to wallet
+      if (amountToProcess > 0) {
+        await syncCustomerWalletBalance(customer);
+        customer.walletBalance = (customer.walletBalance || 0) + amountToProcess;
+        await customer.save();
+
+        const { generateWalletId } = require('./walletManagementController');
+        const walletId = await generateWalletId(req.body.branch);
+        await Wallet.create({
+          walletId,
+          mobileNumber: customer.phone,
+          name: customer.name,
+          amount: amountToProcess,
+          totalPaid: amountToProcess,
+          paymentMethod: paymentMethod || 'cash',
+          paymentStatus: 'paid',
+          type: 'credit',
+          transactionType: 'top_up',
+          notes: 'Automatic wallet top-up from Extra category',
+          createdBy: req.user._id,
+          branch: req.body.branch
+        });
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        order: {
+          _id: 'auto-settled',
+          orderId: 'AUTO-SETTLED',
+          message: 'Extra amount successfully processed automatically.'
+        }
+      }
+    });
+  }
+
   
   // Validate wallet balance if using wallet
   if (walletAmount > 0) {
@@ -730,6 +903,22 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       paymentMethod: req.body.paymentMethod,
       description: `Extra payment added to wallet for order ${order.orderId}`,
       createdBy: req.user._id,
+    }));
+    
+    // Create actual Wallet entry so it appears in Wallet Management
+    const { generateWalletId } = require('./walletManagementController');
+    const walletId = await generateWalletId(req.body.branch);
+    writePromises.push(Wallet.create({
+      walletId,
+      name: customer.name,
+      mobileNumber: customer.phone,
+      amount: extraAmount,
+      totalPaid: extraAmount,
+      paymentMethod: req.body.paymentMethod || 'cash',
+      paymentStatus: 'paid',
+      branch: req.body.branch,
+      createdBy: req.user._id,
+      notes: `Auto top-up from extra payment for order ${order.orderId}`
     }));
   }
 
@@ -1081,6 +1270,9 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
     }
     if (req.body.email !== undefined) {
       customer.email = req.body.email.trim();
+    }
+    if (req.body.address !== undefined) {
+      customer.address = req.body.address;
     }
     await customer.save();
   }
@@ -1537,13 +1729,26 @@ exports.deleteCustomer = asyncHandler(async (req, res, next) => {
 
 // GET /api/customers/super-admin
 exports.getSuperAdminCustomers = asyncHandler(async (req, res, next) => {
-  if (req.user.role !== ROLES.SUPER_ADMIN) {
-    return next(new AppError('Only Super Admin can access central customer management.', 403));
+  const isSuperAdmin = req.user.role === ROLES.SUPER_ADMIN;
+  const isBranchAdmin = req.user.role === ROLES.BRANCH_ADMIN;
+
+  if (!isSuperAdmin && !isBranchAdmin) {
+    return next(new AppError('Access denied.', 403));
   }
+
+  // Branch Admin can only see their own assigned branches
+  const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
 
   const filter = { isActive: true };
   if (req.query.branch) {
+    // For Branch Admin: make sure requested branch is in their allowed list
+    if (isBranchAdmin && !userBranchIds.includes(req.query.branch.toString())) {
+      return next(new AppError('Access denied to this branch.', 403));
+    }
     filter.branch = req.query.branch;
+  } else if (isBranchAdmin) {
+    // Branch Admin with no branch filter: restrict to their branches only
+    filter.branch = { $in: userBranchIds };
   }
 
   if (req.query.search) {
@@ -1627,12 +1832,15 @@ exports.getSuperAdminCustomers = asyncHandler(async (req, res, next) => {
 
 // PATCH /api/customers/super-admin/:id
 exports.updateSuperAdminCustomer = asyncHandler(async (req, res, next) => {
-  if (req.user.role !== ROLES.SUPER_ADMIN) {
-    return next(new AppError('Only Super Admin can edit customer information.', 403));
+  const isSuperAdmin = req.user.role === ROLES.SUPER_ADMIN;
+  const isBranchAdmin = req.user.role === ROLES.BRANCH_ADMIN;
+
+  if (!isSuperAdmin && !isBranchAdmin) {
+    return next(new AppError('Access denied.', 403));
   }
 
   const { id } = req.params;
-  const { name, phone } = req.body;
+  const { name, phone, email, address } = req.body;
 
   if (!name || typeof name !== 'string' || name.trim() === '') {
     return next(new AppError('Customer Name is required.', 400));
@@ -1651,6 +1859,15 @@ exports.updateSuperAdminCustomer = asyncHandler(async (req, res, next) => {
   const customer = await Customer.findById(id);
   if (!customer || !customer.isActive) {
     return next(new AppError('Customer not found.', 404));
+  }
+
+  // Branch Admin can only edit customers in their own branches
+  if (isBranchAdmin) {
+    const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
+    const custBranchId = (customer.branch?._id || customer.branch).toString();
+    if (!userBranchIds.includes(custBranchId)) {
+      return next(new AppError('Access denied: customer does not belong to your branch.', 403));
+    }
   }
 
   const branchId = customer.branch; // Target branch only!
@@ -1678,6 +1895,8 @@ exports.updateSuperAdminCustomer = asyncHandler(async (req, res, next) => {
   // 1. Update Customer doc
   customer.name = newName;
   customer.phone = cleanedPhone;
+  if (email !== undefined) customer.email = email;
+  if (address !== undefined) customer.address = address;
   updatePromises.push(customer.save());
 
   // 2. Update Bill collection (in this branch only)
@@ -1852,6 +2071,51 @@ exports.updateSuperAdminCustomer = asyncHandler(async (req, res, next) => {
     success: true,
     message: 'Customer information updated and synchronized across all modules for this branch.',
     data: { customer: updatedCustomer },
+  });
+});
+
+// POST /api/customers/super-admin — Super Admin creates a customer for any branch
+exports.createSuperAdminCustomer = asyncHandler(async (req, res, next) => {
+  const isSuperAdmin = req.user.role === ROLES.SUPER_ADMIN;
+  const isBranchAdmin = req.user.role === ROLES.BRANCH_ADMIN;
+
+  if (!isSuperAdmin && !isBranchAdmin) {
+    return next(new AppError('Access denied.', 403));
+  }
+
+  const { name, phone, email, address, branch } = req.body;
+
+  // Branch Admin can only create customers for their own branches
+  if (isBranchAdmin) {
+    const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
+    if (!userBranchIds.includes(branch.toString())) {
+      return next(new AppError('Access denied: you can only create customers for your own branch.', 403));
+    }
+  }
+
+  const existing = await Customer.findOne({ branch, phone });
+  if (existing) {
+    return next(new AppError('A customer with this phone number already exists in this branch.', 400));
+  }
+
+  const customerId = await generateCustomerId(branch);
+
+  const customer = await Customer.create({
+    customerId,
+    name,
+    phone,
+    email: email || undefined,
+    address: address || '',
+    branch,
+    sourceModule: 'Customer',
+  });
+
+  const populated = await Customer.findById(customer._id).populate('branch', 'name code').lean();
+
+  res.status(201).json({
+    success: true,
+    message: 'Customer created successfully.',
+    data: { customer: populated },
   });
 });
 

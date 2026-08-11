@@ -32,7 +32,7 @@ exports.getTables = asyncHandler(async (req, res) => {
       populate: [
         { path: 'menuCategoryId', select: 'name' },
         { path: 'menuItemId', select: 'name price' },
-        { path: 'customer', select: 'name phone' }
+        { path: 'customer', select: 'name phone customerId' }
       ]
     })
     .sort('name')
@@ -51,7 +51,7 @@ exports.getTable = asyncHandler(async (req, res, next) => {
       populate: [
         { path: 'menuCategoryId', select: 'name' },
         { path: 'menuItemId', select: 'name price' },
-        { path: 'customer', select: 'name phone' }
+        { path: 'customer', select: 'name phone customerId' }
       ]
     });
   if (!table) return next(new AppError('Table not found.', 404));

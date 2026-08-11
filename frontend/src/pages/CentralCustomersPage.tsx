@@ -1,18 +1,26 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { customerService, branchService } from '@/services';
+import { useAuthStore } from '@/store';
 import {
   Button, Card, CardContent, Input, Label, Select,
   PageHeader, Skeleton, EmptyState, Table2, TableHeader, TableBody,
   TableRow, TableHead, TableCell, Badge, Modal, useToast
 } from '@/components/ui';
-import { Search, RefreshCw, Edit3, Phone, Building2, Calendar, ShieldCheck, UserCheck } from 'lucide-react';
-import { formatDateTime, cn } from '@/utils';
+import { Search, RefreshCw, Edit3, Phone, Building2, UserCheck, Plus, Mail, MapPin, Wallet, AlertCircle } from 'lucide-react';
+import { formatCurrency, cn } from '@/utils';
 import type { Customer } from '@/types';
 
 export function CentralCustomersPage() {
   const qc = useQueryClient();
   const toast = useToast();
+  const { user } = useAuthStore();
+
+  // Branch Admin: locked to their own branch(es)
+  const isBranchAdmin = user?.role === 'branch_admin';
+  const userBranchId = isBranchAdmin
+    ? ((user?.branches?.[0] as any)?._id || user?.branches?.[0] || '') as string
+    : '';
 
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(25);
@@ -22,8 +30,13 @@ export function CentralCustomersPage() {
 
   // Modal state
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', phone: '' });
+  const [editForm, setEditForm] = useState({ name: '', phone: '', email: '', address: '' });
   const [phoneError, setPhoneError] = useState('');
+
+  // Add Customer modal state
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addForm, setAddForm] = useState({ name: '', phone: '', email: '', address: '', branch: '' });
+  const [addPhoneError, setAddPhoneError] = useState('');
 
   // Debounce search input
   useEffect(() => {
@@ -33,6 +46,13 @@ export function CentralCustomersPage() {
     }, 300);
     return () => clearTimeout(timer);
   }, [search]);
+
+  // Branch Admin: auto-lock selected branch to their assigned branch
+  useEffect(() => {
+    if (isBranchAdmin && userBranchId) {
+      setSelectedBranch(userBranchId);
+    }
+  }, [isBranchAdmin, userBranchId]);
 
   // Fetch branches
   const { data: branches = [] } = useQuery({
@@ -58,7 +78,7 @@ export function CentralCustomersPage() {
 
   // Edit mutation
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: { name: string; phone: string } }) =>
+    mutationFn: ({ id, data }: { id: string; data: { name: string; phone: string; email?: string; address?: string } }) =>
       customerService.updateSuperAdminCustomer(id, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['superAdminCustomers'] });
@@ -66,7 +86,7 @@ export function CentralCustomersPage() {
       const branchObj = typeof editingCustomer?.branch === 'object' ? editingCustomer.branch : null;
       const branchName = branchObj?.name || 'the selected branch';
       toast.success(`Customer information updated and synchronized across all modules in ${branchName}!`);
-      closeModal();
+      closeEditModal();
     },
     onError: (err: any) => {
       const msg = err?.response?.data?.message || 'Failed to update customer information.';
@@ -74,23 +94,41 @@ export function CentralCustomersPage() {
     },
   });
 
+  // Create mutation (Super Admin)
+  const createMutation = useMutation({
+    mutationFn: (data: { name: string; phone: string; email?: string; address?: string; branch: string }) =>
+      customerService.createSuperAdminCustomer(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['superAdminCustomers'] });
+      qc.invalidateQueries({ queryKey: ['customers'] });
+      toast.success('Customer created successfully!');
+      closeAddModal();
+    },
+    onError: (err: any) => {
+      const msg = err?.response?.data?.message || 'Failed to create customer.';
+      toast.error(msg);
+    },
+  });
+
+  // ── Edit modal handlers ──
   const openEditModal = (customer: Customer) => {
     setEditingCustomer(customer);
     setEditForm({
       name: customer.name || '',
       phone: customer.phone || '',
+      email: customer.email || '',
+      address: customer.address || '',
     });
     setPhoneError('');
   };
 
-  const closeModal = () => {
+  const closeEditModal = () => {
     setEditingCustomer(null);
-    setEditForm({ name: '', phone: '' });
+    setEditForm({ name: '', phone: '', email: '', address: '' });
     setPhoneError('');
   };
 
   const handlePhoneChange = (val: string) => {
-    // Restrict strictly to numeric input and max 10 digits
     const cleaned = val.replace(/\D/g, '').slice(0, 10);
     setEditForm((prev) => ({ ...prev, phone: cleaned }));
     if (cleaned.length > 0 && cleaned.length !== 10) {
@@ -118,25 +156,59 @@ export function CentralCustomersPage() {
       data: {
         name: nameTrimmed,
         phone: editForm.phone,
+        email: editForm.email.trim() || undefined,
+        address: editForm.address,
       },
     });
   };
 
-  const getSourceBadgeVariant = (source?: string): 'info' | 'success' | 'warning' | 'danger' | 'default' | 'outline' => {
-    switch (source) {
-      case 'Customer':
-        return 'info';
-      case 'Billing':
-        return 'success';
-      case 'Booking':
-        return 'warning';
-      case 'Live Tables':
-        return 'default';
-      case 'Pending Payments':
-        return 'danger';
-      default:
-        return 'outline';
+  // ── Add modal handlers ──
+  const openAddModal = () => {
+    // Branch Admin: pre-fill and lock the branch to their own
+    setAddForm({ name: '', phone: '', email: '', address: '', branch: isBranchAdmin ? userBranchId : '' });
+    setAddPhoneError('');
+    setShowAddModal(true);
+  };
+
+  const closeAddModal = () => {
+    setShowAddModal(false);
+    setAddForm({ name: '', phone: '', email: '', address: '', branch: '' });
+    setAddPhoneError('');
+  };
+
+  const handleAddPhoneChange = (val: string) => {
+    const cleaned = val.replace(/\D/g, '').slice(0, 10);
+    setAddForm((prev) => ({ ...prev, phone: cleaned }));
+    if (cleaned.length > 0 && cleaned.length !== 10) {
+      setAddPhoneError('Mobile number must be exactly 10 digits.');
+    } else {
+      setAddPhoneError('');
     }
+  };
+
+  const handleAddSave = () => {
+    const nameTrimmed = addForm.name.trim();
+    if (!nameTrimmed) {
+      toast.error('Customer Name is required.');
+      return;
+    }
+    if (!addForm.phone || addForm.phone.length !== 10) {
+      setAddPhoneError('Mobile number must contain exactly 10 numeric digits.');
+      toast.error('Mobile number must contain exactly 10 numeric digits.');
+      return;
+    }
+    if (!addForm.branch) {
+      toast.error('Please select a branch.');
+      return;
+    }
+
+    createMutation.mutate({
+      name: nameTrimmed,
+      phone: addForm.phone,
+      email: addForm.email.trim() || undefined,
+      address: addForm.address,
+      branch: addForm.branch,
+    });
   };
 
   return (
@@ -144,23 +216,18 @@ export function CentralCustomersPage() {
       <PageHeader
         title="Central Customers Management"
         actions={
-          <Button variant="outline" size="sm" onClick={() => refetch()} loading={isFetching}>
-            <RefreshCw className={cn("h-4 w-4 mr-1.5", isFetching && "animate-spin")} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={openAddModal}>
+              <Plus className="h-4 w-4 mr-1.5" />
+              Add Customer
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => refetch()} loading={isFetching}>
+              <RefreshCw className={cn("h-4 w-4 mr-1.5", isFetching && "animate-spin")} />
+              Refresh
+            </Button>
+          </div>
         }
       />
-
-      {/* Super Admin Notice Banner */}
-      {/* <div className="flex items-center gap-3 p-4 rounded-xl border border-blue-500/20 bg-blue-500/10 text-blue-400 text-sm">
-        <ShieldCheck className="h-5 w-5 flex-shrink-0" />
-        <div>
-          <p className="font-semibold">Super Admin Exclusive Module</p>
-          <p className="text-xs text-blue-300/80">
-            Correcting a customer's name or mobile number here will automatically update all referenced records (Billing, Bookings, Live Tables, Pending Payments, Wallets, Reports) <strong>strictly within that customer's branch</strong>. Other branches remain completely independent.
-          </p>
-        </div>
-      </div> */}
 
       {/* Search & Filter Bar */}
       <Card>
@@ -176,25 +243,27 @@ export function CentralCustomersPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-            {/* Branch Filter */}
-            <div className="flex items-center gap-2 min-w-[200px] flex-1 md:flex-none">
-              <Building2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-              <Select
-                value={selectedBranch}
-                onChange={(e) => {
-                  setSelectedBranch(e.target.value);
-                  setPage(1);
-                }}
-                className="w-full"
-              >
-                <option value="">All Branches</option>
-                {branches.map((b) => (
-                  <option key={b._id} value={b._id}>
-                    {b.name} ({b.code})
-                  </option>
-                ))}
-              </Select>
-            </div>
+            {/* Branch Filter — hidden for Branch Admin (they see only their branch) */}
+            {!isBranchAdmin && (
+              <div className="flex items-center gap-2 min-w-[200px] flex-1 md:flex-none">
+                <Building2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                <Select
+                  value={selectedBranch}
+                  onChange={(e) => {
+                    setSelectedBranch(e.target.value);
+                    setPage(1);
+                  }}
+                  className="w-full"
+                >
+                  <option value="">All Branches</option>
+                  {branches.map((b) => (
+                    <option key={b._id} value={b._id}>
+                      {b.name} ({b.code})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -205,29 +274,34 @@ export function CentralCustomersPage() {
           <Table2>
             <TableHeader>
               <TableRow>
-                <TableHead>Customer Name</TableHead>
+                <TableHead>Customer ID</TableHead>
+                <TableHead>Name</TableHead>
+                {!isBranchAdmin && <TableHead>Branch</TableHead>}
                 <TableHead>Mobile Number</TableHead>
-                <TableHead>Branch</TableHead>
-                <TableHead>Created At</TableHead>
-                <TableHead>Source Module</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead>Address</TableHead>
+                <TableHead className="text-right">Wallet Balance</TableHead>
+                <TableHead className="text-right">Pending Payment</TableHead>
+                <TableHead className="text-right">Edit</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
                 [...Array(5)].map((_, i) => (
                   <TableRow key={i}>
+                    <TableCell><Skeleton className="h-6 w-24" /></TableCell>
                     <TableCell><Skeleton className="h-10 w-44" /></TableCell>
-                    <TableCell><Skeleton className="h-6 w-28" /></TableCell>
-                    <TableCell><Skeleton className="h-6 w-24" /></TableCell>
+                    {!isBranchAdmin && <TableCell><Skeleton className="h-6 w-28" /></TableCell>}
+                    <TableCell><Skeleton className="h-6 w-36" /></TableCell>
                     <TableCell><Skeleton className="h-6 w-32" /></TableCell>
-                    <TableCell><Skeleton className="h-6 w-24" /></TableCell>
+                    <TableCell className="text-right"><Skeleton className="h-6 w-20 ml-auto" /></TableCell>
+                    <TableCell className="text-right"><Skeleton className="h-6 w-20 ml-auto" /></TableCell>
                     <TableCell className="text-right"><Skeleton className="h-8 w-16 ml-auto" /></TableCell>
                   </TableRow>
                 ))
               ) : customers.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="h-48 text-center">
+                  <TableCell colSpan={isBranchAdmin ? 7 : 8} className="h-48 text-center">
                     <EmptyState
                       icon={<UserCheck className="h-8 w-8" />}
                       title="No customers found"
@@ -242,11 +316,15 @@ export function CentralCustomersPage() {
               ) : (
                 customers.map((cust) => {
                   const branchObj = typeof cust.branch === 'object' ? cust.branch : null;
-                  const branchDisplay = branchObj ? `${branchObj.name} (${branchObj.code})` : 'Branch';
 
                   return (
                     <TableRow key={cust._id} className="hover:bg-accent/40 transition-colors">
-                      {/* Customer Name */}
+                      {/* Customer ID */}
+                      <TableCell className="font-mono text-sm text-muted-foreground">
+                        {cust.customerId || '—'}
+                      </TableCell>
+
+                      {/* Name */}
                       <TableCell className="font-medium">
                         <div className="flex items-center gap-3">
                           <div className="h-9 w-9 rounded-xl gradient-brand flex items-center justify-center text-white font-semibold text-sm flex-shrink-0 shadow-md shadow-blue-500/20">
@@ -254,10 +332,16 @@ export function CentralCustomersPage() {
                           </div>
                           <div>
                             <p className="font-semibold text-foreground leading-tight">{cust.name}</p>
-                            <p className="text-xs text-muted-foreground font-mono">{cust.customerId || cust._id}</p>
                           </div>
                         </div>
                       </TableCell>
+
+                      {/* Branch - only for Super Admin */}
+                      {!isBranchAdmin && (
+                        <TableCell className="text-sm">
+                          {branchObj ? `${branchObj.name} (${branchObj.code})` : '—'}
+                        </TableCell>
+                      )}
 
                       {/* Mobile Number */}
                       <TableCell>
@@ -267,30 +351,37 @@ export function CentralCustomersPage() {
                         </div>
                       </TableCell>
 
-                      {/* Branch */}
-                      <TableCell>
-                        <Badge variant="outline" className="font-medium bg-accent/50">
-                          <Building2 className="h-3 w-3 mr-1 text-blue-400" />
-                          {branchDisplay}
-                        </Badge>
+                      {/* Email */}
+                      <TableCell className="text-sm text-muted-foreground">
+                        {cust.email || '—'}
                       </TableCell>
 
-                      {/* Created At */}
-                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                        <div className="flex items-center gap-1.5">
-                          <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-                          <span>{cust.createdAt ? formatDateTime(cust.createdAt) : '—'}</span>
-                        </div>
+                      {/* Address */}
+                      <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate" title={cust.address || ''}>
+                        {cust.address || '—'}
                       </TableCell>
 
-                      {/* Source Module */}
-                      <TableCell>
-                        <Badge variant={getSourceBadgeVariant(cust.sourceModule)}>
-                          {cust.sourceModule || 'Customer'}
-                        </Badge>
+                      {/* Wallet Balance */}
+                      <TableCell className="text-right">
+                        <span className={cn(
+                          'font-semibold text-sm tabular-nums',
+                          (cust.walletBalance || 0) > 0 ? 'text-emerald-400' : 'text-muted-foreground'
+                        )}>
+                          {formatCurrency(cust.walletBalance || 0)}
+                        </span>
                       </TableCell>
 
-                      {/* Actions */}
+                      {/* Pending Payment */}
+                      <TableCell className="text-right">
+                        <span className={cn(
+                          'font-semibold text-sm tabular-nums',
+                          (cust.outstandingBalance || 0) > 0 ? 'text-red-400' : 'text-muted-foreground'
+                        )}>
+                          {formatCurrency(cust.outstandingBalance || 0)}
+                        </span>
+                      </TableCell>
+
+                      {/* Edit */}
                       <TableCell className="text-right">
                         <Button
                           size="sm"
@@ -365,11 +456,11 @@ export function CentralCustomersPage() {
         )}
       </Card>
 
-      {/* Edit Customer Modal */}
+      {/* ── Edit Customer Modal ── */}
       {editingCustomer && (
         <Modal
           open={!!editingCustomer}
-          onClose={closeModal}
+          onClose={closeEditModal}
           title="Edit Customer Information"
         >
           <div className="space-y-5 py-2">
@@ -378,19 +469,16 @@ export function CentralCustomersPage() {
               <Building2 className="h-4 w-4 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="font-semibold">Target Branch: {typeof editingCustomer.branch === 'object' ? editingCustomer.branch.name : 'Selected Branch'}</p>
-                <p className="text-amber-300/80 mt-0.5">
-                  Updating this customer will synchronize changes across all modules in <strong>only this branch</strong>. Records in other branches (e.g. DNH vs Daman) will remain untouched.
-                </p>
               </div>
             </div>
 
             {/* Customer Name */}
             <div className="space-y-1.5">
-              <Label htmlFor="customerName" className="font-semibold">
+              <Label htmlFor="editName" className="font-semibold">
                 Customer Name <span className="text-destructive">*</span>
               </Label>
               <Input
-                id="customerName"
+                id="editName"
                 value={editForm.name}
                 onChange={(e) => setEditForm((prev) => ({ ...prev, name: e.target.value }))}
                 placeholder="Enter customer full name..."
@@ -400,11 +488,11 @@ export function CentralCustomersPage() {
 
             {/* Mobile Number */}
             <div className="space-y-1.5">
-              <Label htmlFor="mobileNumber" className="font-semibold">
+              <Label htmlFor="editPhone" className="font-semibold">
                 Mobile Number <span className="text-destructive">*</span>
               </Label>
               <Input
-                id="mobileNumber"
+                id="editPhone"
                 type="tel"
                 value={editForm.phone}
                 onChange={(e) => handlePhoneChange(e.target.value)}
@@ -417,9 +505,32 @@ export function CentralCustomersPage() {
               )}
             </div>
 
+            {/* Email */}
+            <div className="space-y-1.5">
+              <Label htmlFor="editEmail" className="font-semibold">Email</Label>
+              <Input
+                id="editEmail"
+                type="email"
+                value={editForm.email}
+                onChange={(e) => setEditForm((prev) => ({ ...prev, email: e.target.value }))}
+                placeholder="Enter email address..."
+              />
+            </div>
+
+            {/* Address */}
+            <div className="space-y-1.5">
+              <Label htmlFor="editAddress" className="font-semibold">Address</Label>
+              <Input
+                id="editAddress"
+                value={editForm.address}
+                onChange={(e) => setEditForm((prev) => ({ ...prev, address: e.target.value }))}
+                placeholder="Enter address..."
+              />
+            </div>
+
             {/* Action Buttons */}
             <div className="flex items-center justify-end gap-3 pt-4 border-t border-border">
-              <Button variant="outline" onClick={closeModal} disabled={updateMutation.isPending}>
+              <Button variant="outline" onClick={closeEditModal} disabled={updateMutation.isPending}>
                 Cancel
               </Button>
               <Button
@@ -434,6 +545,106 @@ export function CentralCustomersPage() {
           </div>
         </Modal>
       )}
+
+      {/* ── Add Customer Modal ── */}
+      <Modal
+        open={showAddModal}
+        onClose={closeAddModal}
+        title="Add New Customer"
+      >
+        <div className="space-y-5 py-2">
+          {/* Customer Name */}
+          <div className="space-y-1.5">
+            <Label htmlFor="addName" className="font-semibold">
+              Customer Name <span className="text-destructive">*</span>
+            </Label>
+            <Input
+              id="addName"
+              value={addForm.name}
+              onChange={(e) => setAddForm((prev) => ({ ...prev, name: e.target.value }))}
+              placeholder="Enter customer full name..."
+              autoFocus
+            />
+          </div>
+
+          {/* Mobile Number */}
+          <div className="space-y-1.5">
+            <Label htmlFor="addPhone" className="font-semibold">
+              Mobile Number <span className="text-destructive">*</span>
+            </Label>
+            <Input
+              id="addPhone"
+              type="tel"
+              value={addForm.phone}
+              onChange={(e) => handleAddPhoneChange(e.target.value)}
+              placeholder="Enter 10-digit mobile number..."
+              maxLength={10}
+              className={cn(addPhoneError && 'border-destructive focus-visible:ring-destructive')}
+            />
+            {addPhoneError && (
+              <p className="text-xs text-destructive font-medium">{addPhoneError}</p>
+            )}
+          </div>
+
+          {/* Email */}
+          <div className="space-y-1.5">
+            <Label htmlFor="addEmail" className="font-semibold">Email</Label>
+            <Input
+              id="addEmail"
+              type="email"
+              value={addForm.email}
+              onChange={(e) => setAddForm((prev) => ({ ...prev, email: e.target.value }))}
+              placeholder="Enter email address..."
+            />
+          </div>
+
+          {/* Address */}
+          <div className="space-y-1.5">
+            <Label htmlFor="addAddress" className="font-semibold">Address</Label>
+            <Input
+              id="addAddress"
+              value={addForm.address}
+              onChange={(e) => setAddForm((prev) => ({ ...prev, address: e.target.value }))}
+              placeholder="Enter address..."
+            />
+          </div>
+
+          {/* Branch — only shown for Super Admin */}
+          {!isBranchAdmin && (
+            <div className="space-y-1.5">
+              <Label htmlFor="addBranch" className="font-semibold">
+                Branch <span className="text-destructive">*</span>
+              </Label>
+              <Select
+                value={addForm.branch}
+                onChange={(e) => setAddForm((prev) => ({ ...prev, branch: e.target.value }))}
+              >
+                <option value="">Select branch</option>
+                {branches.map((b) => (
+                  <option key={b._id} value={b._id}>
+                    {b.name} ({b.code})
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
+
+          {/* Action Buttons */}
+          <div className="flex items-center justify-end gap-3 pt-4 border-t border-border">
+            <Button variant="outline" onClick={closeAddModal} disabled={createMutation.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              onClick={handleAddSave}
+              loading={createMutation.isPending}
+              disabled={!addForm.name.trim() || addForm.phone.length !== 10 || !addForm.branch || !!addPhoneError}
+            >
+              Create Customer
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

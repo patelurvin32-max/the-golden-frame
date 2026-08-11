@@ -449,7 +449,7 @@ exports.createBill = asyncHandler(async (req, res, next) => {
   });
 
   const populated = await Bill.findById(bill._id)
-    .populate('customer', 'name phone')
+    .populate('customer', 'name phone customerId')
     .populate('branch', 'name')
     .populate('menuCategoryId', 'name')
     .populate('menuItemId', 'name');
@@ -506,7 +506,7 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
 // GET /api/bills/:id/pdf  — stream PDF invoice
 exports.downloadPDF = asyncHandler(async (req, res, next) => {
   const bill = await Bill.findById(req.params.id)
-    .populate('customer', 'name phone walletBalance createdAt')
+    .populate('customer', 'name phone customerId walletBalance createdAt')
     .populate('order', 'orderId createdAt paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid additionalPlayers')
     .populate('branch', 'name address phone')
     .populate('menuCategoryId', 'name')
@@ -584,7 +584,7 @@ exports.getBills = asyncHandler(async (req, res) => {
 
   const [bills, total] = await Promise.all([
     Bill.find(filter)
-      .populate('customer', 'name phone walletBalance')
+      .populate('customer', 'name phone customerId walletBalance')
       .populate('branch', 'name')
       .populate('createdBy', 'name')
       .populate('order', 'orderId paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid pendingPlayers notes')
@@ -629,7 +629,7 @@ exports.getBills = asyncHandler(async (req, res) => {
 exports.getBill = asyncHandler(async (req, res, next) => {
   const bill = await Bill.findById(req.params.id)
     .select('+paymentMethod +cashAmount +onlineAmount +walletAmount +amountReceived +pendingPaymentAmount +pendingPlayers +notes')
-    .populate('customer', 'name phone walletBalance')
+    .populate('customer', 'name phone customerId walletBalance')
     .populate('branch', 'name')
     .populate('order', 'orderId paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid pendingPlayers notes')
     .populate('menuCategoryId', 'name')
@@ -732,7 +732,7 @@ exports.updateBill = asyncHandler(async (req, res, next) => {
   });
 
   const populated = await Bill.findById(bill._id)
-    .populate('customer', 'name phone walletBalance')
+    .populate('customer', 'name phone customerId walletBalance')
     .populate('branch', 'name')
     .populate('order', 'paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid pendingPlayers notes')
     .populate({ path: 'session', populate: { path: 'table', select: 'name type' } })
@@ -750,7 +750,7 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
     order = await Order.findById(orderId)
       .populate('menuCategoryId', 'name')
       .populate('menuItemId', 'name price')
-      .populate('customer', 'name phone branch walletBalance')
+      .populate('customer', 'name phone customerId branch walletBalance')
       .populate('branch', 'name');
   } else if (customerId) {
     // The customer list page currently passes the row _id, which is an order id.
@@ -758,7 +758,7 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
     order = await Order.findById(customerId)
       .populate('menuCategoryId', 'name')
       .populate('menuItemId', 'name price')
-      .populate('customer', 'name phone branch walletBalance')
+      .populate('customer', 'name phone customerId branch walletBalance')
       .populate('branch', 'name');
 
     if (!order) {
@@ -767,7 +767,7 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
         order = await Order.findOne({ customer: customer._id })
           .populate('menuCategoryId', 'name')
           .populate('menuItemId', 'name price')
-          .populate('customer', 'name phone branch walletBalance')
+          .populate('customer', 'name phone customerId branch walletBalance')
           .populate('branch', 'name')
           .sort('-createdAt');
       }
@@ -864,7 +864,7 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
     ipAddress: req.ip,
   });
 
-  const populated = await Bill.findById(bill._id).populate('customer', 'name phone walletBalance').populate('branch', 'name');
+  const populated = await Bill.findById(bill._id).populate('customer', 'name phone customerId walletBalance').populate('branch', 'name');
   res.status(201).json({ success: true, data: { bill: populated } });
 });
 

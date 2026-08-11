@@ -450,7 +450,7 @@ export default function TablesPage() {
 
   });
 
-  const [startForm, setStartForm] = useState({ customerId: '', customerSearch: '', customerName: '', phoneNumber: '', extraPlayers: '' });
+  const [startForm, setStartForm] = useState({ customerDbId: '', customerDisplayId: '', customerSearch: '', customerName: '', phoneNumber: '', extraPlayers: '' });
   const [startSessionWalletBalance, setStartSessionWalletBalance] = useState(0);
 
   const [extendMinutes, setExtendMinutes] = useState(30);
@@ -469,7 +469,7 @@ export default function TablesPage() {
 
     : undefined);
 
-  // Auto-lookup wallet balance for Start Session modal when 10-digit mobile number is entered
+  // Auto-lookup wallet balance and Customer ID for Start Session modal when 10-digit mobile number is entered
   useEffect(() => {
     if (startForm.phoneNumber && startForm.phoneNumber.length === 10) {
       const branchToUse = tableBranch || (activeTable?.branch as any)?._id || (activeTable?.branch as any) || selectedBranch || undefined;
@@ -478,16 +478,19 @@ export default function TablesPage() {
           const customer = res.data.data.customer;
           if (customer) {
             setStartSessionWalletBalance(customer.walletBalance || 0);
-            if (!startForm.customerName && customer.name) {
-              setStartForm((f) => ({ ...f, customerName: customer.name }));
-            }
+            setStartForm((f) => ({ ...f, customerDbId: customer._id || '', customerDisplayId: customer.customerId || '', customerName: customer.name || '' }));
           } else {
             setStartSessionWalletBalance(0);
+            setStartForm((f) => ({ ...f, customerDbId: '', customerDisplayId: '' }));
           }
         })
-        .catch(() => setStartSessionWalletBalance(0));
+        .catch(() => {
+          setStartSessionWalletBalance(0);
+          setStartForm((f) => ({ ...f, customerDbId: '', customerDisplayId: '' }));
+        });
     } else {
       setStartSessionWalletBalance(0);
+      setStartForm((f) => ({ ...f, customerDbId: '', customerDisplayId: '' }));
     }
   }, [startForm.phoneNumber, tableBranch, activeTable?.branch, selectedBranch]);
 
@@ -753,7 +756,7 @@ export default function TablesPage() {
 
       setModal(null);
 
-      setStartForm({ customerId: '', customerSearch: '', customerName: '', phoneNumber: '', extraPlayers: '' });
+      setStartForm({ customerDbId: '', customerDisplayId: '', customerSearch: '', customerName: '', phoneNumber: '', extraPlayers: '' });
 
       setPhoneError('');
 
@@ -1329,6 +1332,16 @@ export default function TablesPage() {
         <div className="space-y-4">
 
           <div className="space-y-1.5">
+            <Label>Customer ID</Label>
+            <Input
+              value={startForm.customerDisplayId}
+              placeholder="Will be auto-generated or fetched"
+              readOnly
+              className="bg-muted cursor-not-allowed font-mono text-primary font-semibold"
+            />
+          </div>
+
+          <div className="space-y-1.5">
 
             <Label>Customer Name *</Label>
 
@@ -1474,7 +1487,7 @@ export default function TablesPage() {
 
                   tableId: activeTable._id, 
 
-                  customerId: startForm.customerId, 
+                  customerId: startForm.customerDbId, 
 
                   customerName: trimmedName, 
 
@@ -1583,15 +1596,16 @@ export default function TablesPage() {
             </div>
 
             {((activeTable?.currentSession as any)?.customerName || (activeTable?.currentSession as any)?.customer?.name) && (
-
               <div className="flex justify-between items-center">
-
                 <span className="text-muted-foreground">Customer</span>
-
                 <strong className="text-foreground">{(activeTable?.currentSession as any)?.customerName || (activeTable?.currentSession as any)?.customer?.name}</strong>
-
               </div>
-
+            )}
+            {(activeTable?.currentSession as any)?.customer?.customerId && (
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">Customer ID</span>
+                <strong className="text-foreground font-mono text-primary font-semibold">{(activeTable?.currentSession as any).customer.customerId}</strong>
+              </div>
             )}
 
             <div className="flex justify-between items-center">

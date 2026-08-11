@@ -45,7 +45,14 @@ exports.getUsers = asyncHandler(async (req, res) => {
     filter._id = req.user._id;
   }
 
-  const users = await User.find(filter).populate('branches', 'name code').sort('-createdAt');
+  const selectFields = req.user.role === ROLES.SUPER_ADMIN
+    ? '+failedLoginAttempts +lockedAt +lockedUntil'
+    : '';
+
+  const users = await User.find(filter)
+    .select(selectFields)
+    .populate('branches', 'name code')
+    .sort('-createdAt');
   res.status(200).json({ success: true, results: users.length, data: { users } });
 });
 
@@ -262,4 +269,35 @@ exports.deactivateUser = asyncHandler(async (req, res, next) => {
   });
 
   res.status(200).json({ success: true, message: 'User deactivated.' });
+});
+
+// PATCH /api/users/:id/reset-lockout — Super Admin only
+exports.resetLockout = asyncHandler(async (req, res, next) => {
+  const user = await User.findById(req.params.id)
+    .select('+failedLoginAttempts +lockedAt +lockedUntil +lastFailedLogin');
+
+  if (!user) return next(new AppError('User not found.', 404));
+
+  const wasLocked = !!(user.lockedUntil && user.lockedUntil > new Date());
+
+  user.failedLoginAttempts = 0;
+  user.lockedAt = null;
+  user.lockedUntil = null;
+  user.lastFailedLogin = null;
+  await user.save({ validateBeforeSave: false });
+
+  await logActivity({
+    userId: req.user._id,
+    action: 'user.reset_lockout',
+    entity: 'User',
+    entityId: user._id,
+    description: `${req.user.name} reset the account lockout for ${user.name}${wasLocked ? ' (was locked)' : ' (was not locked)'}`,
+    ipAddress: req.ip,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: `Lockout reset successfully for ${user.name}.`,
+    data: { user: user.toSafeObject() },
+  });
 });
