@@ -9,13 +9,19 @@ const { ROLES } = require('../config/constants');
 const router = express.Router();
 
 // Super Admin Central Customer Management Routes (Accessible strictly to Super Admin)
-router.get('/super-admin', protect, restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN), customerController.getSuperAdminCustomers);
+router.get('/super-admin', protect, restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN, ROLES.BRANCH_MANAGER, ROLES.STAFF), customerController.getSuperAdminCustomers);
+router.get(
+  '/super-admin/:id',
+  protect,
+  restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN),
+  customerController.getSuperAdminCustomerDetails
+);
 router.patch(
   '/super-admin/:id',
   protect,
   restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN),
   [
-    body('name').notEmpty().withMessage('Customer Name is required'),
+    body('name').notEmpty().withMessage('Customer Name is required').matches(/^[a-zA-Z\s]+$/).withMessage('Customer Name can only contain alphabetic characters and spaces'),
     body('phone').matches(/^\d{10}$/).withMessage('Mobile number must contain exactly 10 digits'),
   ],
   validate,
@@ -24,9 +30,9 @@ router.patch(
 router.post(
   '/super-admin',
   protect,
-  restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN),
+  restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN, ROLES.BRANCH_MANAGER, ROLES.STAFF),
   [
-    body('name').notEmpty().withMessage('Customer Name is required'),
+    body('name').notEmpty().withMessage('Customer Name is required').matches(/^[a-zA-Z\s]+$/).withMessage('Customer Name can only contain alphabetic characters and spaces'),
     body('phone').matches(/^\d{10}$/).withMessage('Mobile number must contain exactly 10 digits'),
     body('branch').notEmpty().isMongoId().withMessage('Branch is required'),
     body('email').optional({ checkFalsy: true }).isEmail().withMessage('Invalid email'),
@@ -110,6 +116,11 @@ router
 
 router.get('/lookup/:phone', protect, customerController.lookupCustomer);
 router.get('/stats', protect, requirePermission('customers:view'), customerController.getCustomerStats);
+
+// Transaction tracking routes
+router.get('/transactions', protect, restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN, ROLES.BRANCH_MANAGER), customerController.getTransactions);
+router.get('/timeline', protect, restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN, ROLES.BRANCH_MANAGER), customerController.getCustomerTimeline);
+router.get('/:id/transactions', protect, restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN, ROLES.BRANCH_MANAGER), customerController.getCustomerTransactions);
 
 router
   .route('/:id')

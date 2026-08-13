@@ -165,6 +165,14 @@ const start = async () => {
     await seedDefaults();
   }
 
+  // Run transaction history backfill/migration
+  try {
+    const backfillTransactions = require('./scripts/backfillTransactions');
+    await backfillTransactions();
+  } catch (err) {
+    console.error('Failed to run transaction backfill on startup:', err);
+  }
+
   const HOST = process.env.HOST || '0.0.0.0';
 
   server.listen(PORT, HOST, () => {

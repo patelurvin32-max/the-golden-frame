@@ -678,8 +678,6 @@ export default function TablesPage() {
 
     const off = onTableUpdate((updatedTable) => {
 
-      console.log('[TablesPage] Received socket update:', updatedTable);
-
 
 
       const patchCache = (key: (string | undefined)[]) => {

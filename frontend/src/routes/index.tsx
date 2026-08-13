@@ -25,6 +25,8 @@ const BranchesPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ defa
 const UsersPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.UsersPage })));
 const LogsPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.LogsPage })));
 const CentralCustomersPage = lazy(() => import('@/pages/CentralCustomersPage').then((m) => ({ default: m.CentralCustomersPage })));
+const TransactionsPage = lazy(() => import('@/pages/TransactionsPage'));
+
 
 // ── Auth guard ─────────────────────────────────────────────────────────────────
 function ProtectedRoute({ children, roles, permission }: { children: React.ReactNode; roles?: string[]; permission?: string }) {
@@ -122,7 +124,8 @@ export function AppRoutes() {
               <Route path="settings" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><SettingsPage /></ProtectedRoute>} />
               <Route path="wallet" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><WalletPage /></ProtectedRoute>} />
               <Route path="logs" element={<ProtectedRoute roles={['super_admin']}><LogsPage /></ProtectedRoute>} />
-              <Route path="central-customers" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><CentralCustomersPage /></ProtectedRoute>} />
+              <Route path="central-customers" element={<ProtectedRoute roles={['super_admin', 'branch_admin', 'branch_manager', 'staff']}><CentralCustomersPage /></ProtectedRoute>} />
+              <Route path="transactions" element={<ProtectedRoute roles={['super_admin', 'branch_admin', 'branch_manager']}><TransactionsPage /></ProtectedRoute>} />
             </Route>
 
             {/* Fallback */}

@@ -18,6 +18,8 @@ const walletTransactionSchema = new mongoose.Schema(
     paymentMethod: { type: String },
     description: { type: String, trim: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    transactionId: { type: String },
+    transactionRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction' },
   },
   { timestamps: true }
 );

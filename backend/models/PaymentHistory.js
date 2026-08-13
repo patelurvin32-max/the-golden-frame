@@ -23,6 +23,8 @@ const paymentHistorySchema = new mongoose.Schema(
     notes: { type: String, trim: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     paymentNumber: { type: Number, required: true }, // Sequence number for payments on the same order
+    transactionId: { type: String },
+    transactionRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction' },
   },
   { timestamps: true }
 );

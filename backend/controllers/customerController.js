@@ -10,10 +10,41 @@ const Session = require('../models/Session');
 const Wallet = require('../models/Wallet');
 const { Inventory, MenuItem, StockTransaction, MenuCategory } = require('../models/Operations');
 const Branch = require('../models/Branch');
+const Transaction = require('../models/Transaction');
+const TransactionCounter = require('../models/TransactionCounter');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ROLES, BUSINESS_SHORT_CODE } = require('../config/constants');
 const { createBranchNotification } = require('../services/notificationService');
+
+const generateTransactionId = async (branchId, date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const dateStr = `${year}/${month}/${day}`;
+  
+  const counterKey = `txn_${branchId}_${dateStr}`;
+  
+  let attempts = 0;
+  while (attempts < 50) {
+    attempts++;
+    const counter = await TransactionCounter.findByIdAndUpdate(
+      counterKey,
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true }
+    );
+    const sequence = String(counter.seq).padStart(4, '0');
+    const transactionId = `TXN/${year}${month}${day}/${sequence}`;
+
+    const exists = await Transaction.findOne({ transactionId });
+    if (!exists) {
+      return transactionId;
+    }
+  }
+
+  return `TXN/${year}${month}${day}/${Date.now()}`;
+};
+
 
 const parseCurrencyValue = (value) => {
   const num = Number(value);
@@ -640,7 +671,34 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   // Handle "Extra" automatic settlement
   if (isExtra) {
     // For "Extra", use the bill amount as the payment amount.
+    const originalAmount = billAmount;
     let amountToProcess = billAmount;
+    
+    const txnId = await generateTransactionId(req.body.branch);
+    const now = new Date();
+    const transactionDate = now.toISOString().split('T')[0];
+    const transactionTime = now.toTimeString().split(' ')[0];
+    
+    const formatDateTimeBackend = (date) => {
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const d = new Date(date);
+      const day = d.getDate();
+      const month = months[d.getMonth()];
+      const year = d.getFullYear();
+      let hours = d.getHours();
+      const minutes = String(d.getMinutes()).padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12;
+      hours = hours ? hours : 12;
+      return `${day} ${month} ${year}, ${String(hours).padStart(2, '0')}:${minutes} ${ampm}`;
+    };
+    
+    const exactDateTimeStr = formatDateTimeBackend(now);
+    
+    let amountDeducted = 0;
+    const pendingPaymentRefs = [];
+    const pendingPaymentOrderIds = [];
+    const paymentHistoriesCreated = [];
     
     if (amountToProcess > 0) {
       // 1. Pay off pending payments
@@ -664,12 +722,16 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
           pOrder.paymentStatus = (pOrder.totalPaid >= pBill) ? 'paid' : 'partial';
           
           await pOrder.save();
+          
+          pendingPaymentRefs.push(pOrder._id);
+          pendingPaymentOrderIds.push(pOrder.orderId);
+          amountDeducted += deduction;
 
           const lastPayment = await PaymentHistory.findOne({ order: pOrder._id }).sort('-paymentNumber');
           const nextPaymentNumber = lastPayment ? (lastPayment.paymentNumber || 0) + 1 : 1;
 
           // Log payment history for this order
-          await PaymentHistory.create({
+          const pHist = await PaymentHistory.create({
             order: pOrder._id,
             orderId: pOrder.orderId,
             customer: customer._id,
@@ -684,13 +746,44 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
             billAmount: pBill,
             pendingAmount: Math.max(0, pBill - pOrder.totalPaid),
             paymentStatus: pOrder.paymentStatus,
-            notes: 'Automatic deduction from Extra category',
+            notes: `₹${deduction} deducted on ${exactDateTimeStr} by ${req.user.name} because of Extra transaction. (Ref: ${txnId})`,
             createdBy: req.user._id,
-            paymentNumber: nextPaymentNumber
+            paymentNumber: nextPaymentNumber,
+            transactionId: txnId
           });
+          
+          paymentHistoriesCreated.push(pHist);
 
           amountToProcess -= deduction;
         }
+      }
+
+      // Create transaction doc first to get its ID
+      const transactionDoc = await Transaction.create({
+        transactionId: txnId,
+        customer: customer._id,
+        customerId: customer.customerId,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        branch: req.body.branch,
+        transactionDate,
+        transactionTime,
+        originalAmount,
+        amountDeducted,
+        remainingAmount: originalAmount - amountDeducted,
+        amountAddedToWallet: amountToProcess,
+        pendingPaymentRefs,
+        pendingPaymentOrderIds,
+        paymentType: 'Extra',
+        paymentMethod: paymentMethod || 'cash',
+        createdBy: req.user._id,
+        status: 'completed'
+      });
+
+      // Update created payment histories with transactionRef
+      for (const pHist of paymentHistoriesCreated) {
+        pHist.transactionRef = transactionDoc._id;
+        await pHist.save();
       }
 
       // 2. Add remaining amount to wallet
@@ -701,7 +794,8 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
 
         const { generateWalletId } = require('./walletManagementController');
         const walletId = await generateWalletId(req.body.branch);
-        await Wallet.create({
+        
+        const walletDoc = await Wallet.create({
           walletId,
           mobileNumber: customer.phone,
           name: customer.name,
@@ -711,10 +805,47 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
           paymentStatus: 'paid',
           type: 'credit',
           transactionType: 'top_up',
-          notes: 'Automatic wallet top-up from Extra category',
+          notes: `₹${amountToProcess} credited on ${exactDateTimeStr} from the same Extra transaction. (Ref: ${txnId})`,
           createdBy: req.user._id,
-          branch: req.body.branch
+          branch: req.body.branch,
+          transactionId: txnId,
+          transactionRef: transactionDoc._id
         });
+
+        // Add wallet transaction to customer
+        customer.walletTransactions.push({
+          type: 'credit',
+          amount: amountToProcess,
+          balance: customer.walletBalance,
+          orderId: 'AUTO-SETTLED',
+          billAmount: originalAmount,
+          paymentMethod: paymentMethod || 'cash',
+          description: `₹${amountToProcess} credited on ${exactDateTimeStr} from the same Extra transaction. (Ref: ${txnId})`,
+          createdBy: req.user._id,
+        });
+        await customer.save();
+
+        const wTxn = await WalletTransaction.create({
+          customer: customer._id,
+          customerName: customer.name,
+          customerPhone: customer.phone,
+          branch: req.body.branch,
+          type: 'credit',
+          amount: amountToProcess,
+          balance: customer.walletBalance,
+          billAmount: originalAmount,
+          amountReceived: originalAmount,
+          walletAmountAdded: amountToProcess,
+          paymentMethod: paymentMethod || 'cash',
+          description: `₹${amountToProcess} credited on ${exactDateTimeStr} from the same Extra transaction. (Ref: ${txnId})`,
+          createdBy: req.user._id,
+          transactionId: txnId,
+          transactionRef: transactionDoc._id
+        });
+
+        transactionDoc.walletTxnRef = wTxn._id;
+        transactionDoc.walletIdRef = walletId;
+        await transactionDoc.save();
       }
     }
 
@@ -785,6 +916,11 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     finalPaymentStatus = 'partial';
   }
   
+  const txnId = await generateTransactionId(req.body.branch);
+  const now = new Date();
+  const transactionDate = now.toISOString().split('T')[0];
+  const transactionTime = now.toTimeString().split(' ')[0];
+
   // Create new order linked to the customer
   const order = await Order.create({
     orderId,
@@ -808,6 +944,31 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     additionalPlayers: req.body.additionalPlayers,
     createdBy: req.user._id,
   });
+
+  const addToWallet = req.body.addToWallet || false;
+  const extraAmount = amountReceived > billAmount ? amountReceived - billAmount : 0;
+
+  // Create Transaction document
+  const transactionDoc = await Transaction.create({
+    transactionId: txnId,
+    customer: customer._id,
+    customerId: customer.customerId,
+    customerName: customer.name,
+    customerPhone: customer.phone,
+    branch: req.body.branch,
+    transactionDate,
+    transactionTime,
+    originalAmount: billAmount,
+    amountDeducted: totalPaid,
+    remainingAmount: pendingAmount,
+    amountAddedToWallet: (addToWallet && extraAmount > 0) ? extraAmount : 0,
+    pendingPaymentRefs: [order._id],
+    pendingPaymentOrderIds: [order.orderId],
+    paymentType: 'Session Bill',
+    paymentMethod: paymentMethod || 'cash',
+    createdBy: req.user._id,
+    status: 'completed'
+  });
   
   const writePromises = [];
 
@@ -830,6 +991,8 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     notes: req.body.notes || '',
     createdBy: req.user._id,
     paymentNumber: 1, // First payment for this order
+    transactionId: txnId,
+    transactionRef: transactionDoc._id
   }));
 
   // Handle wallet debit
@@ -864,13 +1027,12 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       paymentMethod: req.body.paymentMethod,
       description: `Payment for order ${order.orderId}`,
       createdBy: req.user._id,
+      transactionId: txnId,
+      transactionRef: transactionDoc._id
     }));
   }
 
   // Handle wallet credit (extra amount received)
-  const addToWallet = req.body.addToWallet || false;
-  const extraAmount = amountReceived > billAmount ? amountReceived - billAmount : 0;
-  
   if (addToWallet && extraAmount > 0) {
     customer.walletBalance += extraAmount;
     
@@ -886,40 +1048,51 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       createdBy: req.user._id,
     });
     
-    // Create separate wallet transaction record
-    writePromises.push(WalletTransaction.create({
-      customer: customer._id,
-      customerName: customer.name,
-      customerPhone: customer.phone,
-      order: order._id,
-      orderId: order.orderId,
-      branch: req.body.branch,
-      type: 'credit',
-      amount: extraAmount,
-      balance: customer.walletBalance,
-      billAmount,
-      amountReceived,
-      walletAmountAdded: extraAmount,
-      paymentMethod: req.body.paymentMethod,
-      description: `Extra payment added to wallet for order ${order.orderId}`,
-      createdBy: req.user._id,
-    }));
-    
-    // Create actual Wallet entry so it appears in Wallet Management
-    const { generateWalletId } = require('./walletManagementController');
-    const walletId = await generateWalletId(req.body.branch);
-    writePromises.push(Wallet.create({
-      walletId,
-      name: customer.name,
-      mobileNumber: customer.phone,
-      amount: extraAmount,
-      totalPaid: extraAmount,
-      paymentMethod: req.body.paymentMethod || 'cash',
-      paymentStatus: 'paid',
-      branch: req.body.branch,
-      createdBy: req.user._id,
-      notes: `Auto top-up from extra payment for order ${order.orderId}`
-    }));
+    // Create separate wallet transaction record and Wallet entry
+    const runWalletCredit = async () => {
+      const wTxn = await WalletTransaction.create({
+        customer: customer._id,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        order: order._id,
+        orderId: order.orderId,
+        branch: req.body.branch,
+        type: 'credit',
+        amount: extraAmount,
+        balance: customer.walletBalance,
+        billAmount,
+        amountReceived,
+        walletAmountAdded: extraAmount,
+        paymentMethod: req.body.paymentMethod,
+        description: `Extra payment added to wallet for order ${order.orderId}`,
+        createdBy: req.user._id,
+        transactionId: txnId,
+        transactionRef: transactionDoc._id
+      });
+      
+      const { generateWalletId } = require('./walletManagementController');
+      const walletId = await generateWalletId(req.body.branch);
+      const walletDoc = await Wallet.create({
+        walletId,
+        name: customer.name,
+        mobileNumber: customer.phone,
+        amount: extraAmount,
+        totalPaid: extraAmount,
+        paymentMethod: req.body.paymentMethod || 'cash',
+        paymentStatus: 'paid',
+        branch: req.body.branch,
+        createdBy: req.user._id,
+        notes: `Auto top-up from extra payment for order ${order.orderId}`,
+        transactionId: txnId,
+        transactionRef: transactionDoc._id
+      });
+
+      transactionDoc.walletTxnRef = wTxn._id;
+      transactionDoc.walletIdRef = walletId;
+      await transactionDoc.save();
+    };
+
+    writePromises.push(runWalletCredit());
   }
 
   // Handle pending payment - update customer outstanding balance
@@ -1558,6 +1731,33 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
     .lean();
   const nextPaymentNumber = (lastPaymentHistory?.paymentNumber || 0) + 1;
   
+  const txnId = await generateTransactionId(order.branch);
+  const now = new Date();
+  const transactionDate = now.toISOString().split('T')[0];
+  const transactionTime = now.toTimeString().split(' ')[0];
+
+  // Create Transaction document
+  const transactionDoc = await Transaction.create({
+    transactionId: txnId,
+    customer: customer._id,
+    customerId: customer.customerId,
+    customerName: customer.name,
+    customerPhone: customer.phone,
+    branch: order.branch,
+    transactionDate,
+    transactionTime,
+    originalAmount: todayPayment,
+    amountDeducted: todayPayment,
+    remainingAmount: newPendingAmount,
+    amountAddedToWallet: 0,
+    pendingPaymentRefs: [order._id],
+    pendingPaymentOrderIds: [order.orderId],
+    paymentType: 'Old Payment',
+    paymentMethod: paymentMethod || 'cash',
+    createdBy: req.user._id,
+    status: 'completed'
+  });
+
   // Update order with new payment information
   const updatedOrder = await Order.findByIdAndUpdate(
     order._id,
@@ -1592,6 +1792,8 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
     notes: req.body.notes || '',
     createdBy: req.user._id,
     paymentNumber: nextPaymentNumber,
+    transactionId: txnId,
+    transactionRef: transactionDoc._id
   });
   
   // Handle wallet debit
@@ -1611,7 +1813,7 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
     });
     
     // Create separate wallet transaction record
-    await WalletTransaction.create({
+    const wTxn = await WalletTransaction.create({
       customer: customer._id,
       customerName: customer.name,
       customerPhone: customer.phone,
@@ -1626,7 +1828,12 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
       paymentMethod: paymentMethod,
       description: `Additional payment for order ${order.orderId}`,
       createdBy: req.user._id,
+      transactionId: txnId,
+      transactionRef: transactionDoc._id
     });
+
+    transactionDoc.walletTxnRef = wTxn._id;
+    await transactionDoc.save();
   }
   
   // Update customer outstanding balance
@@ -1731,23 +1938,28 @@ exports.deleteCustomer = asyncHandler(async (req, res, next) => {
 exports.getSuperAdminCustomers = asyncHandler(async (req, res, next) => {
   const isSuperAdmin = req.user.role === ROLES.SUPER_ADMIN;
   const isBranchAdmin = req.user.role === ROLES.BRANCH_ADMIN;
+  const isBranchManager = req.user.role === ROLES.BRANCH_MANAGER;
+  const isStaff = req.user.role === ROLES.STAFF;
 
-  if (!isSuperAdmin && !isBranchAdmin) {
+  // Branch-scoped roles: branch_admin, branch_manager, staff
+  const isBranchScoped = isBranchAdmin || isBranchManager || isStaff;
+
+  if (!isSuperAdmin && !isBranchScoped) {
     return next(new AppError('Access denied.', 403));
   }
 
-  // Branch Admin can only see their own assigned branches
+  // Branch-scoped users can only see their own assigned branches
   const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
 
   const filter = { isActive: true };
   if (req.query.branch) {
-    // For Branch Admin: make sure requested branch is in their allowed list
-    if (isBranchAdmin && !userBranchIds.includes(req.query.branch.toString())) {
+    // For branch-scoped users: make sure requested branch is in their allowed list
+    if (isBranchScoped && !userBranchIds.includes(req.query.branch.toString())) {
       return next(new AppError('Access denied to this branch.', 403));
     }
     filter.branch = req.query.branch;
-  } else if (isBranchAdmin) {
-    // Branch Admin with no branch filter: restrict to their branches only
+  } else if (isBranchScoped) {
+    // Branch-scoped user with no branch filter: restrict to their branches only
     filter.branch = { $in: userBranchIds };
   }
 
@@ -1827,6 +2039,49 @@ exports.getSuperAdminCustomers = asyncHandler(async (req, res, next) => {
     pages: Math.ceil(total / limit),
     limit,
     data: { customers },
+  });
+});
+
+// GET /api/customers/super-admin/:id
+exports.getSuperAdminCustomerDetails = asyncHandler(async (req, res, next) => {
+  const isSuperAdmin = req.user.role === ROLES.SUPER_ADMIN;
+  const isBranchAdmin = req.user.role === ROLES.BRANCH_ADMIN;
+
+  if (!isSuperAdmin && !isBranchAdmin) {
+    return next(new AppError('Access denied.', 403));
+  }
+
+  const { id } = req.params;
+  const customer = await Customer.findById(id).populate('branch', 'name code').lean();
+  
+  if (!customer) {
+    return next(new AppError('Customer not found.', 404));
+  }
+
+  // Branch Admin can only view customers in their own branches
+  if (isBranchAdmin) {
+    const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
+    const custBranchId = (customer.branch?._id || customer.branch).toString();
+    if (!userBranchIds.includes(custBranchId)) {
+      return next(new AppError('Access denied: customer does not belong to your branch.', 403));
+    }
+  }
+
+  // Fetch all orders (visits/sessions) for this customer
+  const orders = await Order.find({ customer: id })
+    .populate('menuCategoryId', 'name')
+    .populate('menuItemId', 'name')
+    .populate('table', 'tableNumber name')
+    .populate('branch', 'name code')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  res.status(200).json({
+    success: true,
+    data: {
+      customer,
+      history: orders
+    }
   });
 });
 
@@ -2078,15 +2333,19 @@ exports.updateSuperAdminCustomer = asyncHandler(async (req, res, next) => {
 exports.createSuperAdminCustomer = asyncHandler(async (req, res, next) => {
   const isSuperAdmin = req.user.role === ROLES.SUPER_ADMIN;
   const isBranchAdmin = req.user.role === ROLES.BRANCH_ADMIN;
+  const isBranchManager = req.user.role === ROLES.BRANCH_MANAGER;
+  const isStaff = req.user.role === ROLES.STAFF;
 
-  if (!isSuperAdmin && !isBranchAdmin) {
+  const isBranchScoped = isBranchAdmin || isBranchManager || isStaff;
+
+  if (!isSuperAdmin && !isBranchScoped) {
     return next(new AppError('Access denied.', 403));
   }
 
   const { name, phone, email, address, branch } = req.body;
 
-  // Branch Admin can only create customers for their own branches
-  if (isBranchAdmin) {
+  // Branch-scoped roles can only create customers for their own branches
+  if (isBranchScoped) {
     const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
     if (!userBranchIds.includes(branch.toString())) {
       return next(new AppError('Access denied: you can only create customers for your own branch.', 403));
@@ -2122,3 +2381,273 @@ exports.createSuperAdminCustomer = asyncHandler(async (req, res, next) => {
 exports.generateOrderId = generateOrderId;
 exports.generateCustomerId = generateCustomerId;
 exports.parseCurrencyValue = parseCurrencyValue;
+
+// GET /api/customers/:id/transactions
+exports.getCustomerTransactions = asyncHandler(async (req, res, next) => {
+  const customerId = req.params.id;
+  const customer = await Customer.findById(customerId);
+  if (!customer) return next(new AppError('Customer not found.', 404));
+
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+    if (!userBranchIds.includes(customer.branch?.toString())) {
+      return next(new AppError('You do not have access to this branch\'s data.', 403));
+    }
+  }
+
+  const transactions = await Transaction.find({ customer: customerId })
+    .populate('createdBy', 'name')
+    .populate('branch', 'name code')
+    .sort({ createdAt: -1 });
+
+  res.status(200).json({
+    success: true,
+    data: { transactions }
+  });
+});
+
+// GET /api/transactions
+exports.getTransactions = asyncHandler(async (req, res, next) => {
+  const filter = {};
+  
+  // Role-based branch filtering
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
+      filter.branch = req.query.branch;
+    } else {
+      filter.branch = { $in: userBranchIds };
+    }
+  } else if (req.query.branch) {
+    filter.branch = req.query.branch;
+  }
+
+  // Filters
+  if (req.query.date) {
+    filter.transactionDate = req.query.date;
+  }
+  if (req.query.paymentType) {
+    filter.paymentType = req.query.paymentType;
+  }
+  if (req.query.paymentMethod) {
+    filter.paymentMethod = req.query.paymentMethod;
+  }
+  if (req.query.status) {
+    filter.status = req.query.status;
+  }
+
+  // Search by customerId, name, or phone
+  if (req.query.search) {
+    const searchRegex = new RegExp(req.query.search, 'i');
+    filter.$or = [
+      { customerId: searchRegex },
+      { customerName: searchRegex },
+      { customerPhone: searchRegex },
+      { transactionId: searchRegex }
+    ];
+  }
+
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 25;
+  const skip = (page - 1) * limit;
+
+  const [transactions, total] = await Promise.all([
+    Transaction.find(filter)
+      .populate('createdBy', 'name')
+      .populate('branch', 'name code')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Transaction.countDocuments(filter)
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      transactions,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit)
+      }
+    }
+  });
+});
+
+// GET /api/customers/timeline
+exports.getCustomerTimeline = asyncHandler(async (req, res, next) => {
+  const { search, branch } = req.query;
+  if (!search) {
+    return next(new AppError('Search query (Mobile or Customer ID) is required.', 400));
+  }
+
+  // Find customer by phone or customerId
+  const term = search.trim();
+  const isPhone = /^\d{10}$/.test(term);
+  const customerQuery = isPhone ? { phone: term } : { customerId: term.toUpperCase() };
+  customerQuery.isActive = true;
+
+  // Branch scoping
+  const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
+  if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
+    if (branch && userBranchIds.includes(branch.toString())) {
+      customerQuery.branch = branch;
+    } else {
+      customerQuery.branch = { $in: userBranchIds };
+    }
+  } else if (branch) {
+    customerQuery.branch = branch;
+  }
+
+  const customer = await Customer.findOne(customerQuery).populate('branch', 'name code');
+  if (!customer) {
+    return res.status(200).json({ success: true, data: { timeline: [], customer: null } });
+  }
+
+  // Fetch all related records for this customer
+  const [orders, paymentHistories, walletTxns, transactions] = await Promise.all([
+    Order.find({ customer: customer._id, isActive: true })
+      .populate('table', 'name')
+      .populate('menuCategoryId', 'name')
+      .populate('menuItemId', 'name')
+      .lean(),
+    PaymentHistory.find({ customer: customer._id })
+      .populate('createdBy', 'name')
+      .lean(),
+    WalletTransaction.find({ customer: customer._id })
+      .populate('createdBy', 'name')
+      .lean(),
+    Transaction.find({ customer: customer._id })
+      .populate('createdBy', 'name')
+      .lean()
+  ]);
+
+  // Construct consolidated timeline
+  const timeline = [];
+
+  // Helper to format date-time
+  const formatDateTimeBackend = (date) => {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const d = new Date(date);
+    const day = d.getDate();
+    const month = months[d.getMonth()];
+    const year = d.getFullYear();
+    let hours = d.getHours();
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12;
+    return `${day} ${month} ${year}, ${String(hours).padStart(2, '0')}:${minutes} ${ampm}`;
+  };
+
+  // 1. Orders -> Pending Payment Created events
+  for (const order of orders) {
+    const initialPaid = (order.cashAmount || 0) + (order.onlineAmount || 0) + (order.walletAmount || 0);
+    const initialPending = Math.max(0, order.billAmount - initialPaid);
+    
+    timeline.push({
+      id: `pending-created-${order._id}`,
+      timestamp: new Date(order.createdAt).getTime(),
+      dateTime: formatDateTimeBackend(order.createdAt),
+      transaction: 'Pending Created',
+      amount: order.billAmount,
+      paymentMethod: order.paymentMethod || '—',
+      remainingPending: order.billAmount,
+      source: order.menuCategoryId?.name || 'Session Bill',
+      description: `Original pending amount of ₹${order.billAmount} created for order ${order.orderId} (Table: ${order.table?.name || 'N/A'})`,
+      transactionId: order.orderId,
+    });
+  }
+
+  // 2. PaymentHistory -> Deductions or Payments Received
+  for (const ph of paymentHistories) {
+    const isDeduction = (ph.notes || '').toLowerCase().includes('deducted') || (ph.notes || '').toLowerCase().includes('automatic deduction');
+    timeline.push({
+      id: `payment-history-${ph._id}`,
+      timestamp: new Date(ph.createdAt).getTime(),
+      dateTime: formatDateTimeBackend(ph.createdAt),
+      transaction: isDeduction ? 'Amount Deducted' : 'Payment Received',
+      amount: ph.totalPaid,
+      paymentMethod: isDeduction ? 'Extra' : (ph.paymentMethod || 'cash'),
+      remainingPending: ph.pendingAmount,
+      source: isDeduction ? 'Extra Transaction' : 'Payment History',
+      description: ph.notes || (isDeduction ? 'Automatic deduction' : 'Payment received'),
+      createdBy: ph.createdBy?.name || 'Staff',
+      transactionId: ph.transactionId || ph.orderId || '—',
+    });
+  }
+
+  // 3. WalletTransactions -> Credit/Debit
+  for (const wt of walletTxns) {
+    const isCredit = wt.type === 'credit';
+    timeline.push({
+      id: `wallet-txn-${wt._id}`,
+      timestamp: new Date(wt.createdAt).getTime(),
+      dateTime: formatDateTimeBackend(wt.createdAt),
+      transaction: isCredit ? 'Wallet Credit' : 'Wallet Debit',
+      amount: wt.amount,
+      paymentMethod: wt.paymentMethod || '—',
+      walletBalance: wt.balance,
+      prevWalletBalance: isCredit ? wt.balance - wt.amount : wt.balance + wt.amount,
+      newWalletBalance: wt.balance,
+      source: isCredit ? 'Wallet Credit' : 'Wallet Debit',
+      description: wt.description || (isCredit ? 'Wallet credited' : 'Wallet debited'),
+      createdBy: wt.createdBy?.name || 'Staff',
+      transactionId: wt.transactionId || wt.orderId || '—',
+    });
+  }
+
+  // 4. Transactions -> Extra Transaction or Old Payment
+  for (const txn of transactions) {
+    timeline.push({
+      id: `txn-${txn._id}`,
+      timestamp: new Date(txn.createdAt).getTime(),
+      dateTime: formatDateTimeBackend(txn.createdAt),
+      transaction: txn.paymentType === 'Extra' ? 'Extra Transaction' : txn.paymentType === 'Old Payment' ? 'Old Payment' : txn.paymentType,
+      amount: txn.originalAmount,
+      paymentMethod: txn.paymentMethod || '—',
+      remainingPending: txn.remainingAmount,
+      description: txn.notes || `Original amount: ₹${txn.originalAmount} | Deducted: ₹${txn.amountDeducted} | Added to Wallet: ₹${txn.amountAddedToWallet}`,
+      createdBy: txn.createdBy?.name || 'Staff',
+      transactionId: txn.transactionId,
+      allocationDetailsUnavailable: txn.allocationDetailsUnavailable,
+    });
+  }
+
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 10;
+
+  // Sort timeline chronologically (oldest first)
+  timeline.sort((a, b) => a.timestamp - b.timestamp);
+
+  const total = timeline.length;
+  const start = (page - 1) * limit;
+  const paginatedTimeline = timeline.slice(start, start + limit);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      customer: {
+        id: customer._id,
+        customerId: customer.customerId,
+        name: customer.name,
+        phone: customer.phone,
+        email: customer.email,
+        address: customer.address,
+        walletBalance: customer.walletBalance,
+        outstandingBalance: customer.outstandingBalance,
+        branch: customer.branch?.name,
+      },
+      timeline: paginatedTimeline,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit)
+      }
+    }
+  });
+});
+

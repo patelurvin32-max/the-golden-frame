@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { customerService, branchService } from '@/services';
+import { customerService, branchService, transactionService } from '@/services';
 import { useAuthStore } from '@/store';
 import {
   Button, Card, CardContent, Input, Label, Select,
@@ -16,9 +16,16 @@ export function CentralCustomersPage() {
   const toast = useToast();
   const { user } = useAuthStore();
 
-  // Branch Admin: locked to their own branch(es)
+  // Role flags
+  const isSuperAdmin = user?.role === 'super_admin';
   const isBranchAdmin = user?.role === 'branch_admin';
-  const userBranchId = isBranchAdmin
+  const isBranchManager = user?.role === 'branch_manager';
+  const isStaff = user?.role === 'staff';
+  // Staff and Branch Manager get a view-only experience (limited columns, no edit/add)
+  const isViewOnly = isStaff || isBranchManager;
+  // Branch-scoped roles: locked to their own branch(es)
+  const isBranchScoped = isBranchAdmin || isBranchManager || isStaff;
+  const userBranchId = isBranchScoped
     ? ((user?.branches?.[0] as any)?._id || user?.branches?.[0] || '') as string
     : '';
 
@@ -47,12 +54,12 @@ export function CentralCustomersPage() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Branch Admin: auto-lock selected branch to their assigned branch
+  // Branch-scoped users: auto-lock selected branch to their assigned branch
   useEffect(() => {
-    if (isBranchAdmin && userBranchId) {
+    if (isBranchScoped && userBranchId) {
       setSelectedBranch(userBranchId);
     }
-  }, [isBranchAdmin, userBranchId]);
+  }, [isBranchScoped, userBranchId]);
 
   // Fetch branches
   const { data: branches = [] } = useQuery({
@@ -75,6 +82,23 @@ export function CentralCustomersPage() {
   const customers: Customer[] = (queryData as any)?.data?.customers || [];
   const total = (queryData as any)?.total || 0;
   const pages = (queryData as any)?.pages || 1;
+
+  // History Modal state
+  const [selectedHistoryCustomerId, setSelectedHistoryCustomerId] = useState<string | null>(null);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyTab, setHistoryTab] = useState<'visits' | 'financial'>('visits');
+
+  const { data: historyData, isLoading: isLoadingHistory } = useQuery({
+    queryKey: ['customerHistory', selectedHistoryCustomerId],
+    queryFn: () => selectedHistoryCustomerId ? customerService.getSuperAdminCustomerDetails(selectedHistoryCustomerId).then((r) => r.data.data) : null,
+    enabled: !!selectedHistoryCustomerId,
+  });
+
+  const { data: customerTxns, isLoading: isLoadingTxns } = useQuery({
+    queryKey: ['customerTransactions', selectedHistoryCustomerId],
+    queryFn: () => selectedHistoryCustomerId ? transactionService.getCustomerTransactions(selectedHistoryCustomerId).then((r) => r.data.data.transactions) : null,
+    enabled: !!selectedHistoryCustomerId,
+  });
 
   // Edit mutation
   const updateMutation = useMutation({
@@ -128,6 +152,11 @@ export function CentralCustomersPage() {
     setPhoneError('');
   };
 
+  const handleEditNameChange = (val: string) => {
+    const cleaned = val.replace(/[^a-zA-Z\s]/g, '');
+    setEditForm((prev) => ({ ...prev, name: cleaned }));
+  };
+
   const handlePhoneChange = (val: string) => {
     const cleaned = val.replace(/\D/g, '').slice(0, 10);
     setEditForm((prev) => ({ ...prev, phone: cleaned }));
@@ -164,8 +193,8 @@ export function CentralCustomersPage() {
 
   // ── Add modal handlers ──
   const openAddModal = () => {
-    // Branch Admin: pre-fill and lock the branch to their own
-    setAddForm({ name: '', phone: '', email: '', address: '', branch: isBranchAdmin ? userBranchId : '' });
+    // Branch-scoped users: pre-fill and lock the branch to their own
+    setAddForm({ name: '', phone: '', email: '', address: '', branch: isBranchScoped ? userBranchId : '' });
     setAddPhoneError('');
     setShowAddModal(true);
   };
@@ -174,6 +203,11 @@ export function CentralCustomersPage() {
     setShowAddModal(false);
     setAddForm({ name: '', phone: '', email: '', address: '', branch: '' });
     setAddPhoneError('');
+  };
+
+  const handleAddNameChange = (val: string) => {
+    const cleaned = val.replace(/[^a-zA-Z\s]/g, '');
+    setAddForm((prev) => ({ ...prev, name: cleaned }));
   };
 
   const handleAddPhoneChange = (val: string) => {
@@ -221,10 +255,6 @@ export function CentralCustomersPage() {
               <Plus className="h-4 w-4 mr-1.5" />
               Add Customer
             </Button>
-            <Button variant="outline" size="sm" onClick={() => refetch()} loading={isFetching}>
-              <RefreshCw className={cn("h-4 w-4 mr-1.5", isFetching && "animate-spin")} />
-              Refresh
-            </Button>
           </div>
         }
       />
@@ -243,8 +273,8 @@ export function CentralCustomersPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-            {/* Branch Filter — hidden for Branch Admin (they see only their branch) */}
-            {!isBranchAdmin && (
+            {/* Branch Filter — hidden for branch-scoped users (they see only their branch) */}
+            {!isBranchScoped && (
               <div className="flex items-center gap-2 min-w-[200px] flex-1 md:flex-none">
                 <Building2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 <Select
@@ -276,13 +306,13 @@ export function CentralCustomersPage() {
               <TableRow>
                 <TableHead>Customer ID</TableHead>
                 <TableHead>Name</TableHead>
-                {!isBranchAdmin && <TableHead>Branch</TableHead>}
+                {!isBranchScoped && <TableHead>Branch</TableHead>}
                 <TableHead>Mobile Number</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Address</TableHead>
-                <TableHead className="text-right">Wallet Balance</TableHead>
-                <TableHead className="text-right">Pending Payment</TableHead>
-                <TableHead className="text-right">Edit</TableHead>
+                {!isViewOnly && <TableHead className="text-right">Wallet Balance</TableHead>}
+                {!isViewOnly && <TableHead className="text-right">Pending Payment</TableHead>}
+                {!isViewOnly && <TableHead className="text-right">Edit</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -291,17 +321,18 @@ export function CentralCustomersPage() {
                   <TableRow key={i}>
                     <TableCell><Skeleton className="h-6 w-24" /></TableCell>
                     <TableCell><Skeleton className="h-10 w-44" /></TableCell>
-                    {!isBranchAdmin && <TableCell><Skeleton className="h-6 w-28" /></TableCell>}
+                    {!isBranchScoped && <TableCell><Skeleton className="h-6 w-28" /></TableCell>}
                     <TableCell><Skeleton className="h-6 w-36" /></TableCell>
                     <TableCell><Skeleton className="h-6 w-32" /></TableCell>
-                    <TableCell className="text-right"><Skeleton className="h-6 w-20 ml-auto" /></TableCell>
-                    <TableCell className="text-right"><Skeleton className="h-6 w-20 ml-auto" /></TableCell>
-                    <TableCell className="text-right"><Skeleton className="h-8 w-16 ml-auto" /></TableCell>
+                    <TableCell><Skeleton className="h-6 w-32" /></TableCell>
+                    {!isViewOnly && <TableCell className="text-right"><Skeleton className="h-6 w-20 ml-auto" /></TableCell>}
+                    {!isViewOnly && <TableCell className="text-right"><Skeleton className="h-6 w-20 ml-auto" /></TableCell>}
+                    {!isViewOnly && <TableCell className="text-right"><Skeleton className="h-8 w-16 ml-auto" /></TableCell>}
                   </TableRow>
                 ))
               ) : customers.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={isBranchAdmin ? 7 : 8} className="h-48 text-center">
+                  <TableCell colSpan={isViewOnly ? 6 : (isBranchScoped ? 6 : 9)} className="h-48 text-center">
                     <EmptyState
                       icon={<UserCheck className="h-8 w-8" />}
                       title="No customers found"
@@ -320,8 +351,17 @@ export function CentralCustomersPage() {
                   return (
                     <TableRow key={cust._id} className="hover:bg-accent/40 transition-colors">
                       {/* Customer ID */}
-                      <TableCell className="font-mono text-sm text-muted-foreground">
-                        {cust.customerId || '—'}
+                      <TableCell className="font-mono text-sm">
+                        {!isViewOnly ? (
+                          <button
+                            onClick={() => setSelectedHistoryCustomerId(cust._id)}
+                            className="text-primary hover:underline font-medium text-left transition-colors"
+                          >
+                            {cust.customerId || '—'}
+                          </button>
+                        ) : (
+                          <span className="text-muted-foreground">{cust.customerId || '—'}</span>
+                        )}
                       </TableCell>
 
                       {/* Name */}
@@ -337,7 +377,7 @@ export function CentralCustomersPage() {
                       </TableCell>
 
                       {/* Branch - only for Super Admin */}
-                      {!isBranchAdmin && (
+                      {!isBranchScoped && (
                         <TableCell className="text-sm">
                           {branchObj ? `${branchObj.name} (${branchObj.code})` : '—'}
                         </TableCell>
@@ -361,38 +401,44 @@ export function CentralCustomersPage() {
                         {cust.address || '—'}
                       </TableCell>
 
-                      {/* Wallet Balance */}
-                      <TableCell className="text-right">
-                        <span className={cn(
-                          'font-semibold text-sm tabular-nums',
-                          (cust.walletBalance || 0) > 0 ? 'text-emerald-400' : 'text-muted-foreground'
-                        )}>
-                          {formatCurrency(cust.walletBalance || 0)}
-                        </span>
-                      </TableCell>
+                      {/* Wallet Balance — hidden for view-only roles */}
+                      {!isViewOnly && (
+                        <TableCell className="text-right">
+                          <span className={cn(
+                            'font-semibold text-sm tabular-nums',
+                            (cust.walletBalance || 0) > 0 ? 'text-emerald-400' : 'text-muted-foreground'
+                          )}>
+                            {formatCurrency(cust.walletBalance || 0)}
+                          </span>
+                        </TableCell>
+                      )}
 
-                      {/* Pending Payment */}
-                      <TableCell className="text-right">
-                        <span className={cn(
-                          'font-semibold text-sm tabular-nums',
-                          (cust.outstandingBalance || 0) > 0 ? 'text-red-400' : 'text-muted-foreground'
-                        )}>
-                          {formatCurrency(cust.outstandingBalance || 0)}
-                        </span>
-                      </TableCell>
+                      {/* Pending Payment — hidden for view-only roles */}
+                      {!isViewOnly && (
+                        <TableCell className="text-right">
+                          <span className={cn(
+                            'font-semibold text-sm tabular-nums',
+                            (cust.outstandingBalance || 0) > 0 ? 'text-red-400' : 'text-muted-foreground'
+                          )}>
+                            {formatCurrency(cust.outstandingBalance || 0)}
+                          </span>
+                        </TableCell>
+                      )}
 
-                      {/* Edit */}
-                      <TableCell className="text-right">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => openEditModal(cust)}
-                          className="text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
-                        >
-                          <Edit3 className="h-4 w-4 mr-1" />
-                          Edit
-                        </Button>
-                      </TableCell>
+                      {/* Edit — hidden for view-only roles */}
+                      {!isViewOnly && (
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => openEditModal(cust)}
+                            className="text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                          >
+                            <Edit3 className="h-4 w-4 mr-1" />
+                            Edit
+                          </Button>
+                        </TableCell>
+                      )}
                     </TableRow>
                   );
                 })
@@ -480,7 +526,7 @@ export function CentralCustomersPage() {
               <Input
                 id="editName"
                 value={editForm.name}
-                onChange={(e) => setEditForm((prev) => ({ ...prev, name: e.target.value }))}
+                onChange={(e) => handleEditNameChange(e.target.value)}
                 placeholder="Enter customer full name..."
                 autoFocus
               />
@@ -546,6 +592,275 @@ export function CentralCustomersPage() {
         </Modal>
       )}
 
+      {/* ── Customer History Modal ── */}
+      <Modal
+        open={!!selectedHistoryCustomerId}
+        onClose={() => {
+          setSelectedHistoryCustomerId(null);
+          setHistoryPage(1);
+          setHistoryTab('visits');
+        }}
+        title="Customer Activity & History"
+        size="xl"
+      >
+        <div className="space-y-6 py-2">
+          {isLoadingHistory ? (
+            <div className="space-y-4">
+              <Skeleton className="h-20 w-full" />
+              <Skeleton className="h-64 w-full" />
+            </div>
+          ) : historyData ? (
+            <>
+              {/* Basic Information */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 rounded-xl border border-border/50 bg-accent/20">
+                <div>
+                  <p className="text-xs text-muted-foreground">Customer ID</p>
+                  <p className="font-medium">{historyData.customer.customerId || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Name</p>
+                  <p className="font-medium">{historyData.customer.name}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Mobile Number</p>
+                  <p className="font-medium">{historyData.customer.phone || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Email</p>
+                  <p className="font-medium truncate" title={historyData.customer.email}>{historyData.customer.email || '—'}</p>
+                </div>
+                <div className="md:col-span-2">
+                  <p className="text-xs text-muted-foreground">Address</p>
+                  <p className="font-medium truncate" title={historyData.customer.address}>{historyData.customer.address || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Branch</p>
+                  <p className="font-medium">{typeof historyData.customer.branch === 'object' ? historyData.customer.branch?.name : '—'}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Wallet / Pending</p>
+                  <p className="font-medium flex gap-2">
+                    <span className="text-green-600">{formatCurrency(historyData.customer.walletBalance || 0)}</span>
+                    <span className="text-muted-foreground">/</span>
+                    <span className="text-red-500">{formatCurrency(historyData.customer.outstandingBalance || 0)}</span>
+                  </p>
+                </div>
+              </div>
+
+              {/* Tab Navigation */}
+              <div className="flex border-b border-border gap-2">
+                <button
+                  className={cn(
+                    "px-4 py-2 text-sm font-semibold border-b-2 transition-all",
+                    historyTab === 'visits' ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
+                  )}
+                  onClick={() => setHistoryTab('visits')}
+                >
+                  Visit / Session History
+                </button>
+                <button
+                  className={cn(
+                    "px-4 py-2 text-sm font-semibold border-b-2 transition-all",
+                    historyTab === 'financial' ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
+                  )}
+                  onClick={() => setHistoryTab('financial')}
+                >
+                  Financial / Transaction History
+                </button>
+              </div>
+
+              {historyTab === 'visits' ? (
+                /* History Table */
+                <div className="border rounded-xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <Table2>
+                      <TableHeader className="bg-muted/50">
+                        <TableRow>
+                          <TableHead className="whitespace-nowrap text-xs">Date</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs">Category</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs">Item/Table</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs">Time</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs">Duration</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs text-right">Sess. Amt</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs text-right">Items Amt</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs text-right">Total Bill</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs text-right">Paid</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs text-right">Pending</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs text-center">Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {historyData.history.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={11} className="h-32 text-center text-muted-foreground">
+                              No visit history found.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          (() => {
+                            const ITEMS_PER_PAGE = 3;
+                            const startIndex = (historyPage - 1) * ITEMS_PER_PAGE;
+                            const paginatedHistory = historyData.history.slice(startIndex, startIndex + ITEMS_PER_PAGE);
+                            
+                            return paginatedHistory.map((order: any) => {
+                              const date = new Date(order.createdAt).toLocaleDateString();
+                              const startTime = order.startTime ? new Date(order.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+                              const endTime = order.endTime ? new Date(order.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+                              
+                              // Duration calculation
+                              let durationStr = '—';
+                              if (order.startTime && order.endTime) {
+                                const diff = new Date(order.endTime).getTime() - new Date(order.startTime).getTime();
+                                const hours = Math.floor(diff / 3600000);
+                                const mins = Math.floor((diff % 3600000) / 60000);
+                                durationStr = `${hours}h ${mins}m`;
+                              }
+
+                              // Amounts
+                              const itemsAmt = (order.addedItems || []).reduce((acc: number, item: any) => acc + (item.totalAmount || 0), 0);
+                              const sessionAmt = Math.max(0, (order.billAmount || 0) - itemsAmt);
+
+                              return (
+                                <TableRow key={order._id}>
+                                  <TableCell className="whitespace-nowrap text-xs">{date}</TableCell>
+                                  <TableCell className="text-xs">{order.menuCategoryId?.name || '—'}</TableCell>
+                                  <TableCell className="text-xs">{order.table?.name || order.menuItemId?.name || '—'}</TableCell>
+                                  <TableCell className="whitespace-nowrap text-[11px] text-muted-foreground">
+                                    {startTime} - {endTime}
+                                  </TableCell>
+                                  <TableCell className="whitespace-nowrap text-xs">{durationStr}</TableCell>
+                                  <TableCell className="text-right text-xs">{formatCurrency(sessionAmt)}</TableCell>
+                                  <TableCell className="text-right text-xs" title={order.addedItems?.map((i: any) => `${i.quantity}x ${i.itemName}`).join(', ') || 'None'}>
+                                    {itemsAmt > 0 ? (
+                                      <span className="underline decoration-dotted cursor-help">{formatCurrency(itemsAmt)}</span>
+                                    ) : formatCurrency(0)}
+                                  </TableCell>
+                                  <TableCell className="text-right font-medium text-xs">{formatCurrency(order.billAmount || 0)}</TableCell>
+                                  <TableCell className="text-right text-green-600 text-xs">{formatCurrency(order.totalPaid || 0)}</TableCell>
+                                  <TableCell className="text-right text-red-500 text-xs">{formatCurrency(order.pendingPaymentAmount || 0)}</TableCell>
+                                  <TableCell className="text-center">
+                                    <Badge variant={order.paymentStatus === 'paid' ? 'success' : order.paymentStatus === 'partial' ? 'warning' : 'danger'} className="text-[9px] px-1.5 py-0">
+                                      {order.paymentStatus?.toUpperCase()}
+                                    </Badge>
+                                    {order.paymentMethod && <div className="text-[9px] text-muted-foreground mt-0.5">{order.paymentMethod}</div>}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            });
+                          })()
+                        )}
+                      </TableBody>
+                    </Table2>
+                  </div>
+                  
+                  {historyData.history.length > 3 && (
+                    <div className="flex items-center justify-between px-4 py-3 border-t border-border bg-muted/20">
+                      <div className="text-xs text-muted-foreground">
+                        Showing {((historyPage - 1) * 3) + 1} to {Math.min(historyPage * 3, historyData.history.length)} of {historyData.history.length} entries
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 text-xs"
+                          onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+                          disabled={historyPage === 1}
+                        >
+                          Previous
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 text-xs"
+                          onClick={() => setHistoryPage((p) => p + 1)}
+                          disabled={historyPage >= Math.ceil(historyData.history.length / 3)}
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Financial History Table */
+                <div className="border rounded-xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <Table2>
+                      <TableHeader className="bg-muted/50">
+                        <TableRow>
+                          <TableHead className="whitespace-nowrap text-xs">TXN ID / Ref</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs">Date & Time</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs">Type</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs text-right">Original Amount</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs text-right">Deducted (Pending)</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs text-right">Remaining Pending</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs text-right">Wallet Credit</TableHead>
+                          <TableHead className="whitespace-nowrap text-xs">Payment Method</TableHead>
+                          <th className="py-2 px-3 text-left font-semibold text-xs">Processed By</th>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {isLoadingTxns ? (
+                          <TableRow>
+                            <TableCell colSpan={9} className="h-32 text-center">
+                              <RefreshCw className="h-6 w-6 animate-spin mx-auto opacity-50" />
+                              <span className="text-xs text-muted-foreground block mt-1">Loading transactions...</span>
+                            </TableCell>
+                          </TableRow>
+                        ) : !customerTxns || customerTxns.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={9} className="h-32 text-center text-muted-foreground">
+                              No transaction history found.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          customerTxns.map((txn: any) => (
+                            <TableRow key={txn._id}>
+                              <TableCell className="font-mono text-xs" title={txn.allocationDetailsUnavailable ? 'Historical record: details unavailable' : ''}>
+                                <div className="space-y-0.5">
+                                  <span>{txn.transactionId}</span>
+                                  {txn.allocationDetailsUnavailable && (
+                                    <span className="text-[10px] text-amber-500 block">⚠️ Details Unavailable</span>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell className="whitespace-nowrap text-xs">
+                                {txn.transactionDate} {txn.transactionTime}
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                <Badge variant={txn.paymentType === 'Extra' ? 'warning' : txn.paymentType === 'Old Payment' ? 'success' : 'outline'} className="text-[9px] px-1 py-0">
+                                  {txn.paymentType}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-right text-xs font-semibold">{formatCurrency(txn.originalAmount)}</TableCell>
+                              <TableCell className="text-right text-xs text-red-500">
+                                {txn.amountDeducted > 0 ? `-${formatCurrency(txn.amountDeducted)}` : '—'}
+                              </TableCell>
+                              <TableCell className="text-right text-xs text-amber-500 font-medium">{formatCurrency(txn.remainingAmount)}</TableCell>
+                              <TableCell className="text-right text-xs text-green-600 font-medium">
+                                {txn.amountAddedToWallet > 0 ? `+${formatCurrency(txn.amountAddedToWallet)}` : '—'}
+                              </TableCell>
+                              <TableCell className="text-xs capitalize">{txn.paymentMethod || '—'}</TableCell>
+                              <TableCell className="text-xs">{txn.createdBy?.name || 'Staff'}</TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table2>
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground flex flex-col items-center">
+              <AlertCircle className="h-8 w-8 mb-2 opacity-50" />
+              <p>Failed to load customer history.</p>
+            </div>
+          )}
+        </div>
+      </Modal>
+
+
       {/* ── Add Customer Modal ── */}
       <Modal
         open={showAddModal}
@@ -561,7 +876,7 @@ export function CentralCustomersPage() {
             <Input
               id="addName"
               value={addForm.name}
-              onChange={(e) => setAddForm((prev) => ({ ...prev, name: e.target.value }))}
+              onChange={(e) => handleAddNameChange(e.target.value)}
               placeholder="Enter customer full name..."
               autoFocus
             />
@@ -610,7 +925,7 @@ export function CentralCustomersPage() {
           </div>
 
           {/* Branch — only shown for Super Admin */}
-          {!isBranchAdmin && (
+          {!isBranchScoped && (
             <div className="space-y-1.5">
               <Label htmlFor="addBranch" className="font-semibold">
                 Branch <span className="text-destructive">*</span>

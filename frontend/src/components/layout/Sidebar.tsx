@@ -23,9 +23,10 @@ const NAV_ITEMS = [
   { path: '/branches', label: 'Branches', icon: '🏢', roles: ['super_admin'], parent: 'master' },
   { path: '/settings', label: 'Settings', icon: '⚙️', roles: ['super_admin', 'branch_admin'], parent: 'master' },
   { path: '/wallet', label: 'Wallet', icon: '💼', roles: ['super_admin', 'branch_admin'], parent: 'master' },
-  { path: '/central-customers', label: 'Central Customers', icon: '📇', roles: ['super_admin', 'branch_admin'], parent: 'master' },
+  { path: '/central-customers', label: 'Central Customers', icon: '📇', roles: ['super_admin', 'branch_admin', 'branch_manager', 'staff'], parent: 'master' },
+  { path: '/transactions', label: 'Transactions', icon: '💸', roles: ['super_admin', 'branch_admin', 'branch_manager'], parent: 'master' },
   { path: '/logs', label: 'Audit Logs', icon: '📋', roles: ['super_admin'], parent: 'master' },
-  { id: 'master', label: 'Master', icon: '⚙️', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], isParent: true },
+  { id: 'master', label: 'Master', icon: '⚙️', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff'], isParent: true },
 ];
 
 export const Sidebar = () => {
@@ -69,21 +70,21 @@ export const Sidebar = () => {
   });
 
   // Custom ordering for Staff role
-  const staffOrder = ['customers', 'reservations', 'pending-payments', 'tables', 'billing', 'my-attendance'];
+  const staffOrder = ['customers', 'reservations', 'pending-payments', 'tables', 'billing', 'my-attendance', 'master'];
   // Custom ordering for Branch Manager / Branch Admin role
   const branchManagerOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master'];
   // Custom ordering for Super Admin / Admin role
   const superAdminOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master'];
   // Custom ordering for Master children
-  const masterChildOrder = ['menu', 'users', 'inventory', 'wallet', 'central-customers', 'branches', 'settings', 'logs'];
+  const masterChildOrder = ['menu', 'users', 'inventory', 'wallet', 'central-customers', 'transactions', 'branches', 'settings', 'logs'];
 
   const orderedFiltered = role === 'staff'
-    ? filtered.filter((item) => !item.isParent).sort((a, b) => {
-        const pathA = a.path?.replace('/', '') || '';
-        const pathB = b.path?.replace('/', '') || '';
-        const indexA = staffOrder.indexOf(pathA || 'dashboard');
-        const indexB = staffOrder.indexOf(pathB || 'dashboard');
-        return indexA - indexB;
+    ? filtered.sort((a, b) => {
+        const keyA = a.isParent ? a.id : a.path?.replace('/', '') || '';
+        const keyB = b.isParent ? b.id : b.path?.replace('/', '') || '';
+        const indexA = staffOrder.indexOf(keyA || 'dashboard');
+        const indexB = staffOrder.indexOf(keyB || 'dashboard');
+        return (indexA === -1 ? 99 : indexA) - (indexB === -1 ? 99 : indexB);
       })
     : (role === 'branch_manager' || role === 'branch_admin' || role === 'admin' || role === 'super_admin')
     ? filtered.sort((a, b) => {

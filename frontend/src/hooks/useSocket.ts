@@ -15,14 +15,12 @@ function joinBranch(id: string) {
   if (!socket || !id || joinedBranches.has(id)) return;
   socket.emit('join:branch', id);
   joinedBranches.add(id);
-  console.log('[Socket] Joined branch room:', id);
 }
 
 function leaveBranch(id: string) {
   if (!socket || !id) return;
   socket.emit('leave:branch', id);
   joinedBranches.delete(id);
-  console.log('[Socket] Left branch room:', id);
 }
 
 function getResolvedBranchIds(user: any, selectedBranch: string | undefined | null): string[] {
@@ -116,7 +114,6 @@ export const useSocket = () => {
         socket!.emit('join:branch', id);
         joinedBranches.add(id);
       });
-      console.log('[Socket] Reconnected. Re-joined branches:', ids);
     };
     socket.on('connect', handleConnect);
     return () => { socket?.off('connect', handleConnect); };

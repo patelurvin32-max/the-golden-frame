@@ -20,6 +20,8 @@ const walletSchema = new mongoose.Schema(
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     notes: { type: String, trim: true },
+    transactionId: { type: String },
+    transactionRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction' },
   },
   { timestamps: true }
 );

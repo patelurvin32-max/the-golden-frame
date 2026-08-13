@@ -57,10 +57,18 @@ export const customerService = {
   update: (id: string, data: Partial<Customer>) => api.patch<ApiResponse<{ customer: Customer }>>(`/customers/${id}`, data),
   updateSuperAdminCustomer: (id: string, data: { name: string; phone: string; email?: string; address?: string }) => api.patch<ApiResponse<{ customer: Customer }>>(`/customers/super-admin/${id}`, data),
   createSuperAdminCustomer: (data: { name: string; phone: string; email?: string; address?: string; branch: string }) => api.post<ApiResponse<{ customer: Customer }>>('/customers/super-admin', data),
+  getSuperAdminCustomerDetails: (id: string) => api.get<ApiResponse<{ customer: Customer; history: any[] }>>(`/customers/super-admin/${id}`),
   delete: (id: string) => api.delete(`/customers/${id}`),
   receivePayment: (id: string, data: Record<string, unknown>) => api.post<ApiResponse<{ customer: Customer }>>(`/customers/${id}/receive-payment`, data),
   getPaymentHistory: (id: string) => api.get<ApiResponse<{ paymentHistory: any[] }>>(`/customers/${id}/payment-history`),
   getStats: (params?: Record<string, string>) => api.get<ApiResponse<{ today: number; week: number; month: number; total: number }>>('/customers/stats', { params }),
+};
+
+// ── Transactions ──────────────────────────────────────────────────────────────
+export const transactionService = {
+  getAll: (params?: Record<string, string>) => api.get<ApiResponse<{ transactions: any[]; pagination: any }>>('/customers/transactions', { params }),
+  getCustomerTransactions: (customerId: string) => api.get<ApiResponse<{ transactions: any[] }>>(`/customers/${customerId}/transactions`),
+  getCustomerTimeline: (search: string, params?: Record<string, string>) => api.get<ApiResponse<{ customer: any; timeline: any[]; pagination: any }>>('/customers/timeline', { params: { search, ...params } }),
 };
 
 // ── Billing ───────────────────────────────────────────────────────────────────

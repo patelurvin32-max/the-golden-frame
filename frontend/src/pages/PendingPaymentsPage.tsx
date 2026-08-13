@@ -78,6 +78,12 @@ export default function PendingPaymentsPage() {
     placeholderData: (prev) => prev,
   });
 
+  const { data: historyData, isLoading: isHistoryLoading } = useQuery({
+    queryKey: ['payment-history', detailsCustomer?._id],
+    queryFn: () => detailsCustomer ? customerService.getPaymentHistory(detailsCustomer._id).then((r) => r.data.data.paymentHistory) : Promise.resolve([]),
+    enabled: !!detailsCustomer?._id,
+  });
+
   const customers: Customer[] = (data as any)?.data?.customers || [];
   const total: number = (data as any)?.total || 0;
   const pages: number = (data as any)?.pages || 1;
@@ -664,6 +670,58 @@ export default function PendingPaymentsPage() {
                     <p className="text-sm text-foreground">{formatDate((detailsCustomer as any).updatedAt || '', 'MMM dd, yyyy hh:mm a')}</p>
                   </div>
                 </div>
+              </div>
+
+              {/* Payment History Details */}
+              <div className="col-span-2 space-y-3 p-4 bg-muted/30 rounded-lg border border-border">
+                <h3 className="text-sm font-semibold text-foreground">Payment History Logs</h3>
+                {isHistoryLoading ? (
+                  <div className="space-y-2">
+                    <Skeleton className="h-8 w-full" />
+                    <Skeleton className="h-8 w-full" />
+                  </div>
+                ) : !historyData || historyData.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No payment history records found.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-muted-foreground border-collapse">
+                      <thead>
+                        <tr className="border-b border-border text-xs text-foreground uppercase font-semibold">
+                          <th className="py-2 px-3">Date & Time</th>
+                          <th className="py-2 px-3 text-right">Amount Received</th>
+                          <th className="py-2 px-3">Payment Method</th>
+                          <th className="py-2 px-3 text-right">Remaining Pending</th>
+                          <th className="py-2 px-3">Processed By</th>
+                          <th className="py-2 px-3">Notes</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {historyData.map((h: any, idx: number) => (
+                          <tr key={h._id || idx} className="border-b border-border/50 text-foreground/90 hover:bg-muted/10">
+                            <td className="py-2 px-3 text-xs">
+                              {formatDate(h.createdAt || '', 'dd MMM yyyy, hh:mm a')}
+                            </td>
+                            <td className="py-2 px-3 text-right font-medium">
+                              {formatCurrency(h.totalPaid)}
+                            </td>
+                            <td className="py-2 px-3 capitalize text-xs">
+                              {h.paymentMethod || '—'}
+                            </td>
+                            <td className="py-2 px-3 text-right font-semibold text-amber-400">
+                              {formatCurrency(h.pendingAmount)}
+                            </td>
+                            <td className="py-2 px-3 text-xs">
+                              {h.createdBy?.name || 'Staff'}
+                            </td>
+                            <td className="py-2 px-3 text-xs max-w-[200px] truncate" title={h.notes}>
+                              {h.notes || '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </div>
 
