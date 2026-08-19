@@ -28,7 +28,7 @@ const STATUS_CONFIG: Record<ResStatus, { label: string; color: string; icon: str
 };
 
 const EMPTY_FORM = {
-  customerName: '', phoneNumber: '', email: '',
+  customerId: '', customerName: '', phoneNumber: '', email: '',
   branch: '',
   reservationDate: '', reservationTime: '',
   durationMinutes: 60, numberOfGuests: 2,
@@ -243,11 +243,19 @@ function ReservationForm({
 
   const [resWalletBalance, setResWalletBalance] = useState(0);
 
-  // Auto-lookup wallet balance when 10-digit mobile number is entered
+  // Auto-lookup wallet balance and customer details when Customer ID or 10-digit mobile number is entered
   useEffect(() => {
-    if (form.phoneNumber && form.phoneNumber.length === 10) {
+    let termToLookup = '';
+    
+    if (form.customerId && /^[A-Za-z]{2,3}[0-9]{5}$/.test(form.customerId)) {
+      termToLookup = form.customerId;
+    } else if (form.phoneNumber && form.phoneNumber.length === 10) {
+      termToLookup = form.phoneNumber;
+    }
+
+    if (termToLookup) {
       const targetBranch = form.branch || selectedBranch || undefined;
-      customerService.lookup(form.phoneNumber, targetBranch)
+      customerService.lookup(termToLookup, targetBranch)
         .then((res) => {
           const customer = res.data.data.customer;
           if (customer) {
@@ -257,6 +265,8 @@ function ReservationForm({
               ...p,
               walletBalance: bal,
               ...(!p.customerName && customer.name ? { customerName: customer.name } : {}),
+              ...(!p.phoneNumber && customer.phone ? { phoneNumber: customer.phone } : {}),
+              ...(!p.customerId && customer.customerId ? { customerId: customer.customerId } : {}),
             }));
           } else {
             setResWalletBalance(0);
@@ -271,7 +281,7 @@ function ReservationForm({
       setResWalletBalance(0);
       setForm((p: any) => ({ ...p, walletBalance: 0 }));
     }
-  }, [form.phoneNumber, form.branch, selectedBranch]);
+  }, [form.phoneNumber, form.customerId, form.branch, selectedBranch]);
 
   useEffect(() => {
     if (form.menuCategoryId && form.branch) {
@@ -483,7 +493,18 @@ function ReservationForm({
   return (
     <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
       {/* Customer */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="space-y-1.5">
+          <Label>Customer ID</Label>
+          <Input
+            value={form.customerId}
+            onChange={(e) => {
+              const val = e.target.value.trim().toUpperCase();
+              set('customerId', val);
+            }}
+            placeholder="e.g. TGF00001"
+          />
+        </div>
         <div className="space-y-1.5">
           <Label>Name *</Label>
           <Input

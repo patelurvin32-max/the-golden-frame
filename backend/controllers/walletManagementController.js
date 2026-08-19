@@ -58,8 +58,8 @@ exports.getWalletStats = asyncHandler(async (req, res) => {
   const filter = {};
   const userBranchIds = (req.user.branches || []).map(getBranchIdString).filter(Boolean);
   
-  // Branch filtering: Super Admin can see all, Branch Admin only their branch
-  if (req.user.role === ROLES.BRANCH_ADMIN) {
+  // Branch filtering: Super Admin can see all, Branch Admin/Manager only their branch
+  if (req.user.role === ROLES.BRANCH_ADMIN || req.user.role === ROLES.BRANCH_MANAGER) {
     filter.branch = { $in: userBranchIds.map(id => new mongoose.Types.ObjectId(id)) };
   } else if (req.user.role === ROLES.SUPER_ADMIN && req.query.branch) {
     filter.branch = new mongoose.Types.ObjectId(req.query.branch);
@@ -85,8 +85,15 @@ exports.getWalletStats = asyncHandler(async (req, res) => {
           { $match: { createdAt: { $gte: todayStart } } },
           { $group: { _id: null, total: { $sum: '$amount' } } }
         ],
+        weekTotal: [
+          { $match: { createdAt: { $gte: weekStart } } },
+          { $group: { _id: null, total: { $sum: '$amount' } } }
+        ],
         monthTotal: [
           { $match: { createdAt: { $gte: monthStart } } },
+          { $group: { _id: null, total: { $sum: '$amount' } } }
+        ],
+        overallTotal: [
           { $group: { _id: null, total: { $sum: '$amount' } } }
         ]
       }
@@ -103,7 +110,9 @@ exports.getWalletStats = asyncHandler(async (req, res) => {
       month: stats.monthCount?.[0]?.count || 0,
       total: stats.totalCount?.[0]?.count || 0,
       todayAmount: stats.todayTotal?.[0]?.total || 0,
+      weekAmount: stats.weekTotal?.[0]?.total || 0,
       monthAmount: stats.monthTotal?.[0]?.total || 0,
+      totalAmount: stats.overallTotal?.[0]?.total || 0,
     },
   });
 });
@@ -113,8 +122,8 @@ exports.getWallets = asyncHandler(async (req, res) => {
   const filter = {};
   const userBranchIds = (req.user.branches || []).map(getBranchIdString).filter(Boolean);
   
-  // Branch filtering: Super Admin can see all, Branch Admin only their branch
-  if (req.user.role === ROLES.BRANCH_ADMIN) {
+  // Branch filtering: Super Admin can see all, Branch Admin/Manager only their branch
+  if (req.user.role === ROLES.BRANCH_ADMIN || req.user.role === ROLES.BRANCH_MANAGER) {
     if (req.query.branch && userBranchIds.includes(req.query.branch.toString())) {
       filter.branch = req.query.branch;
     } else {
@@ -193,7 +202,7 @@ exports.createWallet = asyncHandler(async (req, res, next) => {
   const userBranchIds = (req.user.branches || []).map(getBranchIdString).filter(Boolean);
 
   let finalBranch = getBranchIdString(req.body.branch);
-  if (req.user.role === ROLES.BRANCH_ADMIN) {
+  if (req.user.role === ROLES.BRANCH_ADMIN || req.user.role === ROLES.BRANCH_MANAGER) {
     if (!finalBranch || !userBranchIds.includes(finalBranch)) {
       finalBranch = userBranchIds[0];
     }
@@ -302,11 +311,11 @@ exports.updateWallet = asyncHandler(async (req, res, next) => {
   const walletBranchId = getBranchIdString(wallet.branch);
 
   // Branch access validation
-  if (req.user.role === ROLES.BRANCH_ADMIN) {
+  if (req.user.role === ROLES.BRANCH_ADMIN || req.user.role === ROLES.BRANCH_MANAGER) {
     if (!userBranchIds.includes(walletBranchId)) {
       return next(new AppError('You do not have access to this branch\'s data.', 403));
     }
-    // Prevent Branch Admin from changing the branch
+    // Prevent Branch Admin/Manager from changing the branch
     if (req.body.branch) {
       delete req.body.branch;
     }
@@ -401,7 +410,7 @@ exports.deleteWallet = asyncHandler(async (req, res, next) => {
   const walletBranchId = getBranchIdString(wallet.branch);
 
   // Branch access validation
-  if (req.user.role === ROLES.BRANCH_ADMIN) {
+  if (req.user.role === ROLES.BRANCH_ADMIN || req.user.role === ROLES.BRANCH_MANAGER) {
     if (!userBranchIds.includes(walletBranchId)) {
       return next(new AppError('You do not have access to this branch\'s data.', 403));
     }

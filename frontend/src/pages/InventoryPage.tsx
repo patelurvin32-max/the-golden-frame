@@ -24,6 +24,8 @@ const emptyForm = {
 };
 
 import { useDebounce } from '@/hooks/useDebounce';
+import { useSocket } from '@/hooks/useSocket';
+import InventoryLedgerModal from '@/components/InventoryLedgerModal';
 
 export default function InventoryPage() {
   const qc = useQueryClient();
@@ -31,8 +33,8 @@ export default function InventoryPage() {
   const { selectedBranch } = useAppStore();
   const { user } = useAuthStore();
 
-  // Determine if user can select branch (Super Admin can, Branch Manager and Staff cannot)
-  const canSelectBranch = user?.role === 'super_admin';
+  // Determine if user can select branch (Super Admin and Admin can, Branch Manager and Staff cannot)
+  const canSelectBranch = user?.role === 'super_admin' || user?.role === 'admin';
 
   const [activeTab, setActiveTab] = useState<'items' | 'categories'>('items');
 
@@ -52,7 +54,10 @@ export default function InventoryPage() {
   // Categories State
   const [categoryModal, setCategoryModal] = useState<'create' | 'edit' | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<InventoryCategoryDoc | null>(null);
-  const [categoryForm, setCategoryForm] = useState({ name: '', status: 'Active' as 'Active' | 'Inactive' });
+  const [categoryForm, setCategoryForm] = useState({ name: '', status: 'Active' as 'Active' | 'Inactive', branch: '' });
+  
+  // Ledger State
+  const [ledgerItem, setLedgerItem] = useState<InventoryItem | null>(null);
 
   // ── Queries ──────────────────────────────────────────────────────────────────
   const { data: branchData } = useQuery({
@@ -136,17 +141,36 @@ export default function InventoryPage() {
     if (selectedCategory) {
       setCategoryForm({
         name: selectedCategory.name,
-        status: selectedCategory.status
+        status: selectedCategory.status,
+        branch: typeof selectedCategory.branch === 'string' ? selectedCategory.branch : selectedCategory.branch?._id || ''
       });
     } else {
-      setCategoryForm({ name: '', status: 'Active' });
+      setCategoryForm({ name: '', status: 'Active', branch: '' });
+      // Auto-assign branch for Branch Manager and Staff when creating new category
+      if (!canSelectBranch && user?.branches?.[0]) {
+        const branchId = typeof user.branches[0] === 'string' ? user.branches[0] : user.branches[0]._id;
+        setCategoryForm((prev) => ({ ...prev, branch: branchId }));
+      }
     }
-  }, [selectedCategory]);
+  }, [selectedCategory, canSelectBranch, user]);
 
   // Reset page when filters change
   useEffect(() => {
     setPage(1);
   }, [selectedBranch, filterCategory, showLowStock, search]);
+
+  // ── Socket Subscription ──────────────────────────────────────────────────────
+  const { onInventoryUpdate } = useSocket();
+  useEffect(() => {
+    const unsubscribe = onInventoryUpdate((data) => {
+      // If a branch is specified and it matches the currently selected branch, or if we are viewing all branches
+      if (!data.branch || data.branch === selectedBranch || !selectedBranch) {
+        qc.invalidateQueries({ queryKey: ['inventory'] });
+        qc.invalidateQueries({ queryKey: ['inventory-low-stock-count'] });
+      }
+    });
+    return () => { unsubscribe(); };
+  }, [onInventoryUpdate, qc, selectedBranch]);
 
   // ── Mutations ────────────────────────────────────────────────────────────────
   const createMutation = useMutation({
@@ -223,7 +247,7 @@ export default function InventoryPage() {
 
       setCategoryModal(null);
       setSelectedCategory(null);
-      setCategoryForm({ name: '', status: 'Active' });
+      setCategoryForm({ name: '', status: 'Active', branch: '' });
     },
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Failed to save category'),
   });
@@ -257,13 +281,17 @@ export default function InventoryPage() {
     if (canSelectBranch && !branch) { toast.error('Select a branch'); return; }
     if (!canSelectBranch && !branch) { toast.error('Branch assignment error'); return; }
 
-    const payload = {
+    const payload: any = {
       ...form,
       name: form.name.trim(),
       branch,
       // Set currentStock to openingStock for new items
       currentStock: selected ? form.currentStock : form.openingStock
     };
+
+    if (payload.purchasePrice === '') delete payload.purchasePrice;
+    if (payload.sellingPrice === '') delete payload.sellingPrice;
+    if (payload.sku === '') delete payload.sku;
 
     if (selected) {
       updateMutation.mutate({ id: selected._id, data: payload });
@@ -273,13 +301,17 @@ export default function InventoryPage() {
   };
 
   const handleSaveCategory = () => {
+    const branch = categoryForm.branch || selectedBranch;
     if (!categoryForm.name.trim()) { toast.error('Category name is required'); return; }
+    if (canSelectBranch && !branch) { toast.error('Select a branch'); return; }
+
     const payload: any = {
       name: categoryForm.name.trim(),
       status: categoryForm.status
     };
-    if (canSelectBranch && selectedBranch) {
-      payload.branch = selectedBranch;
+
+    if (canSelectBranch && branch) {
+      payload.branch = branch;
     } else if (!canSelectBranch && user?.branches?.[0]) {
       const branchId = typeof user.branches[0] === 'string' ? user.branches[0] : user.branches[0]._id;
       payload.branch = branchId;
@@ -301,7 +333,6 @@ export default function InventoryPage() {
     <div className="space-y-5 animate-fade-in">
       <PageHeader
         title="Inventory"
-        subtitle="Stock management"
         actions={
           <div className="flex gap-2">
             {lowStockCount > 0 && (
@@ -310,7 +341,7 @@ export default function InventoryPage() {
                 ⚠️ Low Stock ({lowStockCount})
               </Button>
             )}
-            <Button size="sm" variant="outline" onClick={() => { setSelectedCategory(null); setCategoryForm({ name: '', status: 'Active' }); setCategoryModal('create'); }}>
+            <Button size="sm" variant="outline" onClick={() => { setSelectedCategory(null); setCategoryForm({ name: '', status: 'Active', branch: '' }); setCategoryModal('create'); }}>
               + Add Category
             </Button>
             <Button size="sm" onClick={() => { setSelected(null); setForm({ ...emptyForm }); setModal('create'); }}>
@@ -394,14 +425,14 @@ export default function InventoryPage() {
                 <Table2>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Category</TableHead>
+                      <TableHead className="hidden md:table-cell">Category</TableHead>
                       <TableHead>Item Name</TableHead>
-                      <TableHead>SKU</TableHead>
-                      <TableHead>Current Stock</TableHead>
-                      <TableHead>Unit</TableHead>
-                      <TableHead>Purchase Price</TableHead>
-                      <TableHead>Selling Price</TableHead>
-                      <TableHead>Stock Status</TableHead>
+                      <TableHead className="hidden lg:table-cell">SKU</TableHead>
+                      <TableHead>Stock</TableHead>
+                      <TableHead className="hidden md:table-cell">Unit</TableHead>
+                      <TableHead className="hidden lg:table-cell">Purchase</TableHead>
+                      <TableHead className="hidden sm:table-cell">Selling</TableHead>
+                      <TableHead className="hidden sm:table-cell">Status</TableHead>
                       <TableHead className="w-[180px]">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -421,35 +452,45 @@ export default function InventoryPage() {
                             </TableRow>
                           )}
                           <TableRow>
-                            <TableCell className="text-muted-foreground text-xs">{item.category?.name || 'Unassigned'}</TableCell>
-                            <TableCell className="font-semibold">{item.name}</TableCell>
-                            <TableCell className="font-mono text-xs">{item.sku || '—'}</TableCell>
+                            <TableCell className="hidden md:table-cell text-muted-foreground text-xs">{item.category?.name || 'Unassigned'}</TableCell>
+                            <TableCell>
+                              <div className="font-semibold">{item.name}</div>
+                              <div className="md:hidden text-[10px] text-muted-foreground mt-0.5">
+                                {item.currentStock || 0} {item.unit} • {item.sellingPrice ? formatCurrency(item.sellingPrice) : 'N/A'}
+                              </div>
+                            </TableCell>
+                            <TableCell className="hidden lg:table-cell font-mono text-xs">{item.sku || '—'}</TableCell>
                             <TableCell>
                               <span className={cn('font-bold', isLow ? 'text-red-400' : 'text-foreground')}>
                                 {item.currentStock || 0}
                               </span>
                             </TableCell>
-                            <TableCell className="text-xs text-muted-foreground">{item.unit}</TableCell>
-                            <TableCell>{formatCurrency(item.purchasePrice)}</TableCell>
-                            <TableCell>{item.sellingPrice ? formatCurrency(item.sellingPrice) : '—'}</TableCell>
-                            <TableCell>
+                            <TableCell className="hidden md:table-cell text-xs text-muted-foreground">{item.unit}</TableCell>
+                            <TableCell className="hidden lg:table-cell">{formatCurrency(item.purchasePrice)}</TableCell>
+                            <TableCell className="hidden sm:table-cell">{item.sellingPrice ? formatCurrency(item.sellingPrice) : '—'}</TableCell>
+                            <TableCell className="hidden sm:table-cell">
                               <Badge variant={isLow ? 'danger' : 'success'}>
                                 {isLow ? '⚠️ Low Stock' : '✓ In Stock'}
                               </Badge>
                             </TableCell>
                             <TableCell>
-                              <div className="flex gap-1">
-                                <Button size="sm" variant="outline"
+                              <div className="flex flex-wrap gap-1">
+                                <Button size="sm" variant="outline" className="px-2 h-7 text-xs"
                                   onClick={() => { setSelected(item); setRestockForm({ quantity: 10, cost: item.purchasePrice, supplier: '' }); setModal('restock'); }}
                                 >
                                   Restock
                                 </Button>
-                                <Button size="sm" variant="ghost"
+                                <Button size="sm" variant="outline" className="px-2 h-7 text-xs"
+                                  onClick={() => setLedgerItem(item)}
+                                >
+                                  History
+                                </Button>
+                                <Button size="sm" variant="ghost" className="px-2 h-7 text-xs"
                                   onClick={() => { setSelected(item); setModal('create'); }}
                                 >
                                   Edit
                                 </Button>
-                                <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10"
+                                <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10 px-2 h-7 text-xs"
                                   onClick={() => { if (window.confirm('Remove this item?')) deleteMutation.mutate(item._id); }}
                                 >
                                   ✕
@@ -467,14 +508,14 @@ export default function InventoryPage() {
           </Card>
 
           {/* Bottom Pagination */}
-          <div className="flex items-center justify-between mt-4">
+          <div className="flex flex-col sm:flex-row items-center justify-between mt-4 gap-3">
             {/* Left: Record Counter */}
             <p className="text-sm text-muted-foreground">
               Showing {totalRecords === 0 ? 0 : (page - 1) * pageSize + 1}–{Math.min(page * pageSize, totalRecords)} of {totalRecords} records
             </p>
             
             {/* Right: Pagination Controls */}
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap justify-center items-center gap-4">
               <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
                 Previous
               </Button>
@@ -518,26 +559,26 @@ export default function InventoryPage() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <div className="flex gap-2">
-                          <Button size="sm" variant="outline" onClick={() => { setSelectedCategory(cat); setCategoryModal('edit'); }}>
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" variant="outline" className="px-2 h-7 text-xs" onClick={() => { setSelectedCategory(cat); setCategoryModal('edit'); }}>
                             Edit
                           </Button>
                           {cat.status === 'Active' ? (
-                            <Button size="sm" variant="outline" className="text-amber-400 hover:bg-amber-500/10 border-amber-500/20"
+                            <Button size="sm" variant="outline" className="text-amber-400 hover:bg-amber-500/10 border-amber-500/20 px-2 h-7 text-xs"
                               onClick={() => toggleCategoryStatusMutation.mutate({ id: cat._id, status: 'Inactive' })}
                               loading={toggleCategoryStatusMutation.isPending}
                             >
                               Deactivate
                             </Button>
                           ) : (
-                            <Button size="sm" variant="outline" className="text-emerald-400 hover:bg-emerald-500/10 border-emerald-500/20"
+                            <Button size="sm" variant="outline" className="text-emerald-400 hover:bg-emerald-500/10 border-emerald-500/20 px-2 h-7 text-xs"
                               onClick={() => toggleCategoryStatusMutation.mutate({ id: cat._id, status: 'Active' })}
                               loading={toggleCategoryStatusMutation.isPending}
                             >
                               Activate
                             </Button>
                           )}
-                          <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10"
+                          <Button size="sm" variant="ghost" className="text-red-400 hover:bg-red-500/10 px-2 h-7 text-xs"
                             onClick={() => handleDeleteCategory(cat)}
                             loading={deleteCategoryMutation.isPending}
                           >
@@ -557,8 +598,7 @@ export default function InventoryPage() {
       {/* Item Modal (Create & Edit) */}
       <Modal open={modal === 'create'} onClose={() => setModal(null)} title={selected ? 'Edit Inventory Item' : 'Add Inventory Item'} size="md">
         <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5"><Label>Item Name *</Label><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
+          <div className="grid grid-cols-2 gap-3 items-end">
             <div className="space-y-1.5">
               <Label>Category *</Label>
               <Select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}>
@@ -566,16 +606,17 @@ export default function InventoryPage() {
                 {(activeCategories || []).map((c: any) => <option key={c._id} value={c._id}>{c.name}</option>)}
               </Select>
             </div>
+            <div className="space-y-1.5"><Label>Item Name *</Label><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-3 gap-3 items-end">
             <div className="space-y-1.5"><Label>Unit</Label><Input value={form.unit} onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))} /></div>
             <div className="space-y-1.5"><Label>Opening Stock</Label><Input type="number" value={form.openingStock} onChange={(e) => setForm((f) => ({ ...f, openingStock: Number(e.target.value) }))} disabled={!!selected} /></div>
             <div className="space-y-1.5"><Label>Minimum Stock Alert</Label><Input type="number" value={form.minimumStockAlert} onChange={(e) => setForm((f) => ({ ...f, minimumStockAlert: Number(e.target.value) }))} /></div>
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-3 gap-3 items-end">
             <div className="space-y-1.5"><Label>Purchase Price (₹)</Label><Input type="number" step="0.01" value={form.purchasePrice} onChange={(e) => setForm((f) => ({ ...f, purchasePrice: Number(e.target.value) }))} /></div>
             <div className="space-y-1.5"><Label>Selling Price (₹)</Label><Input type="number" step="0.01" value={form.sellingPrice} onChange={(e) => setForm((f) => ({ ...f, sellingPrice: Number(e.target.value) }))} /></div>
-            <div className="space-y-1.5"><Label>SKU (optional)</Label><Input value={form.sku} onChange={(e) => setForm((f) => ({ ...f, sku: e.target.value }))} /></div>
+            <div className="space-y-1.5"><Label>SKU</Label><Input value={form.sku} onChange={(e) => setForm((f) => ({ ...f, sku: e.target.value }))} /></div>
           </div>
           {canSelectBranch && (
             <div className="space-y-1.5">
@@ -620,6 +661,15 @@ export default function InventoryPage() {
             <Label>Category Name *</Label>
             <Input value={categoryForm.name} onChange={(e) => setCategoryForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. Cold Drinks" />
           </div>
+          {canSelectBranch && (
+            <div className="space-y-1.5">
+              <Label>Branch *</Label>
+              <Select value={categoryForm.branch} onChange={(e) => setCategoryForm((f) => ({ ...f, branch: e.target.value }))}>
+                <option value="">Select branch</option>
+                {(branchData || []).map((b: any) => <option key={b._id} value={b._id}>{b.name}</option>)}
+              </Select>
+            </div>
+          )}
           <div className="space-y-1.5">
             <Label>Category Status *</Label>
             <Select value={categoryForm.status} onChange={(e) => setCategoryForm((f) => ({ ...f, status: e.target.value as 'Active' | 'Inactive' }))}>
@@ -635,6 +685,10 @@ export default function InventoryPage() {
           </div>
         </div>
       </Modal>
+
+      {ledgerItem && (
+        <InventoryLedgerModal item={ledgerItem} onClose={() => setLedgerItem(null)} />
+      )}
     </div>
   );
 }

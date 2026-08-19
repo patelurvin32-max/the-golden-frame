@@ -783,7 +783,14 @@ exports.createReservation = asyncHandler(async (req, res, next) => {
     ));
   }
 
-  let customer = await Customer.findOne({ phone: phoneNumber, isActive: true });
+  let customer = null;
+  if (req.body.customerId) {
+    customer = await Customer.findOne({ customerId: req.body.customerId, isActive: true });
+  }
+  if (!customer) {
+    customer = await Customer.findOne({ phone: phoneNumber, isActive: true });
+  }
+
   if (!customer) {
     const customerId = await generateCustomerId(finalBranch);
     customer = await Customer.create({

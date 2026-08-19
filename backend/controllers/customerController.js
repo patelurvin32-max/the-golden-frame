@@ -314,6 +314,15 @@ exports.getCustomers = asyncHandler(async (req, res) => {
   // Filter by menu category if provided
   if (req.query.menuCategoryId) filter.menuCategoryId = req.query.menuCategoryId;
   
+  // Filter by custom date range if provided
+  if (req.query.startDate && req.query.endDate) {
+    const startDate = new Date(req.query.startDate);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(req.query.endDate);
+    endDate.setHours(23, 59, 59, 999);
+    filter.createdAt = { $gte: startDate, $lte: endDate };
+  }
+  
   // Filter by payment status if provided
   if (req.query.paymentStatus) {
     if (req.query.paymentStatus.includes(',')) {
@@ -678,6 +687,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     const now = new Date();
     const transactionDate = now.toISOString().split('T')[0];
     const transactionTime = now.toTimeString().split(' ')[0];
+    let transactionDoc;
     
     const formatDateTimeBackend = (date) => {
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -759,7 +769,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       }
 
       // Create transaction doc first to get its ID
-      const transactionDoc = await Transaction.create({
+      transactionDoc = await Transaction.create({
         transactionId: txnId,
         customer: customer._id,
         customerId: customer.customerId,
@@ -849,14 +859,99 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       }
     }
 
+    // Generate custom Order ID for the new Extra order
+    let orderId;
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    while (retryCount < maxRetries) {
+      try {
+        orderId = await generateOrderId(req.body.branch);
+        if (!orderId || orderId === 'null' || orderId === null) {
+          throw new Error('Generated orderId is null or invalid');
+        }
+        const existingOrder = await Order.findOne({ branch: req.body.branch, orderId });
+        if (existingOrder) {
+          retryCount++;
+          continue;
+        }
+        break;
+      } catch (error) {
+        console.error('Error generating order ID (attempt', retryCount + 1, '):', error);
+        retryCount++;
+        if (retryCount >= maxRetries) {
+          return next(new AppError('Failed to generate unique order ID after multiple attempts. Please try again.', 500));
+        }
+        await new Promise(resolve => setTimeout(resolve, 100 * retryCount));
+      }
+    }
+
+    // Create the order document for this Extra entry so it shows in the table
+    const order = await Order.create({
+      orderId,
+      customer: customer._id,
+      branch: req.body.branch,
+      menuCategoryId: req.body.menuCategoryId,
+      menuItemId: req.body.menuItemId || null,
+      startTime: req.body.startTime ? new Date(req.body.startTime) : now,
+      endTime: req.body.endTime ? new Date(req.body.endTime) : now,
+      paymentStatus: 'paid',
+      paymentMethod: paymentMethod || 'cash',
+      cashAmount: (!paymentMethod || paymentMethod === 'cash') ? originalAmount : 0,
+      onlineAmount: paymentMethod === 'upi' ? originalAmount : 0,
+      walletAmount: paymentMethod === 'wallet' ? originalAmount : 0,
+      pendingPaymentAmount: 0,
+      amountReceived: originalAmount,
+      totalPaid: originalAmount,
+      billAmount: originalAmount,
+      createdBy: req.user._id,
+    });
+
+    await PaymentHistory.create({
+      order: order._id,
+      orderId: order.orderId,
+      customer: customer._id,
+      customerName: customer.name,
+      customerPhone: customer.phone,
+      branch: req.body.branch,
+      paymentMethod: paymentMethod || 'cash',
+      cashAmount: (!paymentMethod || paymentMethod === 'cash') ? originalAmount : 0,
+      onlineAmount: paymentMethod === 'upi' ? originalAmount : 0,
+      walletAmount: paymentMethod === 'wallet' ? originalAmount : 0,
+      totalPaid: originalAmount,
+      billAmount: originalAmount,
+      pendingAmount: 0,
+      paymentStatus: 'paid',
+      notes: req.body.notes || 'Extra category payment processed.',
+      createdBy: req.user._id,
+      paymentNumber: 1,
+      transactionId: txnId,
+      transactionRef: transactionDoc ? transactionDoc._id : null
+    });
+
+    // Populate the order to match the frontend expectations
+    const populatedOrderDoc = await order.populate([
+      { path: 'customer', select: 'name phone email customerId' },
+      { path: 'menuCategoryId', select: 'name status' },
+      { path: 'menuItemId', select: 'name price status' },
+      { path: 'branch', select: 'name code' }
+    ]);
+    
+    const populatedOrder = populatedOrderDoc.toObject();
+
+    const responseData = {
+      ...populatedOrder,
+      name: populatedOrder.customer?.name,
+      phone: populatedOrder.customer?.phone,
+      email: populatedOrder.customer?.email,
+      customerId: populatedOrder.customer?.customerId,
+      walletBalance: customer.walletBalance || 0,
+    };
+
     return res.status(201).json({
       success: true,
       data: {
-        order: {
-          _id: 'auto-settled',
-          orderId: 'AUTO-SETTLED',
-          message: 'Extra amount successfully processed automatically.'
-        }
+        customer: responseData
       }
     });
   }
@@ -917,7 +1012,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   }
   
   const txnId = await generateTransactionId(req.body.branch);
-  const now = new Date();
+  const now = req.body.createdAt ? new Date(req.body.createdAt) : new Date();
   const transactionDate = now.toISOString().split('T')[0];
   const transactionTime = now.toTimeString().split(' ')[0];
 
@@ -941,8 +1036,10 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       : totalPaid,
     totalPaid,
     billAmount,
+    addedItems: req.body.addedItems || [],
     additionalPlayers: req.body.additionalPlayers,
     createdBy: req.user._id,
+    createdAt: req.body.createdAt || undefined,
   });
 
   const addToWallet = req.body.addToWallet || false;
@@ -967,7 +1064,8 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     paymentType: 'Session Bill',
     paymentMethod: paymentMethod || 'cash',
     createdBy: req.user._id,
-    status: 'completed'
+    status: 'completed',
+    createdAt: req.body.createdAt || undefined,
   });
   
   const writePromises = [];
@@ -992,8 +1090,59 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     createdBy: req.user._id,
     paymentNumber: 1, // First payment for this order
     transactionId: txnId,
-    transactionRef: transactionDoc._id
+    transactionRef: transactionDoc._id,
+    createdAt: req.body.createdAt || undefined,
   }));
+
+  // Handle stock deduction for the main menuItemId and addedItems in createCustomer
+  const stockPromises = [];
+
+  if (menuItem && menuItem.inventoryItem) {
+    const invQtyToDeduct = menuItem.inventoryConsumptionQty || 1;
+    const invItem = await Inventory.findById(menuItem.inventoryItem._id);
+    if (invItem && invItem.currentStock >= invQtyToDeduct) {
+      const previousStock = invItem.currentStock;
+      invItem.currentStock -= invQtyToDeduct;
+      stockPromises.push(invItem.save());
+      
+      stockPromises.push(StockTransaction.create({
+        inventoryItem: invItem._id,
+        customer: customer._id,
+        order: order._id,
+        quantity: invQtyToDeduct,
+        type: 'sale',
+        previousStock,
+        newStock: invItem.currentStock,
+        branch: invItem.branch,
+        notes: `Sold 1 ${menuItem.name} (New Order)`,
+        createdBy: req.user._id,
+      }));
+    }
+  }
+
+  if (stockPromises.length > 0) {
+    await Promise.all(stockPromises);
+  }
+
+  // Check for low stock alerts after stock deduction
+  if (menuItem && menuItem.inventoryItem) {
+    const invItem = await Inventory.findById(menuItem.inventoryItem._id);
+    if (invItem && invItem.currentStock <= invItem.minimumStockAlert) {
+      const { checkLowStock } = require('./inventoryController');
+      checkLowStock(invItem._id, req).catch(err => console.error(err));
+    }
+  }
+
+  // Deduct stock for addedItems
+  if (req.body.addedItems && req.body.addedItems.length > 0) {
+    await processCartInventoryChanges(
+      [],
+      req.body.addedItems,
+      customer._id,
+      order._id,
+      req.user._id
+    );
+  }
 
   // Handle wallet debit
   if (walletAmount > 0) {
@@ -1009,6 +1158,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       paymentMethod: req.body.paymentMethod,
       description: `Payment for order ${order.orderId}`,
       createdBy: req.user._id,
+      createdAt: req.body.createdAt || undefined,
     });
     
     // Create separate wallet transaction record
@@ -1028,7 +1178,8 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       description: `Payment for order ${order.orderId}`,
       createdBy: req.user._id,
       transactionId: txnId,
-      transactionRef: transactionDoc._id
+      transactionRef: transactionDoc._id,
+      createdAt: req.body.createdAt || undefined,
     }));
   }
 
@@ -1046,6 +1197,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
       paymentMethod: req.body.paymentMethod,
       description: `Extra payment added to wallet for order ${order.orderId}`,
       createdBy: req.user._id,
+      createdAt: req.body.createdAt || undefined,
     });
     
     // Create separate wallet transaction record and Wallet entry
@@ -1067,7 +1219,8 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
         description: `Extra payment added to wallet for order ${order.orderId}`,
         createdBy: req.user._id,
         transactionId: txnId,
-        transactionRef: transactionDoc._id
+        transactionRef: transactionDoc._id,
+        createdAt: req.body.createdAt || undefined,
       });
       
       const { generateWalletId } = require('./walletManagementController');
@@ -1084,7 +1237,8 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
         createdBy: req.user._id,
         notes: `Auto top-up from extra payment for order ${order.orderId}`,
         transactionId: txnId,
-        transactionRef: transactionDoc._id
+        transactionRef: transactionDoc._id,
+        createdAt: req.body.createdAt || undefined,
       });
 
       transactionDoc.walletTxnRef = wTxn._id;
@@ -1155,6 +1309,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
         billAmount: playerAmount,
         additionalPlayers: `Pending player payment for order ${orderId}`,
         createdBy: req.user._id,
+        createdAt: req.body.createdAt || undefined,
       });
 
       savedPendingPlayersList.push({
@@ -1187,6 +1342,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
         notes: `Pending share for order ${orderId}`,
         createdBy: req.user._id,
         paymentNumber: 1,
+        createdAt: req.body.createdAt || undefined,
       }));
 
       playerCustomer.outstandingBalance = (playerCustomer.outstandingBalance || 0) + playerAmount;
@@ -1199,42 +1355,7 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     writePromises.push(order.save());
   }
 
-  // Deduct stock if menu item is linked to inventory
-  if (menuItem && menuItem.inventoryItem) {
-    const inventoryItem = await Inventory.findById(menuItem.inventoryItem._id);
-    if (inventoryItem) {
-      const previousStock = inventoryItem.currentStock;
-      inventoryItem.currentStock -= 1;
-      writePromises.push(inventoryItem.save());
 
-      // Create stock transaction record
-      writePromises.push(StockTransaction.create({
-        inventoryItem: inventoryItem._id,
-        customer: customer._id,
-        order: order._id,
-        quantity: 1,
-        type: 'sale',
-        previousStock,
-        newStock: inventoryItem.currentStock,
-        branch: inventoryItem.branch,
-        notes: `Sold to customer ${customer.name}`,
-        createdBy: req.user._id,
-      }));
-
-      // Check for low stock alert in background (no await)
-      if (inventoryItem.currentStock <= inventoryItem.minimumStockAlert) {
-        const { Notification } = require('../models/System');
-        Notification.create({
-          branch: inventoryItem.branch,
-          type: 'low_inventory',
-          title: 'Low Stock Alert',
-          message: `${inventoryItem.name} is running low (${inventoryItem.currentStock} ${inventoryItem.unit} remaining).`,
-          targetRoles: ['super_admin', 'branch_admin', 'branch_manager'],
-          meta: { inventoryId: inventoryItem._id.toString() },
-        }).catch(err => console.error('Error creating low stock notification:', err));
-      }
-    }
-  }
 
   // Await all DB writes concurrently
   await Promise.all(writePromises);
@@ -1260,8 +1381,71 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
     walletBalance: customer.walletBalance || 0, // Use the updated customer balance
   };
 
+  // Emit inventory update if stock was potentially changed
+  const io = req.app.get('io');
+  if (io && ((menuItem && menuItem.inventoryItem) || (req.body.addedItems && req.body.addedItems.length > 0))) {
+    io.emit('inventory:updated', { branch: req.body.branch });
+  }
+
   res.status(201).json({ success: true, data: { customer: responseData } });
 });
+
+// Helper for addedItems inventory sync
+const processCartInventoryChanges = async (oldItems, newItems, customerId, orderId, userId) => {
+  const netChanges = {};
+  
+  for (const item of oldItems) {
+    if (item.menuItemId) {
+      const menuItem = await MenuItem.findById(item.menuItemId);
+      if (menuItem && menuItem.inventoryItem) {
+        const invId = menuItem.inventoryItem.toString();
+        const qty = (item.quantity || 1) * (menuItem.inventoryConsumptionQty || 1);
+        if (!netChanges[invId]) netChanges[invId] = { qty: 0, name: menuItem.name };
+        netChanges[invId].qty += qty;
+      }
+    }
+  }
+  
+  for (const item of newItems) {
+    if (item.menuItemId) {
+      const menuItem = await MenuItem.findById(item.menuItemId);
+      if (menuItem && menuItem.inventoryItem) {
+        const invId = menuItem.inventoryItem.toString();
+        const qty = (item.quantity || 1) * (menuItem.inventoryConsumptionQty || 1);
+        if (!netChanges[invId]) netChanges[invId] = { qty: 0, name: menuItem.name };
+        netChanges[invId].qty -= qty;
+      }
+    }
+  }
+  
+  for (const invId of Object.keys(netChanges)) {
+    const netQty = netChanges[invId].qty;
+    if (netQty !== 0) {
+      const invItem = await Inventory.findById(invId);
+      if (invItem) {
+        if (netQty < 0 && invItem.currentStock < Math.abs(netQty)) {
+          throw new AppError(`Insufficient stock for ${netChanges[invId].name}. Available: ${invItem.currentStock}`, 400);
+        }
+        const previousStock = invItem.currentStock;
+        invItem.currentStock += netQty;
+        await invItem.save();
+        
+        await StockTransaction.create({
+          inventoryItem: invItem._id,
+          customer: customerId,
+          order: orderId,
+          quantity: Math.abs(netQty),
+          type: netQty > 0 ? 'refund' : 'sale',
+          previousStock,
+          newStock: invItem.currentStock,
+          branch: invItem.branch,
+          notes: netQty > 0 ? `Restored (cart update)` : `Sold (cart update)`,
+          createdBy: userId,
+        });
+      }
+    }
+  }
+};
 
 // PATCH /api/customers/:id
 exports.updateCustomer = asyncHandler(async (req, res, next) => {
@@ -1372,21 +1556,25 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
 
         // Check for low stock alert in background (no await)
         if (newInventoryItem.currentStock <= newInventoryItem.minimumStockAlert) {
-          const { Notification } = require('../models/System');
-          Notification.create({
-            branch: newInventoryItem.branch,
-            type: 'low_inventory',
-            title: 'Low Stock Alert',
-            message: `${newInventoryItem.name} is running low (${newInventoryItem.currentStock} ${newInventoryItem.unit} remaining).`,
-            targetRoles: ['super_admin', 'branch_admin', 'branch_manager'],
-            meta: { inventoryId: newInventoryItem._id.toString() },
-          }).catch(err => console.error(err));
+          const { checkLowStock } = require('./inventoryController');
+          checkLowStock(newInventoryItem._id, req).catch(err => console.error(err));
         }
       }
     }
 
     // Await all stock saves and transactions concurrently
     await Promise.all(stockPromises);
+  }
+
+  // Handle stock deduction for addedItems (Cart)
+  if (req.body.addedItems !== undefined) {
+    await processCartInventoryChanges(
+      existingOrder.addedItems || [],
+      req.body.addedItems || [],
+      existingOrder.customer,
+      existingOrder._id,
+      req.user._id
+    );
   }
 
   // Normalize currency values for storage on update
@@ -1673,6 +1861,12 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
 
   // Transform to match expected structure with enriched pendingPlayers
   const responseData = await enrichOrderWithPendingPlayers(populatedOrder);
+
+  // Emit inventory update if stock was potentially changed
+  const io = req.app.get('io');
+  if (io && (req.body.menuItemId || req.body.addedItems !== undefined)) {
+    io.emit('inventory:updated', { branch: existingOrder.branch });
+  }
 
   res.status(200).json({ success: true, data: { customer: responseData } });
 });

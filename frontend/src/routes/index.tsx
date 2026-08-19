@@ -11,6 +11,7 @@ const TablesPage = lazy(() => import('@/pages/TablesPage'));
 const BillingPage = lazy(() => import('@/pages/BillingPage'));
 const CustomersPage = lazy(() => import('@/pages/CustomersPage'));
 const MenuPage = lazy(() => import('@/pages/MenuPage'));
+const TournamentsPage = lazy(() => import('@/pages/TournamentsPage'));
 const InventoryPage = lazy(() => import('@/pages/InventoryPage'));
 const ExpensesPage = lazy(() => import('@/pages/ExpensesPage'));
 const ReportsPage = lazy(() => import('@/pages/ReportsPage'));
@@ -26,6 +27,7 @@ const UsersPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default
 const LogsPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default: m.LogsPage })));
 const CentralCustomersPage = lazy(() => import('@/pages/CentralCustomersPage').then((m) => ({ default: m.CentralCustomersPage })));
 const TransactionsPage = lazy(() => import('@/pages/TransactionsPage'));
+const ContactUsPage = lazy(() => import('@/pages/ContactUsPage'));
 
 
 // ── Auth guard ─────────────────────────────────────────────────────────────────
@@ -110,6 +112,7 @@ export function AppRoutes() {
               <Route path="billing/:id" element={<ProtectedRoute permission="billing:manage"><BillingPage /></ProtectedRoute>} />
               <Route path="customers" element={<ProtectedRoute permission="customers:view"><CustomersPage /></ProtectedRoute>} />
               <Route path="menu" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager', 'branch_admin']} permission="menu:view"><MenuPage /></ProtectedRoute>} />
+              <Route path="tournaments/*" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff']}><TournamentsPage /></ProtectedRoute>} />
               <Route path="inventory" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager', 'branch_admin']} permission="inventory:manage"><InventoryPage /></ProtectedRoute>} />
               <Route path="pending-payments" element={<ProtectedRoute permission="customers:view"><PendingPaymentsPage /></ProtectedRoute>} />
               <Route path="expenses" element={<ProtectedRoute permission="expenses:manage"><ExpensesPage /></ProtectedRoute>} />
@@ -122,10 +125,11 @@ export function AppRoutes() {
               <Route path="users" element={<ProtectedRoute roles={['super_admin', 'admin', 'branch_manager', 'branch_admin']} permission="staff:view"><UsersPage /></ProtectedRoute>} />
               <Route path="branches" element={<ProtectedRoute roles={['super_admin']}><BranchesPage /></ProtectedRoute>} />
               <Route path="settings" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><SettingsPage /></ProtectedRoute>} />
-              <Route path="wallet" element={<ProtectedRoute roles={['super_admin', 'branch_admin']}><WalletPage /></ProtectedRoute>} />
+              <Route path="wallet" element={<ProtectedRoute roles={['super_admin', 'branch_admin', 'branch_manager']}><WalletPage /></ProtectedRoute>} />
               <Route path="logs" element={<ProtectedRoute roles={['super_admin']}><LogsPage /></ProtectedRoute>} />
               <Route path="central-customers" element={<ProtectedRoute roles={['super_admin', 'branch_admin', 'branch_manager', 'staff']}><CentralCustomersPage /></ProtectedRoute>} />
               <Route path="transactions" element={<ProtectedRoute roles={['super_admin', 'branch_admin', 'branch_manager']}><TransactionsPage /></ProtectedRoute>} />
+              <Route path="contact-us" element={<ProtectedRoute roles={['super_admin']}><ContactUsPage /></ProtectedRoute>} />
             </Route>
 
             {/* Fallback */}

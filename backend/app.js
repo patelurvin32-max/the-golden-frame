@@ -26,6 +26,7 @@ const {
   logsRouter, notifRouter, schedulerRouter,
 } = require('./routes/otherRoutes');
 const settingsRouter = require('./routes/settingsRoute');
+const tournamentRoutes = require('./routes/tournamentRoutes');
 
 const errorHandler = require('./middleware/errorHandler');
 const AppError = require('./utils/AppError');
@@ -193,6 +194,8 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/logs', logsRouter);
 app.use('/api/notifications', notifRouter);
 app.use('/api/internal/reports', schedulerRouter);
+app.use('/api/tournaments', tournamentRoutes);
+app.use('/api/contact', require('./routes/contactRoutes'));
 
 // ── 404 catch-all ─────────────────────────────────────────────────────────────
 app.all('*', (req, res, next) => {

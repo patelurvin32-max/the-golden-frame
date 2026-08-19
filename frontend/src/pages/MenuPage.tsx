@@ -13,7 +13,9 @@ import { formatCurrency, cn } from '@/utils';
 const emptyForm = {
   name: '',
   category: '',
+  inventoryCategory: '',
   inventoryItem: '',
+  inventoryConsumptionQty: 1,
   price: 0,
   halfPrice: '',
   fullPrice: '',
@@ -64,10 +66,21 @@ export default function MenuPage() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Determine the branch to use for fetching inventory data for the form
+  const branchToUse = selectedBranch || (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : user.branches[0]._id) : null);
+  const formBranch = form.branch || branchToUse || '';
+
+  const { data: inventoryCategories } = useQuery({
+    queryKey: ['inventory-categories', formBranch],
+    queryFn: () => inventoryService.getCategories({ activeOnly: 'true', branch: String(formBranch) }).then((r) => r.data.data.categories),
+    enabled: modal !== null && !!formBranch,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const { data: inventoryItems } = useQuery({
-    queryKey: ['inventory-items'],
-    queryFn: () => inventoryService.getAll({ limit: '1000' }).then((r) => r.data.data.items),
-    enabled: modal === 'create',
+    queryKey: ['inventory-items', formBranch],
+    queryFn: () => inventoryService.getAll({ limit: '1000', branch: String(formBranch) }).then((r) => r.data.data.items),
+    enabled: modal !== null && !!formBranch,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -89,7 +102,6 @@ export default function MenuPage() {
     limit: String(pageSize),
   };
   // For Branch Managers, use their assigned branch if selectedBranch is not set
-  const branchToUse = selectedBranch || (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : user.branches[0]._id) : null);
   if (branchToUse) params.branch = String(branchToUse);
   if (filterCategory !== 'all') params.category = String(filterCategory);
   if (debouncedSearch) params.search = debouncedSearch;
@@ -117,21 +129,37 @@ export default function MenuPage() {
     });
   }, [items, filterCategory]);
 
-  // ── Form Syncing ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (selected) {
-      setForm({
-        name: selected.name,
-        category: selected.category?._id || '',
-        inventoryItem: selected.inventoryItem || '',
-        price: selected.price,
-        halfPrice: selected.halfPrice ? String(selected.halfPrice) : '',
-        fullPrice: selected.fullPrice ? String(selected.fullPrice) : '',
-        description: selected.description || '',
-        status: selected.status,
-        branch: typeof selected.branch === 'string' ? selected.branch : selected.branch?._id || ''
+      let defaultCat = form.inventoryCategory || '';
+      if (selected.inventoryItem && inventoryItems) {
+        const invItem = inventoryItems.find((i: any) => i._id === selected.inventoryItem);
+        if (invItem) {
+          defaultCat = typeof invItem.category === 'string' ? invItem.category : invItem.category?._id || '';
+        }
+      }
+
+      setForm((prev) => {
+        // Prevent unnecessary re-renders if everything is the same
+        const newCat = selected.category?._id || '';
+        const newBranch = typeof selected.branch === 'string' ? selected.branch : selected.branch?._id || '';
+        if (prev.name === selected.name && prev.inventoryCategory === defaultCat && prev.inventoryItem === selected.inventoryItem) return prev;
+        
+        return {
+          name: selected.name,
+          category: newCat,
+          inventoryCategory: defaultCat,
+          inventoryItem: selected.inventoryItem || '',
+          inventoryConsumptionQty: selected.inventoryConsumptionQty || 1,
+          price: selected.price,
+          halfPrice: selected.halfPrice ? String(selected.halfPrice) : '',
+          fullPrice: selected.fullPrice ? String(selected.fullPrice) : '',
+          description: selected.description || '',
+          status: selected.status,
+          branch: newBranch
+        };
       });
-    } else {
+    } else if (modal === 'create' && form.name === '') {
       setForm({ ...emptyForm, category: activeCategories?.[0]?._id || '' });
       // Auto-assign branch for Branch Manager when creating new item
       if (!canSelectBranch && user?.branches?.[0]) {
@@ -139,7 +167,7 @@ export default function MenuPage() {
         setForm((prev) => ({ ...prev, branch: branchId }));
       }
     }
-  }, [selected, activeCategories, canSelectBranch, user]);
+  }, [selected, activeCategories, canSelectBranch, user, inventoryItems, modal]);
 
   useEffect(() => {
     if (selectedCategory) {
@@ -282,6 +310,9 @@ export default function MenuPage() {
       description: form.description.trim() || undefined,
       branch
     };
+    
+    // Remove temporary frontend field
+    delete payload.inventoryCategory;
     if (!canToggleStatus) {
       delete payload.status;
     }
@@ -582,7 +613,7 @@ export default function MenuPage() {
       {/* Item Modal (Create & Edit) */}
       <Modal open={modal === 'create'} onClose={() => setModal(null)} title={selected ? 'Edit Menu Item' : 'Add Menu Item'} size="md">
         <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-1.5"><Label>Item Name *</Label><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
             <div className="space-y-1.5">
               <Label>Category *</Label>
@@ -593,18 +624,45 @@ export default function MenuPage() {
               </Select>
             </div>
           </div>
-          <div className="space-y-1.5">
-            <Label>Link to Inventory Item (Optional)</Label>
-            <Select value={form.inventoryItem} onChange={(e) => setForm((f) => ({ ...f, inventoryItem: e.target.value }))}>
-              <option value="">No inventory link</option>
-              {(inventoryItems || []).map((item: InventoryItem) => (
-                <option key={item._id} value={item._id}>
-                  {item.name} ({item.currentStock || 0} {item.unit})
-                </option>
-              ))}
-            </Select>
+          <div className="grid grid-cols-1 md:grid-cols-[1fr,1fr,120px] gap-3">
+            <div className="space-y-1.5">
+              <Label>Inventory Category</Label>
+              <Select value={form.inventoryCategory} onChange={(e) => setForm((f) => ({ ...f, inventoryCategory: e.target.value, inventoryItem: '' }))}>
+                <option value="">No inventory link</option>
+                {(inventoryCategories || []).map((cat: any) => (
+                  <option key={cat._id} value={cat._id}>
+                    {cat.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            
+            {form.inventoryCategory && (
+              <div className="space-y-1.5">
+                <Label>Inventory Item</Label>
+                <Select value={form.inventoryItem} onChange={(e) => setForm((f) => ({ ...f, inventoryItem: e.target.value }))}>
+                  <option value="">Select item</option>
+                  {(inventoryItems || [])
+                    .filter((item: any) => {
+                       const catId = typeof item.category === 'string' ? item.category : item.category?._id;
+                       return catId === form.inventoryCategory;
+                    })
+                    .map((item: InventoryItem) => (
+                    <option key={item._id} value={item._id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
+            {form.inventoryItem && (
+              <div className="space-y-1.5">
+                <Label>Qty Consumed</Label>
+                <Input type="number" step="1" min="1" value={form.inventoryConsumptionQty} onChange={(e) => setForm((f) => ({ ...f, inventoryConsumptionQty: Number(e.target.value) }))} />
+              </div>
+            )}
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="space-y-1.5"><Label>Price *</Label><Input type="number" step="0.01" min="0" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: Number(e.target.value) }))} /></div>
             <div className="space-y-1.5"><Label>Half Price</Label><Input type="number" step="0.01" min="0" value={form.halfPrice} onChange={(e) => setForm((f) => ({ ...f, halfPrice: e.target.value }))} /></div>
             <div className="space-y-1.5"><Label>Full Price</Label><Input type="number" step="0.01" min="0" value={form.fullPrice} onChange={(e) => setForm((f) => ({ ...f, fullPrice: e.target.value }))} /></div>

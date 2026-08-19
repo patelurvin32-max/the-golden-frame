@@ -218,7 +218,7 @@ exports.getMenuItem = asyncHandler(async (req, res, next) => {
 
 // POST /api/menu
 exports.createMenuItem = asyncHandler(async (req, res, next) => {
-  const { name, category, price, halfPrice, fullPrice, description, status, branch } = req.body;
+  const { name, category, inventoryItem, inventoryConsumptionQty, price, halfPrice, fullPrice, description, status, branch } = req.body;
 
   // Validate required fields
   if (!name || !name.trim()) return next(new AppError('Item name is required.', 400));
@@ -242,6 +242,8 @@ exports.createMenuItem = asyncHandler(async (req, res, next) => {
   const item = await MenuItem.create({
     name: name.trim(),
     category,
+    inventoryItem: inventoryItem || undefined,
+    inventoryConsumptionQty: inventoryConsumptionQty ? Number(inventoryConsumptionQty) : 1,
     price: Number(price),
     halfPrice: halfPrice ? Number(halfPrice) : undefined,
     fullPrice: fullPrice ? Number(fullPrice) : undefined,
@@ -267,7 +269,7 @@ exports.createMenuItem = asyncHandler(async (req, res, next) => {
 
 // PATCH /api/menu/:id
 exports.updateMenuItem = asyncHandler(async (req, res, next) => {
-  const { name, category, price, halfPrice, fullPrice, description, status } = req.body;
+  const { name, category, inventoryItem, inventoryConsumptionQty, price, halfPrice, fullPrice, description, status } = req.body;
 
   const item = await MenuItem.findById(req.params.id).populate('category');
   if (!item) return next(new AppError('Item not found.', 404));
@@ -287,6 +289,8 @@ exports.updateMenuItem = asyncHandler(async (req, res, next) => {
   const updateData = {};
   if (name) updateData.name = name.trim();
   if (category) updateData.category = category;
+  if (inventoryItem !== undefined) updateData.inventoryItem = inventoryItem || undefined;
+  if (inventoryConsumptionQty !== undefined) updateData.inventoryConsumptionQty = Number(inventoryConsumptionQty);
   if (price !== undefined && price !== null && price !== '') updateData.price = Number(price);
   if (halfPrice !== undefined && halfPrice !== null && halfPrice !== '') updateData.halfPrice = Number(halfPrice);
   if (fullPrice !== undefined && fullPrice !== null && fullPrice !== '') updateData.fullPrice = Number(fullPrice);

@@ -23,6 +23,7 @@ router.post('/', [
 ], validate, inventoryController.createInventoryItem);
 router.get('/report', inventoryController.getInventoryReport);
 router.get('/:id', inventoryController.getInventoryItem);
+router.get('/:id/history', inventoryController.getInventoryHistory);
 router.patch('/:id', inventoryController.updateInventoryItem);
 router.post('/:id/restock', [body('quantity').isInt({ min: 1 })], validate, inventoryController.restockItem);
 router.delete('/:id', inventoryController.deleteInventoryItem);

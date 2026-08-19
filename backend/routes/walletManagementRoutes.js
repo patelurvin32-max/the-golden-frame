@@ -6,8 +6,8 @@ const { protect, restrictTo } = require('../middleware/auth');
 // All wallet management routes require authentication
 router.use(protect);
 
-// Role-based access control: Only Super Admin and Branch Admin can access wallet management
-router.use(restrictTo('super_admin', 'branch_admin'));
+// Role-based access control: Super Admin, Branch Admin, and Branch Manager can access wallet management
+router.use(restrictTo('super_admin', 'branch_admin', 'branch_manager'));
 
 // GET /api/wallet-management/stats - Get wallet statistics
 router.get('/stats', walletManagementController.getWalletStats);

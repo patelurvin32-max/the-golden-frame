@@ -54,10 +54,20 @@ export default function PendingPaymentsPage() {
     paymentStatus: 'paid' as 'paid' | 'partial' | 'unpaid',
     notes: '',
     walletBalance: 0,
+    date: new Date().toISOString().split('T')[0],
   });
   const [phoneError, setPhoneError] = useState('');
   const [isLookingUpCustomer, setIsLookingUpCustomer] = useState(false);
   const [oldPaymentMutation, setOldPaymentMutation] = useState(false);
+  const [fromDate, setFromDate] = useState<string>('');
+  const [toDate, setToDate] = useState<string>('');
+  const [searchFromDate, setSearchFromDate] = useState<string>('');
+  const [searchToDate, setSearchToDate] = useState<string>('');
+
+  const [activeTab, setActiveTab] = useState<'regular' | 'customer-wise'>('regular');
+  const [customerWiseModal, setCustomerWiseModal] = useState(false);
+  const [selectedCustomerWiseData, setSelectedCustomerWiseData] = useState<any>(null);
+  const [customerWiseModalPage, setCustomerWiseModalPage] = useState(1);
 
   const userAssignedBranchId = user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)._id) : '';
   const effectiveBranch = selectedBranch || (user?.role !== 'super_admin' ? userAssignedBranchId : '');
@@ -71,9 +81,11 @@ export default function PendingPaymentsPage() {
   };
   if (effectiveBranch) params.branch = effectiveBranch;
   if (search) params.search = search;
+  if (searchFromDate) params.startDate = searchFromDate;
+  if (searchToDate) params.endDate = searchToDate;
 
   const { data, isLoading } = useQuery({
-    queryKey: ['customers', effectiveBranch, search, page, rowsPerPage, 'unpaid,partial', sortBy, sortOrder],
+    queryKey: ['customers', effectiveBranch, search, page, rowsPerPage, 'unpaid,partial', sortBy, sortOrder, searchFromDate, searchToDate],
     queryFn: () => customerService.getAll(params).then((r) => r.data),
     placeholderData: (prev) => prev,
   });
@@ -117,10 +129,30 @@ export default function PendingPaymentsPage() {
     };
   }, [customers, data]);
 
+  const customerWiseData = useMemo(() => {
+    const grouped = new Map<string, { name: string, phone: string, totalAmount: number, transactions: number, records: Customer[] }>();
+    customers.forEach(c => {
+      const bill = (c as any).billAmount || 0;
+      const paid = (c as any).totalPaid || 0;
+      const pending = Math.max(0, bill - paid);
+      if (pending > 0) {
+        const key = c.phone || c.name || c._id;
+        if (!grouped.has(key)) {
+          grouped.set(key, { name: c.name || '—', phone: c.phone || '—', totalAmount: 0, transactions: 0, records: [] });
+        }
+        const data = grouped.get(key)!;
+        data.totalAmount += pending;
+        data.transactions += 1;
+        data.records.push(c);
+      }
+    });
+    return Array.from(grouped.values());
+  }, [customers]);
+
   const updatePaymentMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) => customerService.receivePayment(id, data),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['customers', selectedBranch, search, page, rowsPerPage, 'unpaid,partial', sortBy, sortOrder] });
+      qc.invalidateQueries({ queryKey: ['customers'] });
       qc.invalidateQueries({ queryKey: ['reports'] });
       toast.success('Payment received successfully!');
       setPaymentModal(false);
@@ -233,6 +265,12 @@ export default function PendingPaymentsPage() {
     return daysSinceCreation > OVERDUE_DAYS;
   };
 
+  const handleDateSearch = () => {
+    setSearchFromDate(fromDate);
+    setSearchToDate(toDate);
+    setPage(1);
+  };
+
   // Old Payment handlers
   const handleOldPaymentPhoneChange = async (phone: string) => {
     const cleaned = phone.replace(/\D/g, '').slice(0, 10);
@@ -339,13 +377,13 @@ export default function PendingPaymentsPage() {
         notes: oldPaymentForm.notes.trim(),
         branch: effectiveBranch,
         isOldPayment: true, // Flag to identify old payment entries
+        createdAt: oldPaymentForm.date ? new Date(oldPaymentForm.date).toISOString() : undefined,
       };
 
       await customerService.create(payload);
 
       // Invalidate queries to refresh the table
-      qc.invalidateQueries({ queryKey: ['customers', effectiveBranch, search, page, rowsPerPage, 'unpaid,partial', sortBy, sortOrder] });
-      qc.invalidateQueries({ queryKey: ['customers', effectiveBranch, search, page, rowsPerPage, 'paid', sortBy, sortOrder] });
+      qc.invalidateQueries({ queryKey: ['customers'] });
 
       toast.success('Old payment recorded successfully!');
       setOldPaymentModal(false);
@@ -361,6 +399,7 @@ export default function PendingPaymentsPage() {
         paymentStatus: 'paid',
         notes: '',
         walletBalance: 0,
+        date: new Date().toISOString().split('T')[0],
       });
       setPhoneError('');
     } catch (error: any) {
@@ -384,6 +423,7 @@ export default function PendingPaymentsPage() {
       paymentStatus: 'paid',
       notes: '',
       walletBalance: 0,
+      date: new Date().toISOString().split('T')[0],
     });
     setPhoneError('');
   };
@@ -392,13 +432,27 @@ export default function PendingPaymentsPage() {
     <div className="space-y-5 animate-fade-in">
       <PageHeader
         title="Pending Payments"
-        subtitle={`${summaryStats.totalPendingCustomers} pending payment${summaryStats.totalPendingCustomers === 1 ? '' : 's'}`}
         actions={
           <Button size="sm" onClick={() => setOldPaymentModal(true)}>
             Old Payment
           </Button>
         }
       />
+
+      <div className="flex gap-4 border-b border-border">
+        <button
+          onClick={() => setActiveTab('regular')}
+          className={cn("pb-3 text-sm font-medium border-b-2 transition-colors", activeTab === 'regular' ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}
+        >
+          Regular Pending Payments
+        </button>
+        <button
+          onClick={() => setActiveTab('customer-wise')}
+          className={cn("pb-3 text-sm font-medium border-b-2 transition-colors", activeTab === 'customer-wise' ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}
+        >
+          Customer-wise Pending Payments
+        </button>
+      </div>
 
       {/* Search and Filter */}
       <div className="flex gap-3">
@@ -408,6 +462,21 @@ export default function PendingPaymentsPage() {
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           className="max-w-xs"
         />
+        <Input
+          type="date"
+          value={fromDate}
+          onChange={(e) => setFromDate(e.target.value)}
+          className="w-40"
+        />
+        <Input
+          type="date"
+          value={toDate}
+          onChange={(e) => setToDate(e.target.value)}
+          className="w-40"
+        />
+        <Button onClick={handleDateSearch} className="px-4">
+          Search
+        </Button>
         <Select
           value={sortBy}
           onChange={(e) => { setSortBy(e.target.value); setPage(1); }}
@@ -417,14 +486,6 @@ export default function PendingPaymentsPage() {
           <option value="billAmount">Sort by Amount</option>
           <option value="name">Sort by Name</option>
           <option value="phone">Sort by Phone</option>
-        </Select>
-        <Select
-          value={sortOrder}
-          onChange={(e) => { setSortOrder(e.target.value as 'asc' | 'desc'); setPage(1); }}
-          className="w-32"
-        >
-          <option value="desc">Descending</option>
-          <option value="asc">Ascending</option>
         </Select>
       </div>
 
@@ -480,8 +541,40 @@ export default function PendingPaymentsPage() {
           />
         ) : (
           <>
-            <Table2>
-              <TableHeader>
+            {activeTab === 'customer-wise' ? (
+              <Table2>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Player Name</TableHead>
+                    <TableHead>Mobile Number</TableHead>
+                    <TableHead>Total Pending Transactions</TableHead>
+                    <TableHead>Total Pending Amount</TableHead>
+                    <TableHead>Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {customerWiseData.map((cd, idx) => (
+                    <TableRow key={cd.phone + idx}>
+                      <TableCell className="text-sm font-medium">{cd.name}</TableCell>
+                      <TableCell className="text-sm">{cd.phone}</TableCell>
+                      <TableCell className="text-sm">{cd.transactions}</TableCell>
+                      <TableCell className="text-sm font-bold text-amber-500">{formatCurrency(cd.totalAmount)}</TableCell>
+                      <TableCell>
+                        <Button size="sm" variant="ghost" onClick={() => {
+                          setSelectedCustomerWiseData(cd);
+                          setCustomerWiseModalPage(1);
+                          setCustomerWiseModal(true);
+                        }}>
+                          View Details
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table2>
+            ) : (
+              <Table2>
+                <TableHeader>
                 <TableRow>
                   <TableHead>Pending ID</TableHead>
                   <TableHead>Player Name</TableHead>
@@ -548,6 +641,7 @@ export default function PendingPaymentsPage() {
                 })}
               </TableBody>
             </Table2>
+            )}
 
             {/* Pagination */}
             <div className="flex items-center justify-between p-4 border-t border-border">
@@ -577,6 +671,105 @@ export default function PendingPaymentsPage() {
           </>
         )}
       </Card>
+
+      {/* Customer-wise View Details Modal */}
+      <Modal
+        open={customerWiseModal}
+        onClose={() => {
+          setCustomerWiseModal(false);
+          setSelectedCustomerWiseData(null);
+          setCustomerWiseModalPage(1);
+        }}
+        title="Customer Pending Payment Details"
+        size="lg"
+      >
+        {selectedCustomerWiseData && (
+          <div className="space-y-4">
+            <div className="flex gap-8 p-4 bg-muted/30 rounded-lg border border-border">
+              <div>
+                <p className="text-xs text-muted-foreground">Customer Name</p>
+                <p className="text-sm font-medium">{selectedCustomerWiseData.name}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Mobile Number</p>
+                <p className="text-sm font-medium">{selectedCustomerWiseData.phone}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Total Pending Amount</p>
+                <p className="text-sm font-bold text-amber-500">{formatCurrency(selectedCustomerWiseData.totalAmount)}</p>
+              </div>
+            </div>
+
+            <h3 className="text-sm font-semibold mt-4">Pending Transactions Breakdown</h3>
+            <div className="max-h-[300px] overflow-y-auto rounded-md border border-border">
+              <table className="w-full text-left text-sm text-muted-foreground border-collapse">
+                <thead className="sticky top-0 bg-background z-10">
+                  <tr className="border-b border-border text-xs text-foreground uppercase font-semibold">
+                    <th className="py-2 px-3">Pending ID / Date</th>
+                    <th className="py-2 px-3 text-right">Bill Amount</th>
+                    <th className="py-2 px-3 text-right">Total Paid</th>
+                    <th className="py-2 px-3 text-right">Remaining Pending</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedCustomerWiseData.records
+                    .slice((customerWiseModalPage - 1) * 3, customerWiseModalPage * 3)
+                    .map((r: any, i: number) => {
+                    const bill = r.billAmount || 0;
+                    const paid = r.totalPaid || 0;
+                    const pending = Math.max(0, bill - paid);
+                    return (
+                      <tr key={i} className="border-b border-border/50 text-foreground hover:bg-muted/10">
+                        <td className="py-2 px-3">
+                          <div className="font-mono text-xs">{r.orderId || r._id?.slice(-8)}</div>
+                          <div className="text-xs text-muted-foreground mt-0.5">{formatDate(r.createdAt || '', 'dd MMM yyyy')}</div>
+                        </td>
+                        <td className="py-2 px-3 text-right">{formatCurrency(bill)}</td>
+                        <td className="py-2 px-3 text-right">{formatCurrency(paid)}</td>
+                        <td className="py-2 px-3 text-right font-semibold text-amber-500">{formatCurrency(pending)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {selectedCustomerWiseData.records.length > 3 && (
+              <div className="flex justify-between items-center mt-2 px-1">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setCustomerWiseModalPage(p => Math.max(1, p - 1))}
+                  disabled={customerWiseModalPage === 1}
+                >
+                  ← Previous
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Page {customerWiseModalPage} of {Math.ceil(selectedCustomerWiseData.records.length / 3)}
+                </span>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setCustomerWiseModalPage(p => Math.min(Math.ceil(selectedCustomerWiseData.records.length / 3), p + 1))}
+                  disabled={customerWiseModalPage >= Math.ceil(selectedCustomerWiseData.records.length / 3)}
+                >
+                  Next →
+                </Button>
+              </div>
+            )}
+
+            <div className="flex justify-end pt-4">
+              <Button onClick={() => {
+                setCustomerWiseModal(false);
+                setSelectedCustomerWiseData(null);
+                setCustomerWiseModalPage(1);
+              }}>
+                Close
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* View Details Modal */}
       <Modal
@@ -950,6 +1143,19 @@ export default function PendingPaymentsPage() {
             )}
           </div>
 
+          {/* Date */}
+          <div className="space-y-1.5">
+            <Label htmlFor="oldPaymentDate">
+              Date <span className="text-destructive">*</span>
+            </Label>
+            <Input
+              id="oldPaymentDate"
+              type="date"
+              value={oldPaymentForm.date}
+              onChange={(e) => setOldPaymentForm((prev) => ({ ...prev, date: e.target.value }))}
+            />
+          </div>
+
           {/* Amount */}
           <div className="space-y-1.5">
             <Label htmlFor="oldPaymentAmount">
@@ -1106,6 +1312,7 @@ export default function PendingPaymentsPage() {
                 !oldPaymentForm.amount ||
                 (oldPaymentForm.paymentStatus !== 'unpaid' && !oldPaymentForm.amountReceived) ||
                 (oldPaymentForm.paymentStatus !== 'unpaid' && !oldPaymentForm.paymentMethod) ||
+                !oldPaymentForm.date ||
                 !!phoneError ||
                 oldPaymentMutation
               }

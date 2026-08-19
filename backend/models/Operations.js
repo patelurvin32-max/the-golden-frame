@@ -11,8 +11,8 @@ const inventorySchema = new mongoose.Schema(
     openingStock: { type: Number, default: 0, min: 0 },
     currentStock: { type: Number, default: 0, min: 0 },
     minimumStockAlert: { type: Number, default: 5 },
-    purchasePrice: { type: Number, required: true, min: 0 },
-    sellingPrice: { type: Number, required: true, min: 0 },
+    purchasePrice: { type: Number, min: 0 },
+    sellingPrice: { type: Number, min: 0 },
     purchaseHistory: [
       {
         quantity: Number,
@@ -94,6 +94,7 @@ const menuItemSchema = new mongoose.Schema(
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
     category: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuCategory', required: true },
     inventoryItem: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory' },
+    inventoryConsumptionQty: { type: Number, min: 0.01 }, // Quantity to deduct per sale
     price: { type: Number, required: true, min: 0 },
     halfPrice: { type: Number, min: 0 },
     fullPrice: { type: Number, min: 0 },
@@ -118,10 +119,12 @@ const stockTransactionSchema = new mongoose.Schema(
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
     order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
     quantity: { type: Number, required: true },
-    type: { type: String, enum: ['sale', 'refund', 'restock', 'adjustment'], required: true },
+    type: { type: String, enum: ['sale', 'refund', 'restock', 'adjustment', 'stock_in', 'stock_out', 'transfer'], required: true },
     previousStock: { type: Number, required: true },
     newStock: { type: Number, required: true },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
+    cost: { type: Number, min: 0 },
+    supplier: { type: String, trim: true },
     notes: { type: String, trim: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

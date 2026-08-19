@@ -1,5 +1,5 @@
 import api from './api';
-import type { ApiResponse, AttendanceHistoryStats, AttendanceRecord, AttendanceStats, Bill, Branch, Customer, DashboardStats, Expense, InventoryCategoryDoc, InventoryItem, InventoryReportItem, InventoryReportSummary, MenuItem, MyAttendanceResponse, Session, Table, User, Wallet } from '@/types';
+import type { ApiResponse, AttendanceHistoryStats, AttendanceRecord, AttendanceStats, Bill, Branch, Customer, DashboardStats, Expense, InventoryCategoryDoc, InventoryItem, InventoryReportItem, InventoryReportSummary, MenuItem, MyAttendanceResponse, Session, Table, User, Wallet, StockTransaction, InventoryHistorySummary } from '@/types';
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 export const authService = {
@@ -100,6 +100,7 @@ export const inventoryService = {
   restock: (id: string, data: { quantity: number; cost: number; supplier?: string }) =>
     api.post<ApiResponse<{ item: InventoryItem }>>(`/inventory/${id}/restock`, data),
   delete: (id: string) => api.delete(`/inventory/${id}`),
+  getHistory: (id: string, params?: Record<string, any>) => api.get<ApiResponse<{ transactions: StockTransaction[]; summary: InventoryHistorySummary; pagination: any }>>(`/inventory/${id}/history`, { params }),
 
   getCategories: (params?: Record<string, string>) => api.get<ApiResponse<{ categories: any[] }>>('/inventory/categories', { params }),
   createCategory: (data: { name: string; branch?: string; status: 'Active' | 'Inactive' }) => api.post<ApiResponse<{ category: any }>>('/inventory/categories', data),
@@ -208,4 +209,27 @@ export const walletManagementService = {
   delete: (id: string) => api.delete(`/wallet-management/${id}`),
   downloadPDF: (id: string) => api.get(`/wallet-management/${id}/pdf`, { responseType: 'blob' }),
   getStats: (params?: Record<string, string>) => api.get<ApiResponse<{ today: number; week: number; month: number; total: number; todayAmount: number; monthAmount: number }>>('/wallet-management/stats', { params }),
+};
+
+// ── Tournaments ───────────────────────────────────────────────────────────────
+export const tournamentService = {
+  getAll: (params?: Record<string, string>) => api.get('/tournaments', { params }),
+  getOne: (id: string) => api.get(`/tournaments/${id}`),
+  create: (data: any) => api.post('/tournaments', data),
+  update: (id: string, data: any) => api.put(`/tournaments/${id}`, data),
+  delete: (id: string) => api.delete(`/tournaments/${id}`),
+  getParticipants: (id: string) => api.get(`/tournaments/${id}/participants`),
+  registerParticipant: (id: string, customerId: string) => api.post(`/tournaments/${id}/participants`, { customerId }),
+  generateBracket: (id: string, forceRegenerate?: boolean) => api.post(`/tournaments/${id}/generate-bracket`, { forceRegenerate }),
+  getBracket: (id: string) => api.get(`/tournaments/${id}/bracket`),
+  updateMatchResult: (matchId: string, payload: any) => api.put(`/tournaments/match/${matchId}`, payload),
+};
+
+export const contactService = {
+  getMessages: (params: { page?: number; limit?: number; status?: string; branch?: string; search?: string }) =>
+    api.get('/contact', { params }),
+  updateStatus: (id: string, status: 'new' | 'read' | 'resolved') =>
+    api.patch(`/contact/${id}/status`, { status }),
+  deleteMessage: (id: string) =>
+    api.delete(`/contact/${id}`),
 };

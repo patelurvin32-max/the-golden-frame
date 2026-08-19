@@ -2,8 +2,7 @@ const { Bill, Payment } = require('../models/Billing');
 const Session = require('../models/Session');
 const Customer = require('../models/Customer');
 const Order = require('../models/Order');
-const { Inventory } = require('../models/Operations');
-const { MenuItem } = require('../models/Operations');
+const { Inventory, StockTransaction, MenuItem } = require('../models/Operations');
 const { Settings } = require('../models/System');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
@@ -132,6 +131,36 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     // Add session added items (beverages & accessories) to bill line items
     if (session.addedItems && session.addedItems.length > 0) {
       for (const addedItem of session.addedItems) {
+        if (addedItem.menuItemId) {
+          const menuItemDoc = await MenuItem.findById(addedItem.menuItemId);
+          if (menuItemDoc && menuItemDoc.inventoryItem) {
+            const invQtyToDeduct = (addedItem.quantity || 1) * (menuItemDoc.inventoryConsumptionQty || 1);
+            const invItem = await Inventory.findById(menuItemDoc.inventoryItem);
+            if (invItem) {
+              if (invItem.currentStock < invQtyToDeduct) {
+                throw new AppError(`Insufficient stock for ${invItem.name} (linked to ${menuItemDoc.name}). Available: ${invItem.currentStock}, Required: ${invQtyToDeduct}`, 400);
+              }
+              invItem.currentStock -= invQtyToDeduct;
+              await invItem.save();
+              await StockTransaction.create({
+                inventoryItem: invItem._id,
+                branch: targetBranch,
+                type: 'stock_out',
+                quantity: invQtyToDeduct,
+                reason: 'Sale / Auto Deduction',
+                notes: `Sold ${addedItem.quantity} ${menuItemDoc.name}`,
+                performedBy: req.user._id,
+              });
+
+              // Check for low stock alert
+              if (invItem.currentStock <= invItem.minimumStockAlert) {
+                const { checkLowStock } = require('./inventoryController');
+                checkLowStock(invItem._id, req).catch(err => console.error(err));
+              }
+            }
+          }
+        }
+
         items.push({
           description: `${addedItem.categoryName} - ${addedItem.itemName}`,
           quantity: addedItem.quantity,
@@ -795,7 +824,8 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
     : 0;
 
   if (order.menuItemId) {
-    const menuItem = order.menuItemId;
+
+
     const primaryItemTotal = Math.max(0, (order.billAmount || menuItem.price || 0) - addedItemsTotal);
     items.push({
       description: `${order.menuCategoryId?.name || 'Session'} - ${menuItem.name}`,
@@ -808,7 +838,9 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
   }
 
   if (Array.isArray(order.addedItems) && order.addedItems.length > 0) {
-    order.addedItems.forEach((added) => {
+    for (const added of order.addedItems) {
+
+
       items.push({
         description: `${added.categoryName || 'Menu'} - ${added.itemName}`,
         quantity: added.quantity || 1,
@@ -817,7 +849,7 @@ exports.createBillFromCustomer = asyncHandler(async (req, res, next) => {
         type: 'other',
       });
       subtotal += (added.totalAmount || 0);
-    });
+    }
   }
 
   // Tax calculation

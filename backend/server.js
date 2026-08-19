@@ -106,7 +106,7 @@ const start = async () => {
   // Validate required environment variables
   const requiredEnvVars = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'];
   const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
-  
+
   if (missingVars.length > 0) {
     console.error('❌ Missing required environment variables:', missingVars.join(', '));
     console.error('Please set these in your .env file or production environment.');
@@ -240,7 +240,7 @@ const seedDefaults = async () => {
   // Super admin account
   const adminEmail = process.env.SUPER_ADMIN_EMAIL || 'admin@thegoldenframe.app';
   const adminPassword = process.env.SUPER_ADMIN_PASSWORD || 'Admin@123456';
-  
+
   const adminUser = await User.findOne({ email: adminEmail });
   if (adminUser) {
     adminUser.name = 'Super Admin';
@@ -258,54 +258,7 @@ const seedDefaults = async () => {
     });
   }
 
-  // Seed default categories
-  const InventoryCategory = require('./models/InventoryCategory');
-  const { Inventory } = require('./models/Operations');
 
-  const defaultCats = [
-    'Cue Sticks',
-    'Cue Tips',
-    'Balls',
-    'Chalk',
-    'Gloves',
-    'Food',
-    'Cold Drinks',
-    'Snacks',
-    'Other'
-  ];
-
-  for (const catName of defaultCats) {
-    const exists = await InventoryCategory.findOne({ name: catName });
-    if (!exists) {
-      await InventoryCategory.create({ name: catName, status: 'Active' });
-    }
-  }
-
-  // Auto-migrate old string-based categories to dynamic category refs
-  const itemsWithOldCategory = await Inventory.find({ category: { $not: { $type: 'objectId' } } });
-  if (itemsWithOldCategory.length > 0) {
-    for (const item of itemsWithOldCategory) {
-      let mappedName = 'Other';
-      const rawCategory = String(item.category || '');
-      if (rawCategory === 'cue_stick') mappedName = 'Cue Sticks';
-      else if (rawCategory === 'cue_tips') mappedName = 'Cue Tips';
-      else if (rawCategory === 'balls') mappedName = 'Balls';
-      else if (rawCategory === 'chalk') mappedName = 'Chalk';
-      else if (rawCategory === 'gloves') mappedName = 'Gloves';
-      else if (rawCategory === 'food') mappedName = 'Food';
-      else if (rawCategory === 'cold_drinks') mappedName = 'Cold Drinks';
-      else if (rawCategory === 'snacks') mappedName = 'Snacks';
-      else if (rawCategory === 'other') mappedName = 'Other';
-      else mappedName = rawCategory || 'Other';
-
-      let catDoc = await InventoryCategory.findOne({ name: mappedName });
-      if (!catDoc) {
-        catDoc = await InventoryCategory.create({ name: mappedName, status: 'Active' });
-      }
-      item.category = catDoc._id;
-      await item.save();
-    }
-  }
 };
 
 // ── Graceful shutdown ──────────────────────────────────────────────────────────

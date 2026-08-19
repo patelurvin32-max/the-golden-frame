@@ -445,7 +445,7 @@ export default function CustomersPage() {
   const handleCustomerIdChange = (val: string) => {
     const term = val.trim().toUpperCase();
     setForm((f) => ({ ...f, customerId: term }));
-    if (/^[A-Z0-9]{3,}$/.test(term)) {
+    if (/^[A-Za-z]{2,3}[0-9]{5}$/.test(term)) {
       lookupCustomerByTerm(term, false);
     }
   };
@@ -868,7 +868,6 @@ export default function CustomersPage() {
     <div className="space-y-5 animate-fade-in">
       <PageHeader
         title="Customers"
-        subtitle={`${total} total custome${total === 1 ? 'r' : 'rs'}`}
         actions={<Button size="sm" onClick={openCreate}>+ Add Customer</Button>}
       />
 

@@ -146,5 +146,10 @@ export const useSocket = () => {
     return () => { socket?.off('availability:changed', callback); };
   };
 
-  return { socket: socketRef.current, onTableUpdate, onNotification, onReservationChange, onMenuUpdate, onAvailabilityChange };
+  const onInventoryUpdate = (callback: (data: any) => void) => {
+    socket?.on('inventory:updated', callback);
+    return () => { socket?.off('inventory:updated', callback); };
+  };
+
+  return { socket: socketRef.current, onTableUpdate, onNotification, onReservationChange, onMenuUpdate, onAvailabilityChange, onInventoryUpdate };
 };

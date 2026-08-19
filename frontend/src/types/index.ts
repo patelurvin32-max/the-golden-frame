@@ -252,6 +252,7 @@ export interface InventoryCategoryDoc {
   _id: string;
   name: string;
   status: 'Active' | 'Inactive';
+  branch?: any;
   totalItems?: number;
   createdAt?: string;
   updatedAt?: string;
@@ -274,6 +275,30 @@ export interface InventoryItem {
   minimumStockAlert?: number;
 }
 
+export interface StockTransaction {
+  _id: string;
+  inventoryItem: string;
+  customer?: string;
+  order?: string;
+  quantity: number;
+  type: 'sale' | 'refund' | 'restock' | 'adjustment' | 'stock_in' | 'stock_out' | 'transfer';
+  previousStock: number;
+  newStock: number;
+  branch: string;
+  notes?: string;
+  createdBy?: { _id: string; name: string } | string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InventoryHistorySummary {
+  openingStock: number;
+  closingStock: number;
+  totalIn: number;
+  totalOut: number;
+  totalAdjustments: number;
+}
+
 export interface MenuCategoryDoc {
   _id: string;
   name: string;
@@ -289,6 +314,7 @@ export interface MenuItem {
   branch: any;
   category: MenuCategoryDoc;
   inventoryItem?: string;
+  inventoryConsumptionQty?: number;
   price: number;
   halfPrice?: number;
   fullPrice?: number;
@@ -378,19 +404,7 @@ export interface MyAttendanceResponse {
   };
 }
 
-export interface StockTransaction {
-  _id: string;
-  inventoryItem: string;
-  customer?: string;
-  quantity: number;
-  type: 'sale' | 'refund' | 'restock' | 'adjustment';
-  previousStock: number;
-  newStock: number;
-  branch: any;
-  notes?: string;
-  createdBy?: string;
-  createdAt: string;
-}
+
 
 export interface InventoryReportItem {
   _id: string;

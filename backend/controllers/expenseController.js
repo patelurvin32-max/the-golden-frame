@@ -22,21 +22,35 @@ exports.getExpenseStats = asyncHandler(async (req, res) => {
   weekStart.setDate(weekStart.getDate() - weekStart.getDay()); // Start of week (Sunday)
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  // Get counts
-  const [todayCount, weekCount, monthCount, totalCount] = await Promise.all([
-    Expense.countDocuments({ ...filter, date: { $gte: todayStart } }),
-    Expense.countDocuments({ ...filter, date: { $gte: weekStart } }),
-    Expense.countDocuments({ ...filter, date: { $gte: monthStart } }),
-    Expense.countDocuments(filter),
+  // Get counts and amounts
+  const getStats = async (dateFilter) => {
+    const match = { ...filter };
+    if (dateFilter) match.date = dateFilter;
+    const result = await Expense.aggregate([
+      { $match: match },
+      { $group: { _id: null, count: { $sum: 1 }, amount: { $sum: "$amount" } } }
+    ]);
+    return result.length > 0 ? result[0] : { count: 0, amount: 0 };
+  };
+
+  const [today, week, month, total] = await Promise.all([
+    getStats({ $gte: todayStart }),
+    getStats({ $gte: weekStart }),
+    getStats({ $gte: monthStart }),
+    getStats(null),
   ]);
 
   res.status(200).json({
     success: true,
     data: {
-      today: todayCount,
-      week: weekCount,
-      month: monthCount,
-      total: totalCount,
+      today: today.count,
+      todayAmount: today.amount,
+      week: week.count,
+      weekAmount: week.amount,
+      month: month.count,
+      monthAmount: month.amount,
+      total: total.count,
+      totalAmount: total.amount,
     },
   });
 });

@@ -166,7 +166,6 @@ export default function ExpensesPage() {
     <div className="space-y-5 animate-fade-in">
       <PageHeader
         title="Expenses"
-        subtitle={canViewDashboard ? `Total: ${formatCurrency(totalExpenses)}` : undefined}
         actions={<Button size="sm" onClick={() => { setEditId(null); setForm({ ...emptyForm }); setPaymentForm({ ...initialPaymentForm }); setModal(true); }}>+ Add Expense</Button>}
       />
 
@@ -177,7 +176,8 @@ export default function ExpensesPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground font-medium">Today</p>
-                <p className="text-2xl font-bold text-foreground mt-1">{stats.today}</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{formatCurrency(stats.todayAmount || 0)}</p>
+                <p className="text-xs text-muted-foreground mt-1">{stats.today} expense{stats.today === 1 ? '' : 's'}</p>
               </div>
               <div className="h-10 w-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-lg">
                 📅
@@ -188,7 +188,8 @@ export default function ExpensesPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground font-medium">Week</p>
-                <p className="text-2xl font-bold text-foreground mt-1">{stats.week}</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{formatCurrency(stats.weekAmount || 0)}</p>
+                <p className="text-xs text-muted-foreground mt-1">{stats.week} expense{stats.week === 1 ? '' : 's'}</p>
               </div>
               <div className="h-10 w-10 rounded-xl bg-green-500/10 flex items-center justify-center text-lg">
                 📊
@@ -199,7 +200,8 @@ export default function ExpensesPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground font-medium">Month</p>
-                <p className="text-2xl font-bold text-foreground mt-1">{stats.month}</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{formatCurrency(stats.monthAmount || 0)}</p>
+                <p className="text-xs text-muted-foreground mt-1">{stats.month} expense{stats.month === 1 ? '' : 's'}</p>
               </div>
               <div className="h-10 w-10 rounded-xl bg-purple-500/10 flex items-center justify-center text-lg">
                 📈
@@ -210,7 +212,8 @@ export default function ExpensesPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground font-medium">Total</p>
-                <p className="text-2xl font-bold text-foreground mt-1">{stats.total}</p>
+                <p className="text-2xl font-bold text-foreground mt-1">{formatCurrency(stats.totalAmount || 0)}</p>
+                <p className="text-xs text-muted-foreground mt-1">{stats.total} expense{stats.total === 1 ? '' : 's'}</p>
               </div>
               <div className="h-10 w-10 rounded-xl bg-amber-500/10 flex items-center justify-center text-lg">
                 💸

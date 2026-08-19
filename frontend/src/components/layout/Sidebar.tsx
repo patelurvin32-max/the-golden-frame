@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { path: '/menu', label: 'Menu', icon: '🎯', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], parent: 'master', permission: 'menu:view' },
   { path: '/inventory', label: 'Inventory', icon: '📦', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], parent: 'master', permission: 'inventory:manage' },
   { path: '/pending-payments', label: 'Pending Payments', icon: '💳', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff', 'cashier'], permission: 'customers:view' },
+  { path: '/tournaments', label: 'Tournaments', icon: '🏆', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff'], parent: 'master' },
   { path: '/expenses', label: 'Expenses', icon: '💸', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], permission: 'expenses:manage' },
   { path: '/attendance', label: 'Attendance', icon: '✅', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], permission: 'attendance:manage' },
   { path: '/my-attendance', label: 'My Attendance', icon: '🕒', roles: ['staff'] },
@@ -22,18 +23,31 @@ const NAV_ITEMS = [
   { path: '/users', label: 'Staff', icon: '👤', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin'], parent: 'master', permission: 'staff:view' },
   { path: '/branches', label: 'Branches', icon: '🏢', roles: ['super_admin'], parent: 'master' },
   { path: '/settings', label: 'Settings', icon: '⚙️', roles: ['super_admin', 'branch_admin'], parent: 'master' },
-  { path: '/wallet', label: 'Wallet', icon: '💼', roles: ['super_admin', 'branch_admin'], parent: 'master' },
+  { path: '/wallet', label: 'Wallet', icon: '💼', roles: ['super_admin', 'branch_admin', 'branch_manager'], parent: 'master' },
   { path: '/central-customers', label: 'Central Customers', icon: '📇', roles: ['super_admin', 'branch_admin', 'branch_manager', 'staff'], parent: 'master' },
   { path: '/transactions', label: 'Transactions', icon: '💸', roles: ['super_admin', 'branch_admin', 'branch_manager'], parent: 'master' },
   { path: '/logs', label: 'Audit Logs', icon: '📋', roles: ['super_admin'], parent: 'master' },
+  { path: '/contact-us', label: 'Contact Us', icon: '📬', roles: ['super_admin'], parent: 'master' },
   { id: 'master', label: 'Master', icon: '⚙️', roles: ['super_admin', 'admin', 'branch_manager', 'branch_admin', 'staff'], isParent: true },
 ];
 
 export const Sidebar = () => {
   const { pathname } = useLocation();
   const { user, logout } = useAuthStore();
-  const { sidebarOpen, setSidebarOpen, masterMenuOpen, toggleMasterMenu, selectedBranch } = useAppStore();
+  const { sidebarOpen, setSidebarOpen, masterMenuOpen, toggleMasterMenu, appMenuOpen, toggleAppMenu, selectedBranch } = useAppStore();
   const role = user?.role || 'staff';
+
+  const isSuperOrBranchAdmin = role === 'super_admin' || role === 'branch_admin';
+
+  const dynamicNavItems = [...NAV_ITEMS];
+  if (isSuperOrBranchAdmin) {
+    dynamicNavItems.push({ id: 'app', label: 'App Master', icon: '⚙️', roles: ['super_admin', 'branch_admin'], isParent: true });
+    dynamicNavItems.forEach(item => {
+      if (['/wallet', '/tournaments', '/branches', '/settings', '/logs'].includes(item.path || '')) {
+        item.parent = 'app';
+      }
+    });
+  }
 
   // Fetch branch-specific settings for business name
   const settingsBranch: string | undefined = selectedBranch || (user?.role === 'super_admin' ? undefined : (typeof user?.branches?.[0] === 'string' ? user.branches[0] : user?.branches?.[0]?._id));
@@ -45,10 +59,10 @@ export const Sidebar = () => {
 
   const businessName = (settingsData as any)?.data?.settings?.businessName || 'The Golden Frame';
 
-  const filtered = NAV_ITEMS.filter((item) => {
-    // If it's the master parent item, show if they can see any of its children
-    if (item.id === 'master') {
-      const children = NAV_ITEMS.filter((c) => c.parent === 'master');
+  const filtered = dynamicNavItems.filter((item) => {
+    // If it's a parent item (e.g. master, app), show if they can see any of its children
+    if (item.isParent) {
+      const children = dynamicNavItems.filter((c) => c.parent === item.id);
       return children.some((c) => {
         if (c.roles.includes(role)) {
           if (c.permission) {
@@ -75,8 +89,8 @@ export const Sidebar = () => {
   const branchManagerOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master'];
   // Custom ordering for Super Admin / Admin role
   const superAdminOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master'];
-  // Custom ordering for Master children
-  const masterChildOrder = ['menu', 'users', 'inventory', 'wallet', 'central-customers', 'transactions', 'branches', 'settings', 'logs'];
+  // Custom ordering for Master and App children
+  const masterChildOrder = ['menu', 'users', 'inventory', 'wallet', 'central-customers', 'transactions', 'tournaments', 'branches', 'settings', 'logs'];
 
   const orderedFiltered = role === 'staff'
     ? filtered.sort((a, b) => {
@@ -127,20 +141,23 @@ export const Sidebar = () => {
                 const indexB = masterChildOrder.indexOf(keyB);
                 return (indexA === -1 ? 99 : indexA) - (indexB === -1 ? 99 : indexB);
               });
+            const isOpen = item.id === 'master' ? masterMenuOpen : appMenuOpen;
+            const toggle = item.id === 'master' ? toggleMasterMenu : toggleAppMenu;
+
             return (
               <div key={item.id}>
                 <button
-                  onClick={toggleMasterMenu}
+                  onClick={toggle}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 text-muted-foreground hover:text-foreground hover:bg-accent"
                 >
                   <span className="text-base w-5 text-center">{item.icon}</span>
                   {item.label}
                   <span className="ml-auto">
-                    {masterMenuOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                   </span>
                 </button>
                 <AnimatePresence>
-                  {masterMenuOpen && (
+                  {isOpen && (
                     <motion.div
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: 'auto', opacity: 1 }}

@@ -214,7 +214,6 @@ export default function WalletPage() {
     <div className="space-y-5 animate-fade-in">
       <PageHeader
         title="Wallet Management"
-        subtitle={`Total: ${formatCurrency(totalWalletAmount)}`}
         actions={<Button size="sm" onClick={() => { setEditId(null); setForm({ ...emptyForm }); setPaymentForm({ ...initialPaymentForm }); setModal(true); }}>+ Add Wallet</Button>}
       />
 
@@ -224,8 +223,8 @@ export default function WalletPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground font-medium">Today</p>
-              <p className="text-2xl font-bold text-foreground mt-1">{stats.today}</p>
-              <p className="text-xs text-muted-foreground mt-1">{formatCurrency(stats.todayAmount)}</p>
+              <p className="text-2xl font-bold text-foreground mt-1">{formatCurrency(stats.todayAmount || 0)}</p>
+              <p className="text-xs text-muted-foreground mt-1">{stats.today} wallet{stats.today === 1 ? '' : 's'}</p>
             </div>
             <div className="h-10 w-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-lg">
               📅
@@ -236,7 +235,8 @@ export default function WalletPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground font-medium">This Week</p>
-              <p className="text-2xl font-bold text-foreground mt-1">{stats.week}</p>
+              <p className="text-2xl font-bold text-foreground mt-1">{formatCurrency(stats.weekAmount || 0)}</p>
+              <p className="text-xs text-muted-foreground mt-1">{stats.week} wallet{stats.week === 1 ? '' : 's'}</p>
             </div>
             <div className="h-10 w-10 rounded-xl bg-green-500/10 flex items-center justify-center text-lg">
               📊
@@ -247,8 +247,8 @@ export default function WalletPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground font-medium">This Month</p>
-              <p className="text-2xl font-bold text-foreground mt-1">{stats.month}</p>
-              <p className="text-xs text-muted-foreground mt-1">{formatCurrency(stats.monthAmount)}</p>
+              <p className="text-2xl font-bold text-foreground mt-1">{formatCurrency(stats.monthAmount || 0)}</p>
+              <p className="text-xs text-muted-foreground mt-1">{stats.month} wallet{stats.month === 1 ? '' : 's'}</p>
             </div>
             <div className="h-10 w-10 rounded-xl bg-purple-500/10 flex items-center justify-center text-lg">
               📈
@@ -259,7 +259,8 @@ export default function WalletPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground font-medium">Total</p>
-              <p className="text-2xl font-bold text-foreground mt-1">{stats.total}</p>
+              <p className="text-2xl font-bold text-foreground mt-1">{formatCurrency(stats.totalAmount || 0)}</p>
+              <p className="text-xs text-muted-foreground mt-1">{stats.total} wallet{stats.total === 1 ? '' : 's'}</p>
             </div>
             <div className="h-10 w-10 rounded-xl bg-orange-500/10 flex items-center justify-center text-lg">
               💼
