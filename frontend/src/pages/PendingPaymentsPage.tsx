@@ -73,8 +73,8 @@ export default function PendingPaymentsPage() {
   const effectiveBranch = selectedBranch || (user?.role !== 'super_admin' ? userAssignedBranchId : '');
 
   const params: Record<string, string> = {
-    page: String(page),
-    limit: String(rowsPerPage),
+    page: activeTab === 'customer-wise' ? '1' : String(page),
+    limit: activeTab === 'customer-wise' ? '9999' : String(rowsPerPage),
     paymentStatus: 'unpaid,partial',
     sortBy,
     sortOrder
@@ -85,7 +85,7 @@ export default function PendingPaymentsPage() {
   if (searchToDate) params.endDate = searchToDate;
 
   const { data, isLoading } = useQuery({
-    queryKey: ['customers', effectiveBranch, search, page, rowsPerPage, 'unpaid,partial', sortBy, sortOrder, searchFromDate, searchToDate],
+    queryKey: ['customers', effectiveBranch, search, page, rowsPerPage, 'unpaid,partial', sortBy, sortOrder, searchFromDate, searchToDate, activeTab],
     queryFn: () => customerService.getAll(params).then((r) => r.data),
     placeholderData: (prev) => prev,
   });
@@ -148,6 +148,11 @@ export default function PendingPaymentsPage() {
     });
     return Array.from(grouped.values());
   }, [customers]);
+
+  const paginatedCustomerWiseData = useMemo(() => {
+    const start = (page - 1) * rowsPerPage;
+    return customerWiseData.slice(start, start + rowsPerPage);
+  }, [customerWiseData, page, rowsPerPage]);
 
   const updatePaymentMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) => customerService.receivePayment(id, data),
@@ -441,13 +446,13 @@ export default function PendingPaymentsPage() {
 
       <div className="flex gap-4 border-b border-border">
         <button
-          onClick={() => setActiveTab('regular')}
+          onClick={() => { setActiveTab('regular'); setPage(1); }}
           className={cn("pb-3 text-sm font-medium border-b-2 transition-colors", activeTab === 'regular' ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}
         >
           Regular Pending Payments
         </button>
         <button
-          onClick={() => setActiveTab('customer-wise')}
+          onClick={() => { setActiveTab('customer-wise'); setPage(1); }}
           className={cn("pb-3 text-sm font-medium border-b-2 transition-colors", activeTab === 'customer-wise' ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}
         >
           Customer-wise Pending Payments
@@ -504,7 +509,9 @@ export default function PendingPaymentsPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground">Total Pending Customers</p>
-              <p className="text-2xl font-bold mt-1">{summaryStats.totalPendingCustomers}</p>
+              <p className="text-2xl font-bold mt-1">
+                {activeTab === 'customer-wise' ? customerWiseData.length : summaryStats.totalPendingCustomers}
+              </p>
             </div>
             <div className="text-3xl">👥</div>
           </div>
@@ -553,7 +560,7 @@ export default function PendingPaymentsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {customerWiseData.map((cd, idx) => (
+                  {paginatedCustomerWiseData.map((cd, idx) => (
                     <TableRow key={cd.phone + idx}>
                       <TableCell className="text-sm font-medium">{cd.name}</TableCell>
                       <TableCell className="text-sm">{cd.phone}</TableCell>
@@ -647,7 +654,7 @@ export default function PendingPaymentsPage() {
             <div className="flex items-center justify-between p-4 border-t border-border">
               <div className="flex items-center gap-3">
                 <span className="text-sm text-muted-foreground">
-                  Showing {(page - 1) * rowsPerPage + 1}–{Math.min(page * rowsPerPage, total)} of {total} records
+                  Showing {(page - 1) * rowsPerPage + 1}–{Math.min(page * rowsPerPage, activeTab === 'customer-wise' ? customerWiseData.length : total)} of {activeTab === 'customer-wise' ? customerWiseData.length : total} records
                 </span>
                 <Select
                   value={String(rowsPerPage)}
@@ -660,11 +667,11 @@ export default function PendingPaymentsPage() {
                   <option value="100">100</option>
                 </Select>
               </div>
-              {pages > 1 && (
+              {(activeTab === 'customer-wise' ? Math.ceil(customerWiseData.length / rowsPerPage) > 1 : pages > 1) && (
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</Button>
-                  <span className="text-sm text-muted-foreground">Page {page} of {pages}</span>
-                  <Button size="sm" variant="outline" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>Next</Button>
+                  <span className="text-sm text-muted-foreground">Page {page} of {activeTab === 'customer-wise' ? Math.ceil(customerWiseData.length / rowsPerPage) : pages}</span>
+                  <Button size="sm" variant="outline" disabled={page >= (activeTab === 'customer-wise' ? Math.ceil(customerWiseData.length / rowsPerPage) : pages)} onClick={() => setPage((p) => p + 1)}>Next</Button>
                 </div>
               )}
             </div>
