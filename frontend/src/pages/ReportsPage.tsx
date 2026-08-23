@@ -15,6 +15,7 @@ export default function ReportsPage() {
   const { user } = useAuthStore();
   const [tab, setTab] = useState<'revenue' | 'tables' | 'pnl' | 'branches'>('revenue');
   const [groupBy, setGroupBy] = useState<GroupBy>('day');
+  const [activeFilter, setActiveFilter] = useState<'day' | 'week' | 'month' | null>('month');
   const [shouldFetch, setShouldFetch] = useState(false);
 
   // User input states (can change without triggering refetch)
@@ -136,11 +137,46 @@ export default function ReportsPage() {
       ? String(selectedBranch) 
       : (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)?._id || '') : '');
 
+    setActiveFilter(null);
     setSearchBranch(activeBranch);
     setSearchFrom(inputFrom);
     setSearchTo(inputTo);
     setShouldFetch(true);
     setOrderPage(1);
+
+    qc.invalidateQueries({ queryKey: ['report-revenue'] });
+    qc.invalidateQueries({ queryKey: ['report-tables'] });
+    qc.invalidateQueries({ queryKey: ['report-orders'] });
+    qc.invalidateQueries({ queryKey: ['report-orders-summary'] });
+  };
+
+  const applyFilter = (filter: 'day' | 'week' | 'month') => {
+    setActiveFilter(filter);
+    const toDate = new Date();
+    const fromDate = new Date();
+    if (filter === 'day') {
+      // today
+    } else if (filter === 'week') {
+      fromDate.setDate(toDate.getDate() - 6);
+    } else if (filter === 'month') {
+      fromDate.setDate(toDate.getDate() - 29);
+    }
+    
+    const fromStr = fromDate.toISOString().slice(0, 10);
+    const toStr = toDate.toISOString().slice(0, 10);
+    
+    setInputFrom(fromStr);
+    setInputTo(toStr);
+    setSearchFrom(fromStr);
+    setSearchTo(toStr);
+    setGroupBy('day');
+    setShouldFetch(true);
+    setOrderPage(1);
+
+    const activeBranch = (selectedBranch && canSelectBranch) 
+      ? String(selectedBranch) 
+      : (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)?._id || '') : '');
+    setSearchBranch(activeBranch);
 
     qc.invalidateQueries({ queryKey: ['report-revenue'] });
     qc.invalidateQueries({ queryKey: ['report-tables'] });
@@ -191,7 +227,7 @@ export default function ReportsPage() {
         }
       />
 
-      {/* Date range + group by */}
+      {/* Date range + quick filters */}
       <div className="flex flex-col md:flex-row md:items-center gap-3 w-full">
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 w-full">
           <input type="date" value={inputFrom} onChange={(e) => setInputFrom(e.target.value)}
@@ -201,17 +237,15 @@ export default function ReportsPage() {
             className="h-9 px-3 rounded-xl border border-input bg-background text-sm w-full sm:w-auto flex-1" />
           <Button size="sm" onClick={handleSearch} className="w-full sm:w-auto">🔍 Search</Button>
         </div>
-        {tab === 'revenue' && (
-          <div className="flex gap-1 w-full md:w-auto justify-start">
-            {(['day', 'week', 'month'] as GroupBy[]).map((g) => (
-              <button key={g} onClick={() => setGroupBy(g)}
-                className={cn('flex-1 md:flex-initial text-center px-3 py-1.5 rounded-xl border text-xs font-semibold capitalize transition-colors',
-                  groupBy === g ? 'gradient-brand text-white border-transparent' : 'border-border text-muted-foreground hover:bg-accent'
-                )}
-              >{g}</button>
-            ))}
-          </div>
-        )}
+        <div className="flex gap-1 w-full md:w-auto justify-start">
+          {(['day', 'week', 'month'] as const).map((g) => (
+            <button key={g} onClick={() => applyFilter(g)}
+              className={cn('flex-1 md:flex-initial text-center px-3 py-1.5 rounded-xl border text-xs font-semibold capitalize transition-colors',
+                activeFilter === g ? 'gradient-brand text-white border-transparent' : 'border-border text-muted-foreground hover:bg-accent'
+              )}
+            >{g}</button>
+          ))}
+        </div>
       </div>
 
       {/* Quick summary */}

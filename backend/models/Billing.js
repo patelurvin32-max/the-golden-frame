@@ -63,6 +63,7 @@ const billSchema = new mongoose.Schema(
     menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem' },
     menuCategory: { type: String, trim: true, default: '' },
     menuItem: { type: String, trim: true, default: '' },
+    frames: { type: String, trim: true, default: '' },
   },
   { timestamps: true }
 );

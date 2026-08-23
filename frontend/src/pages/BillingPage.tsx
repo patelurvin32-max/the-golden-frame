@@ -31,6 +31,7 @@ export default function BillingPage() {
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editItems, setEditItems] = useState<SessionItem[]>([]);
   const [notes, setNotes] = useState('');
+  const [frames, setFrames] = useState('');
   const [billingCustomerId, setBillingCustomerId] = useState<string>('');
 
   const emptyPaymentValues: PaymentFormValues = {
@@ -215,6 +216,7 @@ export default function BillingPage() {
     });
 
     setEditModalOpen(true);
+    setFrames(String(bill.frames || ''));
     // Seed Customer ID immediately from the bill's embedded customer record
     setBillingCustomerId((bill.customer as any)?.customerId || '');
 
@@ -418,6 +420,7 @@ export default function BillingPage() {
       pendingPaymentAmount: paymentValues.pendingPaymentAmount,
       pendingPlayers: paymentValues.pendingPlayers || [],
       notes: notes,
+      frames: frames,
       addedItems: editItems,
     };
 
@@ -575,10 +578,10 @@ export default function BillingPage() {
                     )}
                   </TableCell>
                   <TableCell className="text-sm">
-                    {(typeof bill.menuCategoryId === 'object' && bill.menuCategoryId !== null ? (bill.menuCategoryId as any).name : '') || bill.menuCategory || '—'}
+                    {(bill.session as any)?.table?.type || (typeof bill.menuCategoryId === 'object' && bill.menuCategoryId !== null ? (bill.menuCategoryId as any).name : '') || bill.menuCategory || '-'}
                   </TableCell>
                   <TableCell className="text-sm">
-                    {(typeof bill.menuItemId === 'object' && bill.menuItemId !== null ? (bill.menuItemId as any).name : '') || bill.menuItem || '—'}
+                    {(bill.session as any)?.table?.name || (typeof bill.menuItemId === 'object' && bill.menuItemId !== null ? (bill.menuItemId as any).name : '') || bill.menuItem || '-'}
                   </TableCell>
                   <TableCell className="font-bold text-emerald-400">
                     {formatCurrency(bill.total)}
@@ -668,6 +671,14 @@ export default function BillingPage() {
                 {(selectedBill?.session as any)?.billableMinutes ? `${(selectedBill?.session as any).billableMinutes} min` : 'N/A'}
               </strong>
             </div>
+            {selectedBill?.frames && String(selectedBill.frames).trim() !== '' && (
+              <div>
+                <span className="text-muted-foreground block">Frames On</span>
+                <strong className="text-foreground font-semibold">
+                  {selectedBill.frames}
+                </strong>
+              </div>
+            )}
           </div>
 
           {/* Session Items Section */}
@@ -781,6 +792,17 @@ export default function BillingPage() {
               <span>Final Total Bill Amount</span>
               <span className="text-primary font-mono text-base">{formatCurrency(computedGrandTotal)}</span>
             </div>
+          </div>
+
+          {/* Frames */}
+          <div className="space-y-1.5">
+            <Label>Frames On</Label>
+            <Input
+              type="text"
+              placeholder="Enter player names (optional)"
+              value={frames}
+              onChange={(e) => setFrames(e.target.value)}
+            />
           </div>
 
           {/* Reused PaymentForm Component */}

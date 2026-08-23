@@ -44,6 +44,13 @@ const determineRecipients = (settings) => {
 };
 
 const determineBranchIds = async (settings) => {
+  if (settings?.branchReportConfigs && settings.branchReportConfigs.length > 0) {
+    const enabledConfigs = settings.branchReportConfigs.filter((cfg) => cfg.dailyReportEnabled !== false);
+    if (enabledConfigs.length > 0) {
+      return enabledConfigs.map((cfg) => cfg.branch);
+    }
+  }
+
   const configured = Array.isArray(settings?.dailyReportBranchIds) ? settings.dailyReportBranchIds.filter(Boolean) : [];
   if (configured.length) return configured;
 

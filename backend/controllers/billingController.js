@@ -252,6 +252,7 @@ exports.createBill = asyncHandler(async (req, res, next) => {
     pendingPaymentAmount: req.body.pendingPaymentAmount || 0,
     pendingPlayers: req.body.pendingPlayers || [],
     notes: req.body.notes || '',
+    frames: req.body.frames || '',
     createdBy: req.user._id,
     // Denormalized fields for fast search without pre-lookup queries
     customerName:  membershipCustomer?.name || _sessionForName?.customerName || '',
@@ -291,6 +292,11 @@ exports.createBill = asyncHandler(async (req, res, next) => {
       }
       customerIdToUse = customerDoc._id;
     }
+  }
+
+  if (customerIdToUse && String(bill.customer) !== String(customerIdToUse)) {
+    bill.customer = customerIdToUse;
+    await bill.save();
   }
 
   if (bill.paymentStatus === 'unpaid' || bill.paymentStatus === 'partial') {
@@ -616,7 +622,11 @@ exports.getBills = asyncHandler(async (req, res) => {
       .populate('customer', 'name phone customerId walletBalance')
       .populate('branch', 'name')
       .populate('createdBy', 'name')
-      .populate('order', 'orderId paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid pendingPlayers notes')
+      .populate({
+        path: 'order',
+        select: 'orderId paymentMethod cashAmount onlineAmount walletAmount pendingPaymentAmount amountReceived totalPaid pendingPlayers notes customer',
+        populate: { path: 'customer', select: 'customerId name phone' }
+      })
       .populate('menuCategoryId', 'name')
       .populate('menuItemId', 'name')
       .populate({
@@ -624,7 +634,8 @@ exports.getBills = asyncHandler(async (req, res) => {
         populate: [
           { path: 'table', select: 'name type' },
           { path: 'menuCategoryId', select: 'name' },
-          { path: 'menuItemId', select: 'name' }
+          { path: 'menuItemId', select: 'name' },
+          { path: 'customer', select: 'customerId name phone walletBalance' }
         ]
       })
       .sort(sortOption)
@@ -636,10 +647,21 @@ exports.getBills = asyncHandler(async (req, res) => {
 
   const calculatedTotalPages = Math.ceil(total / limit);
 
-  const formattedBills = bills.map((b) => ({
-    ...b,
-    invoiceNumber: b.order?.orderId || b.invoiceNumber,
-  }));
+  const formattedBills = bills.map((b) => {
+    let customerObj = b.customer;
+    if (!customerObj) {
+      if (b.order && b.order.customer) {
+        customerObj = b.order.customer;
+      } else if (b.session && b.session.customer) {
+        customerObj = b.session.customer;
+      }
+    }
+    return {
+      ...b,
+      customer: customerObj,
+      invoiceNumber: b.order?.orderId || b.invoiceNumber,
+    };
+  });
 
   res.status(200).json({
     success: true,
@@ -684,7 +706,7 @@ exports.getBill = asyncHandler(async (req, res, next) => {
 
 // PUT /api/bills/:id
 exports.updateBill = asyncHandler(async (req, res, next) => {
-  const { items, paymentStatus, total, subtotal, addedItems, paymentMethod, cashAmount, onlineAmount, walletAmount, amountReceived, pendingPaymentAmount, pendingPlayers, notes } = req.body;
+  const { items, paymentStatus, total, subtotal, addedItems, paymentMethod, cashAmount, onlineAmount, walletAmount, amountReceived, pendingPaymentAmount, pendingPlayers, notes, frames } = req.body;
   const bill = await Bill.findById(req.params.id);
   if (!bill) return next(new AppError('Bill not found.', 404));
 
@@ -713,10 +735,11 @@ exports.updateBill = asyncHandler(async (req, res, next) => {
   if (cashAmount !== undefined) bill.cashAmount = Number(cashAmount) || 0;
   if (onlineAmount !== undefined) bill.onlineAmount = Number(onlineAmount) || 0;
   if (walletAmount !== undefined) bill.walletAmount = Number(walletAmount) || 0;
-  if (amountReceived !== undefined) bill.amountReceived = Number(amountReceived) || 0;
-  if (pendingPaymentAmount !== undefined) bill.pendingPaymentAmount = Number(pendingPaymentAmount) || 0;
-  if (Array.isArray(pendingPlayers)) bill.pendingPlayers = pendingPlayers;
+  if (amountReceived !== undefined) bill.amountReceived = amountReceived;
+  if (pendingPaymentAmount !== undefined) bill.pendingPaymentAmount = pendingPaymentAmount;
+  if (pendingPlayers !== undefined) bill.pendingPlayers = pendingPlayers;
   if (notes !== undefined) bill.notes = notes;
+  if (frames !== undefined) bill.frames = frames;
 
   await bill.save();
 

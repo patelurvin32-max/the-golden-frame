@@ -208,6 +208,7 @@ export interface Bill {
   menuItemId?: string | { _id: string; name: string };
   menuCategory?: string;
   menuItem?: string;
+  frames?: string;
 }
 
 export interface Expense {

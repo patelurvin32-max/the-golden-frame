@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
@@ -291,15 +291,17 @@ function TableCard({ table, onAction, isPauseLoading, isResumeLoading }: { table
               ) : null}
 
               <div className="flex items-center justify-between">
-
                 <div>
-
-                  <p className="text-2xl font-bold font-mono text-foreground">{formatElapsedTime(seconds)}</p>
-
+                  <div className="flex items-baseline gap-2">
+                    <p className="text-2xl font-bold font-mono text-foreground">{formatElapsedTime(seconds)}</p>
+                    {session.extendedMinutes > 0 && (
+                      <span className="text-sm font-semibold text-emerald-500">
+                        (+{session.extendedMinutes}m ext.)
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-muted-foreground">elapsed</p>
-
                 </div>
-
               </div>
 
             </div>
@@ -432,7 +434,7 @@ export default function TablesPage() {
 
   const { onTableUpdate } = useSocket();
 
-
+  const activeLookupSource = useRef<'phone' | 'id' | null>(null);
 
   const [filterType, setFilterType] = useState('all');
 
@@ -469,30 +471,58 @@ export default function TablesPage() {
 
     : undefined);
 
-  // Auto-lookup wallet balance and Customer ID for Start Session modal when 10-digit mobile number is entered
+  // Auto-lookup wallet balance and Customer ID/Details for Start Session modal when 10-digit mobile number OR valid Customer ID is entered
   useEffect(() => {
-    if (startForm.phoneNumber && startForm.phoneNumber.length === 10) {
+    const isValidId = /^[a-zA-Z]{2,3}\d{5}$/.test(startForm.customerDisplayId);
+    const isValidPhone = startForm.phoneNumber && startForm.phoneNumber.length === 10;
+    
+    let termToLookup: string | null = null;
+    
+    if (activeLookupSource.current === 'id' && isValidId) {
+      termToLookup = startForm.customerDisplayId;
+    } else if (activeLookupSource.current === 'phone' && isValidPhone) {
+      termToLookup = startForm.phoneNumber;
+    }
+
+    if (termToLookup) {
       const branchToUse = tableBranch || (activeTable?.branch as any)?._id || (activeTable?.branch as any) || selectedBranch || undefined;
-      customerService.lookup(startForm.phoneNumber, branchToUse)
+      customerService.lookup(termToLookup, branchToUse)
         .then((res) => {
           const customer = res.data.data.customer;
           if (customer) {
             setStartSessionWalletBalance(customer.walletBalance || 0);
-            setStartForm((f) => ({ ...f, customerDbId: customer._id || '', customerDisplayId: customer.customerId || '', customerName: customer.name || '' }));
+            setStartForm((f) => {
+              const newDisplayId = customer.customerId || '';
+              const newPhone = customer.phone || '';
+              const newName = customer.name || '';
+              const newDbId = customer._id || '';
+
+              if (f.customerDisplayId === newDisplayId && f.phoneNumber === newPhone && f.customerName === newName && f.customerDbId === newDbId) {
+                return f;
+              }
+
+              return { 
+                ...f, 
+                customerDbId: newDbId,
+                customerDisplayId: activeLookupSource.current === 'id' ? f.customerDisplayId : newDisplayId,
+                phoneNumber: activeLookupSource.current === 'phone' ? f.phoneNumber : newPhone,
+                customerName: newName 
+              };
+            });
           } else {
             setStartSessionWalletBalance(0);
-            setStartForm((f) => ({ ...f, customerDbId: '', customerDisplayId: '' }));
+            setStartForm((f) => ({ ...f, customerDbId: '' }));
           }
         })
         .catch(() => {
           setStartSessionWalletBalance(0);
-          setStartForm((f) => ({ ...f, customerDbId: '', customerDisplayId: '' }));
+          setStartForm((f) => ({ ...f, customerDbId: '' }));
         });
     } else {
       setStartSessionWalletBalance(0);
-      setStartForm((f) => ({ ...f, customerDbId: '', customerDisplayId: '' }));
+      setStartForm((f) => ({ ...f, customerDbId: '' }));
     }
-  }, [startForm.phoneNumber, tableBranch, activeTable?.branch, selectedBranch]);
+  }, [startForm.phoneNumber, startForm.customerDisplayId, tableBranch, activeTable?.branch, selectedBranch]);
 
 
 
@@ -612,37 +642,23 @@ export default function TablesPage() {
 
 
 
-  const emptyStopForm: PaymentFormValues & { notes: string } = {
-
+  const emptyStopForm: PaymentFormValues & { notes: string; frames: string } = {
     paymentStatus: 'paid',
-
     paymentMethod: 'cash',
-
     cashAmount: '0',
-
     onlineAmount: '0',
-
     walletAmount: '',
-
     amountReceived: '',
-
     pendingPaymentAmount: '0',
-
     billAmount: '0',
-
     addToWallet: false,
-
     extraAmount: '0',
-
     walletBalance: 0,
-
     notes: '',
-
+    frames: '',
   };
 
-
-
-  const [stopForm, setStopForm] = useState<PaymentFormValues & { notes: string }>(emptyStopForm);
+  const [stopForm, setStopForm] = useState<PaymentFormValues & { notes: string; frames: string }>(emptyStopForm);
 
   const [stopLoading, setStopLoading] = useState(false);
 
@@ -944,6 +960,8 @@ export default function TablesPage() {
         walletBalance: initialWalletBal,
 
         notes: '',
+        
+        frames: '',
 
       });
 
@@ -983,17 +1001,23 @@ export default function TablesPage() {
 
       const billAmt = Number(stopForm.billAmount) || 0;
 
-      const recAmt = stopForm.amountReceived === '' ? billAmt : (Number(stopForm.amountReceived) || 0);
+      let recAmt = stopForm.amountReceived === '' ? billAmt : (Number(stopForm.amountReceived) || 0);
 
-
+      if (stopForm.paymentStatus === 'unpaid') {
+        recAmt = 0;
+      }
 
       let computedStatus: 'paid' | 'partial' | 'unpaid' = 'paid';
 
-      if (recAmt === 0 && billAmt > 0) computedStatus = 'unpaid';
-
-      else if (recAmt < billAmt) computedStatus = 'partial';
-
-      else computedStatus = 'paid';
+      if (stopForm.paymentStatus === 'unpaid') {
+        computedStatus = 'unpaid';
+      } else if (recAmt === 0 && billAmt > 0) {
+        computedStatus = 'unpaid';
+      } else if (recAmt < billAmt) {
+        computedStatus = 'partial';
+      } else {
+        computedStatus = 'paid';
+      }
 
 
 
@@ -1045,9 +1069,21 @@ export default function TablesPage() {
 
         manualAmount: billAmt,
 
-        paymentStatus: 'unpaid',
+        paymentStatus: computedStatus,
 
-        paymentMethod: stopForm.paymentMethod,
+        paymentMethod: computedStatus === 'unpaid' ? '' : stopForm.paymentMethod,
+
+        cashAmount: computedStatus === 'unpaid' ? 0 : stopForm.cashAmount,
+
+        onlineAmount: computedStatus === 'unpaid' ? 0 : stopForm.onlineAmount,
+
+        walletAmount: computedStatus === 'unpaid' ? 0 : stopForm.walletAmount,
+
+        amountReceived: computedStatus === 'unpaid' ? 0 : recAmt,
+
+        pendingPaymentAmount: computedStatus === 'partial' ? Math.max(0, billAmt - recAmt) : (computedStatus === 'unpaid' ? billAmt : 0),
+
+        frames: stopForm.frames,
 
       });
 
@@ -1330,12 +1366,15 @@ export default function TablesPage() {
         <div className="space-y-4">
 
           <div className="space-y-1.5">
-            <Label>Customer ID</Label>
+            <Label>Customer ID (Optional)</Label>
             <Input
               value={startForm.customerDisplayId}
-              placeholder="Will be auto-generated or fetched"
-              readOnly
-              className="bg-muted cursor-not-allowed font-mono text-primary font-semibold"
+              placeholder="e.g. FF00001 (auto-generates if empty)"
+              onChange={(e) => {
+                activeLookupSource.current = 'id';
+                setStartForm((f) => ({ ...f, customerDisplayId: e.target.value.trim().toUpperCase() }));
+              }}
+              className="font-mono text-primary font-semibold uppercase"
             />
           </div>
 
@@ -1363,7 +1402,7 @@ export default function TablesPage() {
 
           <div className="space-y-1.5">
 
-            <Label>Mobile Number *</Label>
+            <Label>Mobile Number (optional)</Label>
 
             <Input
 
@@ -1372,30 +1411,15 @@ export default function TablesPage() {
               value={startForm.phoneNumber}
 
               onChange={(e) => {
-
-                const numericPhone = e.target.value.replace(/\D/g, '').slice(0, 10);
-
+                activeLookupSource.current = 'phone';
+                const numericPhone = e.target.value.replace(/\D/g, '').slice(0, 15);
                 setStartForm((f) => ({ ...f, phoneNumber: numericPhone }));
-
-                if (numericPhone.length > 0 && numericPhone.length < 10) {
-
-                  setPhoneError('Mobile number must contain exactly 10 digits.');
-
-                } else {
-
-                  setPhoneError('');
-
-                }
-
+                setPhoneError('');
               }}
-
-              maxLength={10}
-
+              maxLength={15}
             />
-
             {phoneError && <p className="text-xs text-red-400">{phoneError}</p>}
-
-            {startForm.phoneNumber && startForm.phoneNumber.length === 10 && !phoneError && (
+            {startForm.phoneNumber && !phoneError && (
 
               <p className="text-xs font-semibold text-emerald-400 mt-1">
 
@@ -1459,9 +1483,7 @@ export default function TablesPage() {
 
                 
 
-                if (!startForm.phoneNumber) { toast.error('Mobile Number is required'); return; }
-
-                if (startForm.phoneNumber.length !== 10) { toast.error('Mobile Number must be exactly 10 digits'); return; }
+                if (startForm.phoneNumber && startForm.phoneNumber.length < 5) { toast.error('Mobile Number must be at least 5 digits if provided'); return; }
 
                 
 
@@ -1523,7 +1545,7 @@ export default function TablesPage() {
 
             <div className="flex gap-2">
 
-              {[15, 30, 45, 60].map((m) => (
+              {[5, 10, 15, 20, 30].map((m) => (
 
                 <button key={m} onClick={() => setExtendMinutes(m)}
 
@@ -1607,11 +1629,13 @@ export default function TablesPage() {
             )}
 
             <div className="flex justify-between items-center">
-
               <span className="text-muted-foreground">Duration Played</span>
-
-              <strong className="text-foreground font-mono">{formatElapsedTime(getElapsedSeconds((activeTable?.currentSession as any)?.startTime, (activeTable?.currentSession as any)?.pauses || []))}</strong>
-
+              <div className="text-right">
+                <strong className="text-foreground font-mono">{formatElapsedTime(getElapsedSeconds((activeTable?.currentSession as any)?.startTime, (activeTable?.currentSession as any)?.pauses || []))}</strong>
+                {((activeTable?.currentSession as any)?.extendedMinutes || 0) > 0 && (
+                  <span className="ml-2 text-xs font-semibold text-emerald-500">(+{(activeTable?.currentSession as any).extendedMinutes}m ext.)</span>
+                )}
+              </div>
             </div>
 
             <div className="flex justify-between items-center pt-1 border-t border-blue-500/20">
@@ -1747,17 +1771,22 @@ export default function TablesPage() {
               <span>Final Bill Amount</span>
 
               <span className="text-primary font-mono text-base">{formatCurrency(Number(stopForm.billAmount) || 0)}</span>
-
             </div>
-
           </div>
 
-
+          {/* Frames */}
+          <div className="space-y-1.5">
+            <Label>Frames On</Label>
+            <Input
+              type="text"
+              placeholder="Enter player names (optional)"
+              value={stopForm.frames}
+              onChange={(e) => setStopForm((f) => ({ ...f, frames: e.target.value }))}
+            />
+          </div>
 
           {/* Exact Reused PaymentForm Component from Add New Customer (Editable prefilled Bill Amount) */}
-
           <PaymentForm
-
             values={stopForm}
 
             onChange={(paymentValues) => setStopForm((f) => ({ ...f, ...paymentValues }))}

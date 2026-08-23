@@ -1417,7 +1417,6 @@ export default function SettingsPage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-sm font-medium">Daily Business Report</p>
-                      <p className="text-xs text-muted-foreground">Send the automated daily report by email</p>
                     </div>
                     <Toggle
                       checked={settings.dailyReportEnabled}
@@ -1438,9 +1437,6 @@ export default function SettingsPage() {
                       <div className="space-y-3 border-t border-border/60 pt-4">
                         <div>
                           <Label className="text-sm font-semibold">Branch Email Recipient Management</Label>
-                          <p className="text-xs text-muted-foreground mt-0.5">
-                            Manage independent recipient email addresses and daily report status for each branch.
-                          </p>
                         </div>
 
                         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

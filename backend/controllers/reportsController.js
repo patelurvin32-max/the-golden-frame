@@ -251,6 +251,12 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
       revenueMap[r._id] = { _id: r._id, total: r.total, count: r.count };
     }
   });
+  // Ensure dates with only expenses are also included
+  expenses.forEach((e) => {
+    if (!revenueMap[e._id]) {
+      revenueMap[e._id] = { _id: e._id, total: 0, count: 0 };
+    }
+  });
   const mergedRevenue = Object.values(revenueMap).sort((a, b) => a._id.localeCompare(b._id));
 
   res.status(200).json({

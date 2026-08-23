@@ -353,10 +353,8 @@ exports.updateSessionMenu = asyncHandler(async (req, res, next) => {
     });
   }
 
-  session.menuCategoryId = menuCategoryId;
-  session.menuItemId = menuItemId;
-  session.menuCategory = categoryName;
-  session.menuItem = itemName;
+  // Removed overwriting of top-level session menu fields.
+  // The primary identity of the session (e.g. Table) should not change when an item is added.
 
   await session.save();
 
