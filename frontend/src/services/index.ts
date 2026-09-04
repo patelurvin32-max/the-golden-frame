@@ -148,6 +148,7 @@ export const notificationService = {
   getAll: (params?: Record<string, string>) => api.get('/notifications', { params }),
   markRead: (id: string) => api.patch(`/notifications/${id}/read`),
   markAllRead: () => api.patch('/notifications/read-all'),
+  create: (data: Record<string, any>) => api.post('/notifications', data),
 };
 
 // ── Settings ──────────────────────────────────────────────────────────────────

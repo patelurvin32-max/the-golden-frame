@@ -707,7 +707,7 @@ function ReservationForm({
       <div className="space-y-1.5">
         <Label>Status</Label>
         <Select value={form.status} onChange={(e) => set('status', e.target.value)}>
-          {STATUSES.map((s) => <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>)}
+          {STATUSES.filter(s => s !== 'no_show').map((s) => <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>)}
         </Select>
       </div>
 
@@ -832,13 +832,10 @@ function ViewModal({ res, onClose, onEdit, onStatusChange }: {
       )}
 
       {/* Quick actions */}
-      <div className="flex flex-wrap gap-2 pt-1">
-        <Button size="sm" variant="outline" onClick={onEdit}>✏️ Edit</Button>
-        {ACTIONS.map((a) => (
-          <Button key={a.status} size="sm" variant={a.variant} onClick={() => onStatusChange(a.status)}>
-            {a.label}
-          </Button>
-        ))}
+      <div className="flex justify-end pt-3 mt-2 border-t border-border/50">
+        <Button size="sm" variant="outline" onClick={onClose}>
+          Close
+        </Button>
       </div>
     </div>
   );
@@ -1128,6 +1125,166 @@ function TodayTableAvailability({ branch }: { branch: string }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CAPTCHA Cancel Modal
+// ─────────────────────────────────────────────────────────────────────────────
+function CancelModal({
+  open,
+  onClose,
+  onConfirm
+}: {
+  open: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const [num1, setNum1] = useState(0);
+  const [num2, setNum2] = useState(0);
+  const [answer, setAnswer] = useState('');
+  const [error, setError] = useState('');
+
+  const generateCaptcha = useCallback(() => {
+    setNum1(Math.floor(Math.random() * 10) + 1);
+    setNum2(Math.floor(Math.random() * 10) + 1);
+    setAnswer('');
+    setError('');
+  }, []);
+
+  useEffect(() => {
+    if (open) generateCaptcha();
+  }, [open, generateCaptcha]);
+
+  const handleConfirm = () => {
+    if (parseInt(answer) === num1 + num2) {
+      onConfirm();
+      onClose();
+    } else {
+      setError('Incorrect answer. Please try again.');
+      generateCaptcha();
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Confirm Cancellation" size="sm">
+      <div className="flex flex-col items-center justify-center space-y-5 pt-2 pb-1">
+        <div className="flex flex-col items-center gap-3 w-full">
+          <div className="flex items-center gap-3 bg-muted/40 p-3 rounded-2xl border border-border/50">
+            <span className="text-xl font-bold tracking-widest bg-background px-4 py-2 rounded-xl border border-border shadow-sm text-foreground">
+              {num1} + {num2} =
+            </span>
+            <Input 
+              type="number" 
+              placeholder="?"
+              className="text-center text-xl font-bold h-12 w-16 rounded-xl border-border bg-background shadow-sm placeholder:text-muted-foreground/30 focus-visible:ring-red-500/50"
+              value={answer}
+              onChange={(e) => { setAnswer(e.target.value); setError(''); }}
+              onKeyDown={(e) => e.key === 'Enter' && handleConfirm()}
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={generateCaptcha}
+              title="Refresh CAPTCHA"
+              className="h-10 w-10 flex items-center justify-center rounded-xl hover:bg-accent text-muted-foreground hover:text-foreground transition-colors border border-transparent hover:border-border"
+            >
+              🔄
+            </button>
+          </div>
+          {error && <p className="text-xs text-red-500 text-center font-medium animate-in slide-in-from-top-1 -mt-1">{error}</p>}
+        </div>
+        
+        <div className="flex gap-3 pt-3 w-full">
+          <Button variant="outline" className="flex-1 h-11 rounded-xl" onClick={onClose}>
+            Keep Reservation
+          </Button>
+          <Button variant="destructive" className="flex-1 h-11 rounded-xl shadow-sm" onClick={handleConfirm}>
+            Cancel Booking
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Booking Notifications Hook
+// ─────────────────────────────────────────────────────────────────────────────
+function useBookingNotifications(reservations: any[]) {
+  const [now, setNow] = useState(new Date());
+  const [upcomingRes, setUpcomingRes] = useState<any>(null);
+  const [startingRes, setStartingRes] = useState<any>(null);
+
+  const notifiedUpcomingRef = useRef<Set<string>>(new Set());
+  const notifiedStartingRef = useRef<Set<string>>(new Set());
+
+  const playSound = useCallback(() => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      osc.start();
+      setTimeout(() => {
+        osc.stop();
+        ctx.close();
+      }, 300);
+    } catch(e) {
+      console.warn("Audio play failed", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const currentTime = new Date();
+      setNow(currentTime);
+      
+      reservations.forEach(r => {
+        if (r.status !== 'confirmed') return;
+        if (!r.reservationDate || !r.reservationTime) return;
+
+        const resDateTime = new Date(`${r.reservationDate}T${r.reservationTime}:00`);
+        const diffMs = resDateTime.getTime() - currentTime.getTime();
+        const diffMins = Math.floor(diffMs / 60000);
+        
+        // 15 mins before
+        if (diffMins === 15 && !notifiedUpcomingRef.current.has(r._id)) {
+           notifiedUpcomingRef.current.add(r._id);
+           setUpcomingRes(r);
+           // Try push to backend notification if available
+           import('@/services').then(({ notificationService }) => {
+             notificationService.create({
+               title: 'Booking Starting Soon',
+               message: `${r.table?.name || r.table?.type || 'Table'} • ${r.customerName}\n${r.reservationTime} – ${r.durationMinutes} mins`,
+               type: 'info'
+             }).catch(() => {});
+           });
+        }
+
+        // Exact start time
+        if (diffMins === 0 && !notifiedStartingRef.current.has(r._id)) {
+           notifiedStartingRef.current.add(r._id);
+           setStartingRes(r);
+           playSound();
+           import('@/services').then(({ notificationService }) => {
+             notificationService.create({
+               title: 'Booking Starting Now',
+               message: `${r.table?.name || r.table?.type || 'Table'} • ${r.customerName}\n${r.reservationTime} – ${r.durationMinutes} mins`,
+               type: 'warning'
+             }).catch(() => {});
+           });
+        }
+      });
+    }, 30000); // Check every 30 seconds
+
+    return () => clearInterval(timer);
+  }, [reservations, playSound]);
+
+  return { upcomingRes, setUpcomingRes, startingRes, setStartingRes, now };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN PAGE
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ReservationsPage() {
@@ -1165,6 +1322,10 @@ export default function ReservationsPage() {
   // ── Modal state ───────────────────────────────────────────────────────────
   const [modal,    setModal]    = useState<'create'|'edit'|'view'|null>(null);
   const [selected, setSelected] = useState<any>(null);
+  
+  // ── Cancel Modal State ────────────────────────────────────────────────────
+  const [cancelReservationId, setCancelReservationId] = useState<string | null>(null);
+  const [pendingEditData, setPendingEditData] = useState<any>(null);
 
   // Reset page on filter change
   useEffect(() => { setPage(1); }, [search, status, dateFrom, dateTo, branchFlt, menuCategoryFlt, sortBy, sortOrder]);
@@ -1250,6 +1411,9 @@ export default function ReservationsPage() {
   const totalRecords: number = (listData as any)?.totalRecords || 0;
   const totalPages: number   = (listData as any)?.totalPages   || 1;
   const stats = statsData || {};
+
+  // ── Booking Notifications Hook ──────────────────────────────────────────────
+  const { upcomingRes, setUpcomingRes, startingRes, setStartingRes, now } = useBookingNotifications(reservations);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['reservation-stats'] });
@@ -1554,7 +1718,30 @@ export default function ReservationsPage() {
                       </TableCell>
                       <TableCell className="font-semibold">{r.numberOfGuests}</TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        <StatusBadge status={r.status} />
+                        <div className="flex flex-col gap-2">
+                          <StatusBadge status={r.status} />
+                          {r.status === 'confirmed' && r.reservationDate && r.reservationTime && (() => {
+                             const resDateTime = new Date(`${r.reservationDate}T${r.reservationTime}:00`);
+                             if (now.getTime() >= resDateTime.getTime()) {
+                               return (
+                                 <div className="p-2.5 bg-red-500/10 border border-red-500/20 rounded-xl flex flex-col gap-1.5 min-w-[140px]">
+                                   <div className="flex items-center gap-1.5 text-red-500">
+                                     <span className="text-xs">⚠️</span>
+                                     <span className="font-bold text-[10px] uppercase tracking-wider">Action Required</span>
+                                   </div>
+                                   <p className="text-[10px] text-muted-foreground leading-tight">
+                                     Booking has started, but status is not updated.
+                                   </p>
+                                   <div className="flex flex-col gap-1.5 mt-1">
+                                     <Button size="sm" className="h-6 text-[10px]" onClick={(e) => { e.stopPropagation(); statusMutation.mutate({ id: r._id, status: 'seated' }); }}>Start Session</Button>
+                                     <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={(e) => { e.stopPropagation(); statusMutation.mutate({ id: r._id, status: 'no_show' }); }}>Mark No Show</Button>
+                                   </div>
+                                 </div>
+                               );
+                             }
+                             return null;
+                          })()}
+                        </div>
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">{formatDate(r.createdAt)}</TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
@@ -1563,22 +1750,13 @@ export default function ReservationsPage() {
                             title="View" className="h-7 w-7 rounded-lg hover:bg-accent flex items-center justify-center text-sm transition-colors">👁</button>
                           <button onClick={() => openEdit(r)}
                             title="Edit" className="h-7 w-7 rounded-lg hover:bg-accent flex items-center justify-center text-sm transition-colors">✏️</button>
-                          {r.status === 'pending' && (
-                            <button onClick={() => statusMutation.mutate({ id: r._id, status: 'confirmed' })}
-                              title="Confirm" className="h-7 w-7 rounded-lg hover:bg-blue-500/20 text-blue-400 flex items-center justify-center text-sm transition-colors">✅</button>
-                          )}
                           {r.status === 'confirmed' && (
                             <button onClick={() => statusMutation.mutate({ id: r._id, status: 'seated' })}
                               title="Seat" className="h-7 w-7 rounded-lg hover:bg-purple-500/20 text-purple-400 flex items-center justify-center text-sm transition-colors">🪑</button>
                           )}
                           {!['completed','cancelled','no_show'].includes(r.status) && (
-                            <button onClick={() => { if (window.confirm('Cancel this reservation?')) statusMutation.mutate({ id: r._id, status: 'cancelled' }); }}
+                            <button onClick={() => setCancelReservationId(r._id)}
                               title="Cancel" className="h-7 w-7 rounded-lg hover:bg-red-500/20 text-red-400 flex items-center justify-center text-sm transition-colors">❌</button>
-                          )}
-                          {canSelectBranch && (
-                            <button
-                              onClick={() => { if (window.confirm('Delete permanently?')) deleteMutation.mutate(r._id); }}
-                              title="Delete" className="h-7 w-7 rounded-lg hover:bg-red-500/20 text-red-400 flex items-center justify-center text-sm transition-colors">🗑</button>
                           )}
                         </div>
                       </TableCell>
@@ -1611,7 +1789,15 @@ export default function ReservationsPage() {
         {selected && (
           <ReservationForm
             initial={selected}
-            onSubmit={(d) => updateMutation.mutate({ id: selected._id, data: d })}
+            onSubmit={(d) => {
+              if (d.status === 'cancelled' && selected.status !== 'cancelled') {
+                setPendingEditData(d);
+                setCancelReservationId(selected._id);
+                setModal(null);
+              } else {
+                updateMutation.mutate({ id: selected._id, data: d });
+              }
+            }}
             onClose={() => setModal(null)}
             loading={updateMutation.isPending}
           />
@@ -1629,6 +1815,72 @@ export default function ReservationsPage() {
           />
         )}
       </Modal>
+
+      {/* ── Upcoming Booking Modal ────────────────────────────────────────── */}
+      <Modal open={!!upcomingRes} onClose={() => setUpcomingRes(null)} title="🔔 Upcoming Booking" size="sm">
+        {upcomingRes && (
+          <div className="space-y-4 pt-3 pb-2 flex flex-col items-center">
+            <div className="bg-amber-500/10 w-full p-4 rounded-2xl border border-amber-500/20 text-center space-y-1.5">
+              <p className="font-semibold text-xl text-foreground">
+                {upcomingRes.table?.name || upcomingRes.table?.type || 'Table'}
+              </p>
+              <p className="text-muted-foreground font-medium">Customer: {upcomingRes.customerName}</p>
+              <p className="font-mono text-sm">{upcomingRes.reservationTime} ({upcomingRes.durationMinutes} min)</p>
+              <p className="text-amber-500 font-bold mt-2 bg-amber-500/10 inline-block px-3 py-1 rounded-lg">
+                Starts in 15 minutes
+              </p>
+            </div>
+            <div className="flex gap-3 w-full">
+              <Button variant="outline" className="flex-1 rounded-xl h-11" onClick={() => setUpcomingRes(null)}>Dismiss</Button>
+              <Button className="flex-1 rounded-xl h-11" onClick={() => { setUpcomingRes(null); openView(upcomingRes); }}>View Booking</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── Starting Booking Modal ────────────────────────────────────────── */}
+      <Modal open={!!startingRes} onClose={() => setStartingRes(null)} title="🔴 Booking Starting Now" size="sm">
+        {startingRes && (
+          <div className="space-y-4 pt-3 pb-2 flex flex-col items-center">
+            <div className="bg-red-500/10 w-full p-4 rounded-2xl border border-red-500/20 text-center space-y-1.5">
+              <p className="font-semibold text-xl text-foreground">
+                {startingRes.table?.name || startingRes.table?.type || 'Table'}
+              </p>
+              <p className="text-muted-foreground font-medium">Customer: {startingRes.customerName}</p>
+              <p className="font-mono text-sm">{startingRes.reservationTime}</p>
+              <p className="text-red-500 font-bold mt-2 bg-red-500/10 inline-block px-3 py-1 rounded-lg">
+                Please update the booking status manually.
+              </p>
+            </div>
+            <div className="flex gap-3 w-full">
+              <Button variant="outline" className="flex-1 rounded-xl h-11" onClick={() => { setStartingRes(null); openView(startingRes); }}>View Booking</Button>
+              <Button className="flex-1 rounded-xl h-11 bg-red-500 hover:bg-red-600 text-white" onClick={() => { 
+                setStartingRes(null); 
+                statusMutation.mutate({ id: startingRes._id, status: 'seated' });
+              }}>Start Session</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── Cancel modal ──────────────────────────────────────────────────── */}
+      <CancelModal
+        open={!!cancelReservationId}
+        onClose={() => {
+          setCancelReservationId(null);
+          setPendingEditData(null);
+        }}
+        onConfirm={() => {
+          if (cancelReservationId) {
+            if (pendingEditData) {
+              updateMutation.mutate({ id: cancelReservationId, data: pendingEditData });
+              setPendingEditData(null);
+            } else {
+              statusMutation.mutate({ id: cancelReservationId, status: 'cancelled' });
+            }
+          }
+        }}
+      />
     </div>
   );
 }

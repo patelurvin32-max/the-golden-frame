@@ -238,24 +238,26 @@ const seedDefaults = async () => {
   }
 
   // Super admin account
-  const adminEmail = process.env.SUPER_ADMIN_EMAIL || 'admin@thegoldenframe.app';
-  const adminPassword = process.env.SUPER_ADMIN_PASSWORD || 'Admin@123456';
+  const adminEmail = process.env.SUPER_ADMIN_EMAIL;
+  const adminPassword = process.env.SUPER_ADMIN_PASSWORD;
 
-  const adminUser = await User.findOne({ email: adminEmail });
-  if (adminUser) {
-    adminUser.name = 'Super Admin';
-    adminUser.password = adminPassword;
-    adminUser.role = ROLES.SUPER_ADMIN;
-    adminUser.isActive = true;
-    await adminUser.save();
-  } else {
-    await User.create({
-      name: 'Super Admin',
-      email: adminEmail,
-      password: adminPassword,
-      role: ROLES.SUPER_ADMIN,
-      isActive: true,
-    });
+  if (adminEmail && adminPassword) {
+    const adminUser = await User.findOne({ email: adminEmail });
+    if (adminUser) {
+      adminUser.name = 'Super Admin';
+      adminUser.password = adminPassword;
+      adminUser.role = ROLES.SUPER_ADMIN;
+      adminUser.isActive = true;
+      await adminUser.save();
+    } else {
+      await User.create({
+        name: 'Super Admin',
+        email: adminEmail,
+        password: adminPassword,
+        role: ROLES.SUPER_ADMIN,
+        isActive: true,
+      });
+    }
   }
 
 

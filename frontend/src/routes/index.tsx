@@ -28,6 +28,7 @@ const LogsPage = lazy(() => import('@/pages/OtherPages').then((m) => ({ default:
 const CentralCustomersPage = lazy(() => import('@/pages/CentralCustomersPage').then((m) => ({ default: m.CentralCustomersPage })));
 const TransactionsPage = lazy(() => import('@/pages/TransactionsPage'));
 const ContactUsPage = lazy(() => import('@/pages/ContactUsPage'));
+const ActiveUsersPage = lazy(() => import('@/pages/ActiveUsersPage'));
 
 
 // ── Auth guard ─────────────────────────────────────────────────────────────────
@@ -130,6 +131,7 @@ export function AppRoutes() {
               <Route path="central-customers" element={<ProtectedRoute roles={['super_admin', 'branch_admin', 'branch_manager', 'staff']}><CentralCustomersPage /></ProtectedRoute>} />
               <Route path="transactions" element={<ProtectedRoute roles={['super_admin', 'branch_admin', 'branch_manager']}><TransactionsPage /></ProtectedRoute>} />
               <Route path="contact-us" element={<ProtectedRoute roles={['super_admin']}><ContactUsPage /></ProtectedRoute>} />
+              <Route path="active-users" element={<ProtectedRoute roles={['super_admin']}><ActiveUsersPage /></ProtectedRoute>} />
             </Route>
 
             {/* Fallback */}
