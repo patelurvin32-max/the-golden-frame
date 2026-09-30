@@ -50,13 +50,22 @@ export default function ExpensesPage() {
   // Determine if user can view dashboard summary and pie chart (Super Admin and Admin only)
   const canViewDashboard = user?.role === 'super_admin' || user?.role === 'admin';
 
+  // Helper to extract branch ID from user's branches array
+  const getUserBranchId = (): string => {
+    if (!user?.branches?.length) return '';
+    const b = user.branches[0];
+    return typeof b === 'string' ? b : b?._id || '';
+  };
+
   // Auto-assign branch for Branch Manager and Staff when opening modal
   useEffect(() => {
-    if (modal && !canSelectBranch && user?.branches?.[0]) {
-      const branchId = typeof user.branches[0] === 'string' ? user.branches[0] : user.branches[0]._id;
-      setForm((prev) => ({ ...prev, branch: branchId }));
+    if (modal && !canSelectBranch) {
+      const branchId = getUserBranchId() || selectedBranch || '';
+      if (branchId) {
+        setForm((prev) => ({ ...prev, branch: branchId }));
+      }
     }
-  }, [modal, canSelectBranch, user]);
+  }, [modal, canSelectBranch, user, selectedBranch]);
 
   const { data: branchData } = useQuery({ queryKey: ['branches'], queryFn: () => branchService.getAll().then((r) => r.data.data.branches) });
 
@@ -105,9 +114,10 @@ export default function ExpensesPage() {
   });
 
   const handleSave = () => {
-    const branch = form.branch || selectedBranch;
+    // Resolve branch with multi-level fallback: form → selectedBranch → user's assigned branch
+    const branch = form.branch || selectedBranch || getUserBranchId();
     if (canSelectBranch && !branch) { toast.error('Select a branch'); return; }
-    if (!canSelectBranch && !branch) { toast.error('Branch assignment error'); return; }
+    if (!canSelectBranch && !branch) { toast.error('No branch assigned to your account. Please contact an admin.'); return; }
     
     const payload = { 
       ...form, 
