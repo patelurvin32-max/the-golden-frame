@@ -340,14 +340,9 @@ export default function ReportsPage() {
               <p className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wider font-semibold truncate" title={s.label}>
                 {s.label}
               </p>
-              <p className={cn('text-base sm:text-lg md:text-xl font-bold mt-1 truncate', s.color)} title={s.title || s.value}>
+              <p className={cn('text-base sm:text-lg md:text-xl font-bold mt-1 truncate', s.color)} title={s.value}>
                 {s.value}
               </p>
-              {s.sub ? (
-                <p className="text-[11px] text-muted-foreground font-medium mt-0.5 truncate">
-                  {s.sub}
-                </p>
-              ) : null}
             </CardContent>
           </Card>
         ))}
