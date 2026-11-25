@@ -17,7 +17,8 @@ const tournamentSchema = new mongoose.Schema(
     format: { type: String, default: 'Single Elimination' },
     maxParticipants: { type: Number, default: 200, max: 200 },
     currentRound: { type: Number, default: 0 },
-    description: { type: String, trim: true }
+    description: { type: String, trim: true },
+    entryFee: { type: Number, default: 0 }
   },
   { timestamps: true }
 );

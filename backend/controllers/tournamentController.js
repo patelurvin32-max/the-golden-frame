@@ -17,7 +17,7 @@ const getBranchFilter = (req) => {
 };
 
 exports.createTournament = asyncHandler(async (req, res, next) => {
-  const { name, branch, startDate, endDate, tournamentDate, startTime, gameCategory, format, maxParticipants, description } = req.body;
+  const { name, branch, startDate, endDate, tournamentDate, startTime, gameCategory, format, maxParticipants, description, entryFee } = req.body;
   const tournament = await Tournament.create({
     name,
     branch,
@@ -28,13 +28,14 @@ exports.createTournament = asyncHandler(async (req, res, next) => {
     gameCategory,
     format,
     maxParticipants,
-    description
+    description,
+    entryFee
   });
   res.status(201).json({ success: true, data: tournament });
 });
 
 exports.updateTournament = asyncHandler(async (req, res, next) => {
-  const { name, maxParticipants, gameCategory, tournamentDate, startTime, format, description } = req.body;
+  const { name, maxParticipants, gameCategory, tournamentDate, startTime, format, description, entryFee } = req.body;
   let tournament = await Tournament.findById(req.params.id);
   if (!tournament) return next(new AppError('Tournament not found', 404));
 
@@ -45,7 +46,7 @@ exports.updateTournament = asyncHandler(async (req, res, next) => {
 
   tournament = await Tournament.findByIdAndUpdate(
     req.params.id,
-    { name, maxParticipants, gameCategory, tournamentDate, startTime, format, description },
+    { name, maxParticipants, gameCategory, tournamentDate, startTime, format, description, entryFee },
     { new: true, runValidators: true }
   );
 
@@ -146,6 +147,86 @@ exports.getParticipants = asyncHandler(async (req, res, next) => {
     .populate('customer', 'name phone')
     .sort('seed');
   res.status(200).json({ success: true, count: participants.length, data: participants });
+});
+
+exports.removeParticipant = asyncHandler(async (req, res, next) => {
+  const tournament = await Tournament.findById(req.params.id);
+  if (!tournament) return next(new AppError('Tournament not found', 404));
+
+  const filter = getBranchFilter(req);
+  if (filter.branch && !filter.branch.$in.includes(tournament.branch.toString())) {
+    return next(new AppError('You do not have access to this tournament', 403));
+  }
+
+  if (tournament.status !== 'pending') {
+    return next(new AppError('Cannot remove participants after tournament has started', 400));
+  }
+
+  const participant = await TournamentParticipant.findById(req.params.participantId);
+  if (!participant) {
+    return next(new AppError('Participant not found', 404));
+  }
+
+  if (participant.tournament.toString() !== tournament._id.toString()) {
+    return next(new AppError('Participant does not belong to this tournament', 400));
+  }
+
+  await participant.deleteOne();
+
+  // Reorder seeds for remaining participants
+  const remainingParticipants = await TournamentParticipant.find({ tournament: tournament._id }).sort('seed');
+  for (let i = 0; i < remainingParticipants.length; i++) {
+    remainingParticipants[i].seed = i + 1;
+    await remainingParticipants[i].save();
+  }
+
+  res.status(200).json({ success: true, data: {} });
+});
+
+exports.updateParticipantPayment = asyncHandler(async (req, res, next) => {
+  const tournament = await Tournament.findById(req.params.id);
+  if (!tournament) return next(new AppError('Tournament not found', 404));
+
+  const filter = getBranchFilter(req);
+  if (filter.branch && !filter.branch.$in.includes(tournament.branch.toString())) {
+    return next(new AppError('You do not have access to this tournament', 403));
+  }
+
+  const participant = await TournamentParticipant.findById(req.params.participantId);
+  if (!participant) {
+    return next(new AppError('Participant not found', 404));
+  }
+
+  if (participant.tournament.toString() !== tournament._id.toString()) {
+    return next(new AppError('Participant does not belong to this tournament', 400));
+  }
+
+  const { paymentStatus, paymentMethod, paidAmount, cashAmount, onlineAmount, walletAmount } = req.body;
+
+  // Calculate payment status if not provided
+  let calculatedStatus = paymentStatus;
+  if (!calculatedStatus) {
+    const entryFee = tournament.entryFee || 0;
+    const totalPaid = paidAmount || 0;
+    if (totalPaid >= entryFee) {
+      calculatedStatus = 'paid';
+    } else if (totalPaid > 0) {
+      calculatedStatus = 'partial';
+    } else {
+      calculatedStatus = 'unpaid';
+    }
+  }
+
+  participant.paymentStatus = calculatedStatus;
+  participant.paymentMethod = paymentMethod || null;
+  participant.paidAmount = paidAmount || 0;
+  participant.cashAmount = cashAmount || 0;
+  participant.onlineAmount = onlineAmount || 0;
+  participant.walletAmount = walletAmount || 0;
+
+  await participant.save();
+
+  res.status(200).json({ success: true, data: participant });
 });
 
 // Helper for bracket size

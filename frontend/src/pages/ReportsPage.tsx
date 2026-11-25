@@ -8,6 +8,13 @@ import { formatCurrency, formatDuration, downloadBlob, cn } from '@/utils';
 
 type GroupBy = 'day' | 'week' | 'month';
 
+const toLocalDateString = (d: Date): string => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 export default function ReportsPage() {
   const toast = useToast();
   const qc = useQueryClient();
@@ -19,16 +26,27 @@ export default function ReportsPage() {
   const [shouldFetch, setShouldFetch] = useState(false);
 
   // User input states (can change without triggering refetch)
-  const [inputFrom, setInputFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); });
-  const [inputTo, setInputTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [inputFrom, setInputFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return toLocalDateString(d);
+  });
+  const [inputTo, setInputTo] = useState(() => toLocalDateString(new Date()));
 
-  // Active search query states (only updated when clicking "Search")
+  // Active search query states (only updated when clicking "Search" or quick filter)
   const [searchFrom, setSearchFrom] = useState(inputFrom);
   const [searchTo, setSearchTo] = useState(inputTo);
   const [searchBranch, setSearchBranch] = useState('');
 
   // Determine if user can select branch (Super Admin and Admin can)
   const canSelectBranch = user?.role === 'super_admin' || user?.role === 'admin';
+
+  // Compute active branch ID
+  const getActiveBranchId = () => {
+    return (selectedBranch && canSelectBranch)
+      ? String(selectedBranch)
+      : (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)?._id || '') : '');
+  };
 
   // Selected search params packaged for APIs
   const searchParams: Record<string, string> = {
@@ -52,29 +70,64 @@ export default function ReportsPage() {
   });
 
   const { data: branchData } = useQuery({
-    queryKey: ['report-branches'],
-    queryFn: () => reportService.getBranchComparison().then((r) => r.data.data),
-    enabled: canSelectBranch,
+    queryKey: ['report-branches', searchFrom, searchTo, shouldFetch],
+    queryFn: () => reportService.getBranchComparison(searchParams).then((r) => r.data.data),
+    enabled: canSelectBranch && shouldFetch,
   });
 
-  const chartData = revenueData?.revenue?.map((r: any) => {
-    const exp = revenueData?.expenses?.find((e: any) => e._id === r._id);
-    return { date: r._id, revenue: r.total, expenses: exp?.total || 0, profit: r.total - (exp?.total || 0), invoices: r.count };
-  }) || [];
+  // Build unified chart data from both revenue and expenses timelines
+  const allDates = Array.from(new Set([
+    ...(revenueData?.revenue || []).map((r: any) => r._id),
+    ...(revenueData?.expenses || []).map((e: any) => e._id),
+  ])).sort();
 
-  const totalRevenue = chartData.reduce((s: number, d: any) => s + d.revenue, 0);
-  const totalExpenses = chartData.reduce((s: number, d: any) => s + d.expenses, 0);
-  const totalProfit = totalRevenue - totalExpenses;
-  const totalCash = revenueData?.summary?.totalCash || 0;
-  const totalOnline = revenueData?.summary?.totalOnline || 0;
-  const totalCustomers = revenueData?.summary?.totalCustomers || 0;
+  const chartData = allDates.map((date) => {
+    const rev = (revenueData?.revenue || []).find((r: any) => r._id === date);
+    const exp = (revenueData?.expenses || []).find((e: any) => e._id === date);
+    const revenue = rev?.total || 0;
+    const expenses = exp?.total || 0;
+    return {
+      date,
+      revenue,
+      expenses,
+      profit: revenue - expenses,
+      invoices: rev?.count || 0,
+    };
+  });
+
+  // Extract authoritative summary metrics from backend
+  const summary = revenueData?.summary || {};
+  const totalRevenue = summary.totalRevenue ?? chartData.reduce((s: number, d: any) => s + d.revenue, 0);
+  const totalExpenses = summary.totalExpenses ?? chartData.reduce((s: number, d: any) => s + d.expenses, 0);
+  const totalProfit = summary.netProfit ?? (totalRevenue - totalExpenses);
+  const totalCash = summary.totalCash ?? 0;
+  const totalOnline = summary.totalOnline ?? 0;
+  const totalCustomers = summary.totalCustomers ?? 0;
+  const totalPendingAmount = summary.totalPendingAmount ?? 0;
+  const totalItemsSold = summary.totalItemsSold ?? 0;
+  const highestSellingItem = summary.highestSellingItem ?? { name: 'None', quantitySold: 0 };
+
+  const summaryCards = [
+    { label: 'Total Revenue', value: formatCurrency(totalRevenue), color: 'text-blue-400' },
+    { label: 'Total Expenses', value: formatCurrency(totalExpenses), color: 'text-red-400' },
+    { label: 'Total Cash Received', value: formatCurrency(totalCash), color: 'text-green-400' },
+    { label: 'Total Online Payments', value: formatCurrency(totalOnline), color: 'text-purple-400' },
+    { label: 'Total Customers', value: totalCustomers.toString(), color: 'text-orange-400' },
+    { label: 'Total Pending Amount', value: formatCurrency(totalPendingAmount), color: 'text-amber-400' },
+    { label: 'Total Items Sold', value: totalItemsSold.toString(), color: 'text-cyan-400' },
+  ];
 
   const handleExport = async (type: string) => {
     try {
       const res = await reportService.exportExcel({ ...searchParams, type, groupBy });
-      downloadBlob(res.data as Blob, `thegoldenframe-${type}-${searchFrom}-to-${searchTo}.xlsx`);
-      toast.success(`${type} report exported!`);
-    } catch { toast.error('Export failed'); }
+      const filename = type === 'complete'
+        ? `thegoldenframe-complete-report-${searchFrom}-to-${searchTo}.xlsx`
+        : `thegoldenframe-${type}-${searchFrom}-to-${searchTo}.xlsx`;
+      downloadBlob(res.data as Blob, filename);
+      toast.success(type === 'complete' ? 'Complete report exported!' : `${type} report exported!`);
+    } catch {
+      toast.error('Export failed');
+    }
   };
 
   const [orderPage, setOrderPage] = useState(1);
@@ -133,9 +186,7 @@ export default function ReportsPage() {
   };
 
   const handleSearch = () => {
-    const activeBranch = (selectedBranch && canSelectBranch) 
-      ? String(selectedBranch) 
-      : (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)?._id || '') : '');
+    const activeBranch = getActiveBranchId();
 
     setActiveFilter(null);
     setSearchBranch(activeBranch);
@@ -146,6 +197,7 @@ export default function ReportsPage() {
 
     qc.invalidateQueries({ queryKey: ['report-revenue'] });
     qc.invalidateQueries({ queryKey: ['report-tables'] });
+    qc.invalidateQueries({ queryKey: ['report-branches'] });
     qc.invalidateQueries({ queryKey: ['report-orders'] });
     qc.invalidateQueries({ queryKey: ['report-orders-summary'] });
   };
@@ -162,8 +214,8 @@ export default function ReportsPage() {
       fromDate.setDate(toDate.getDate() - 29);
     }
     
-    const fromStr = fromDate.toISOString().slice(0, 10);
-    const toStr = toDate.toISOString().slice(0, 10);
+    const fromStr = toLocalDateString(fromDate);
+    const toStr = toLocalDateString(toDate);
     
     setInputFrom(fromStr);
     setInputTo(toStr);
@@ -173,13 +225,12 @@ export default function ReportsPage() {
     setShouldFetch(true);
     setOrderPage(1);
 
-    const activeBranch = (selectedBranch && canSelectBranch) 
-      ? String(selectedBranch) 
-      : (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)?._id || '') : '');
+    const activeBranch = getActiveBranchId();
     setSearchBranch(activeBranch);
 
     qc.invalidateQueries({ queryKey: ['report-revenue'] });
     qc.invalidateQueries({ queryKey: ['report-tables'] });
+    qc.invalidateQueries({ queryKey: ['report-branches'] });
     qc.invalidateQueries({ queryKey: ['report-orders'] });
     qc.invalidateQueries({ queryKey: ['report-orders-summary'] });
   };
@@ -194,12 +245,15 @@ export default function ReportsPage() {
     setOrderPage(1);
   };
 
+  // Sync searchBranch whenever selectedBranch changes in store
+  useEffect(() => {
+    const activeBranch = getActiveBranchId();
+    setSearchBranch(activeBranch);
+  }, [selectedBranch, canSelectBranch, user]);
+
   // Trigger initial fetch on page load
   useEffect(() => {
-    const initialBranch = (selectedBranch && canSelectBranch) 
-      ? String(selectedBranch) 
-      : (!canSelectBranch && user?.branches?.[0] ? (typeof user.branches[0] === 'string' ? user.branches[0] : (user.branches[0] as any)?._id || '') : '');
-    
+    const initialBranch = getActiveBranchId();
     setSearchBranch(initialBranch);
     setSearchFrom(inputFrom);
     setSearchTo(inputTo);
@@ -218,11 +272,26 @@ export default function ReportsPage() {
       <PageHeader
         title="Reports & Analytics"
         actions={
-          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-            <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={() => handleExport('revenue')}>📥 Revenue Excel</Button>
-            <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={() => handleExport('expenses')}>📥 Expenses Excel</Button>
-            <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={handleExportCustomers}>📥 Customer Details Excel</Button>
-            <Button size="sm" variant="outline" className="flex-1 min-w-[130px] sm:flex-none text-center justify-center" onClick={handleExportPendingPayments}>📥 Pending Payments Excel</Button>
+          <div className="flex flex-wrap gap-2 w-full sm:w-auto items-center">
+            <Button
+              size="sm"
+              className="gradient-brand text-white flex-1 min-w-[150px] sm:flex-none text-center justify-center font-semibold shadow-md hover:opacity-90 transition-opacity"
+              onClick={() => handleExport('complete')}
+            >
+              📥 Download Excel
+            </Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[120px] sm:flex-none text-center justify-center" onClick={() => handleExport('revenue')}>
+              Revenue Excel
+            </Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[120px] sm:flex-none text-center justify-center" onClick={() => handleExport('expenses')}>
+              Expenses Excel
+            </Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[140px] sm:flex-none text-center justify-center" onClick={handleExportCustomers}>
+              Customer Details Excel
+            </Button>
+            <Button size="sm" variant="outline" className="flex-1 min-w-[140px] sm:flex-none text-center justify-center" onClick={handleExportPendingPayments}>
+              Pending Payments Excel
+            </Button>
           </div>
         }
       />
@@ -230,38 +299,55 @@ export default function ReportsPage() {
       {/* Date range + quick filters */}
       <div className="flex flex-col md:flex-row md:items-center gap-3 w-full">
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 w-full">
-          <input type="date" value={inputFrom} onChange={(e) => setInputFrom(e.target.value)}
-            className="h-9 px-3 rounded-xl border border-input bg-background text-sm w-full sm:w-auto flex-1" />
-          <span className="text-muted-foreground text-center sm:text-left">to</span>
-          <input type="date" value={inputTo} onChange={(e) => setInputTo(e.target.value)}
-            className="h-9 px-3 rounded-xl border border-input bg-background text-sm w-full sm:w-auto flex-1" />
-          <Button size="sm" onClick={handleSearch} className="w-full sm:w-auto">🔍 Search</Button>
+          <input
+            type="date"
+            value={inputFrom}
+            onChange={(e) => setInputFrom(e.target.value)}
+            className="h-9 px-3 rounded-xl border border-input bg-background text-sm w-full sm:w-auto flex-1 focus:ring-1 focus:ring-primary focus:outline-none"
+          />
+          <span className="text-muted-foreground text-center sm:text-left text-sm font-medium">to</span>
+          <input
+            type="date"
+            value={inputTo}
+            onChange={(e) => setInputTo(e.target.value)}
+            className="h-9 px-3 rounded-xl border border-input bg-background text-sm w-full sm:w-auto flex-1 focus:ring-1 focus:ring-primary focus:outline-none"
+          />
+          <Button size="sm" onClick={handleSearch} className="w-full sm:w-auto font-medium">
+            🔍 Search
+          </Button>
         </div>
         <div className="flex gap-1 w-full md:w-auto justify-start">
           {(['day', 'week', 'month'] as const).map((g) => (
-            <button key={g} onClick={() => applyFilter(g)}
-              className={cn('flex-1 md:flex-initial text-center px-3 py-1.5 rounded-xl border text-xs font-semibold capitalize transition-colors',
+            <button
+              key={g}
+              onClick={() => applyFilter(g)}
+              className={cn(
+                'flex-1 md:flex-initial text-center px-3 py-1.5 rounded-xl border text-xs font-semibold capitalize transition-colors',
                 activeFilter === g ? 'gradient-brand text-white border-transparent' : 'border-border text-muted-foreground hover:bg-accent'
               )}
-            >{g}</button>
+            >
+              {g}
+            </button>
           ))}
         </div>
       </div>
 
-      {/* Quick summary */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
-        {[
-          { label: 'Revenue', value: formatCurrency(totalRevenue), color: 'text-blue-400' },
-          { label: 'Expenses', value: formatCurrency(totalExpenses), color: 'text-red-400' },
-          { label: 'Net Profit', value: formatCurrency(totalProfit), color: totalProfit >= 0 ? 'text-emerald-400' : 'text-red-400' },
-          { label: 'Total Cash', value: formatCurrency(totalCash), color: 'text-green-400' },
-          { label: 'Total Online', value: formatCurrency(totalOnline), color: 'text-purple-400' },
-          { label: 'Total Customers', value: totalCustomers.toString(), color: 'text-orange-400' },
-        ].map((s) => (
-          <Card key={s.label}>
+      {/* 9 Summary Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9 gap-3 sm:gap-4">
+        {summaryCards.map((s) => (
+          <Card key={s.label} className="flex flex-col justify-between hover:border-primary/40 transition-colors">
             <CardContent className="p-3 sm:p-4 text-center">
-              <p className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wider truncate" title={s.label}>{s.label}</p>
-              <p className={cn('text-base sm:text-lg md:text-xl lg:text-2xl font-bold mt-1 truncate', s.color)} title={s.value}>{s.value}</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wider font-semibold truncate" title={s.label}>
+                {s.label}
+              </p>
+              <p className={cn('text-base sm:text-lg md:text-xl font-bold mt-1 truncate', s.color)} title={s.title || s.value}>
+                {s.value}
+              </p>
+              {s.sub ? (
+                <p className="text-[11px] text-muted-foreground font-medium mt-0.5 truncate">
+                  {s.sub}
+                </p>
+              ) : null}
             </CardContent>
           </Card>
         ))}
@@ -270,8 +356,11 @@ export default function ReportsPage() {
       {/* Tab nav */}
       <div className="flex gap-2 border-b border-border pb-0 overflow-x-auto whitespace-nowrap scrollbar-none">
         {TABS.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id as any)}
-            className={cn('px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px flex-shrink-0',
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id as any)}
+            className={cn(
+              'px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px flex-shrink-0',
               tab === t.id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
             )}
           >
@@ -283,9 +372,13 @@ export default function ReportsPage() {
       {/* Revenue Tab */}
       {tab === 'revenue' && (
         <Card>
-          <CardHeader className="pb-2"><CardTitle>Revenue vs Expenses</CardTitle></CardHeader>
+          <CardHeader className="pb-2">
+            <CardTitle>Revenue vs Expenses ({searchFrom} to {searchTo})</CardTitle>
+          </CardHeader>
           <CardContent>
-            {revLoading ? <Skeleton className="h-64" /> : (
+            {revLoading ? (
+              <Skeleton className="h-64" />
+            ) : (
               <ResponsiveContainer width="100%" height={300}>
                 <AreaChart data={chartData}>
                   <defs>
@@ -300,8 +393,16 @@ export default function ReportsPage() {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                   <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} tickFormatter={(v) => `₹${(v/1000).toFixed(0)}k`} />
-                  <Tooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '12px' }} formatter={(v: any) => [formatCurrency(v), '']} />
+                  <YAxis
+                    tick={{ fontSize: 11, fill: '#64748b' }}
+                    axisLine={false}
+                    tickLine={false}
+                    tickFormatter={(v) => `₹${(v / 1000).toFixed(0)}k`}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '12px' }}
+                    formatter={(v: any) => [formatCurrency(v), '']}
+                  />
                   <Legend />
                   <Area type="monotone" dataKey="revenue" stroke="#3b82f6" fill="url(#gr)" strokeWidth={2} name="Revenue" />
                   <Area type="monotone" dataKey="expenses" stroke="#ef4444" fill="url(#ge)" strokeWidth={2} name="Expenses" />
@@ -315,7 +416,9 @@ export default function ReportsPage() {
       {/* Tables Tab */}
       {tab === 'tables' && (
         <Card>
-          <CardHeader className="pb-2"><CardTitle>Table Performance</CardTitle></CardHeader>
+          <CardHeader className="pb-2">
+            <CardTitle>Table Performance ({searchFrom} to {searchTo})</CardTitle>
+          </CardHeader>
           <CardContent>
             <div className="space-y-3">
               {(tableData?.usage || []).map((t: any) => {
@@ -325,13 +428,22 @@ export default function ReportsPage() {
                   <div key={t._id.tableId} className="space-y-1.5">
                     <div className="flex items-center justify-between text-sm">
                       <div className="flex items-center gap-2">
-                        <div className={cn('h-6 w-6 rounded-lg flex items-center justify-center text-white text-xs font-bold',
-                          t._id.type?.toLowerCase() === 'pool' ? 'bg-blue-500' : t._id.type?.toLowerCase() === 'snooker' ? 'bg-emerald-500' : 'bg-purple-500'
-                        )}>
+                        <div
+                          className={cn(
+                            'h-6 w-6 rounded-lg flex items-center justify-center text-white text-xs font-bold',
+                            t._id.type?.toLowerCase() === 'pool'
+                              ? 'bg-blue-500'
+                              : t._id.type?.toLowerCase() === 'snooker'
+                              ? 'bg-emerald-500'
+                              : 'bg-purple-500'
+                          )}
+                        >
                           {t._id.type?.[0]?.toUpperCase()}
                         </div>
                         <span className="font-medium">{t._id.tableName}</span>
-                        <span className="text-xs text-muted-foreground">({t.totalSessions} sessions · {formatDuration(t.totalMinutes || 0)})</span>
+                        <span className="text-xs text-muted-foreground">
+                          ({t.totalSessions} sessions · {formatDuration(t.totalMinutes || 0)})
+                        </span>
                       </div>
                       <span className="font-bold text-emerald-400">{formatCurrency(t.totalRevenue)}</span>
                     </div>
@@ -352,17 +464,27 @@ export default function ReportsPage() {
       {/* P&L Tab */}
       {tab === 'pnl' && (
         <Card>
-          <CardHeader className="pb-2"><CardTitle>Profit & Loss</CardTitle></CardHeader>
+          <CardHeader className="pb-2">
+            <CardTitle>Profit & Loss ({searchFrom} to {searchTo})</CardTitle>
+          </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                 <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} tickFormatter={(v) => `₹${(v/1000).toFixed(0)}k`} />
-                <Tooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '12px' }} formatter={(v: any) => [formatCurrency(v), '']} />
+                <YAxis
+                  tick={{ fontSize: 11, fill: '#64748b' }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(v) => `₹${(v / 1000).toFixed(0)}k`}
+                />
+                <Tooltip
+                  contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '12px' }}
+                  formatter={(v: any) => [formatCurrency(v), '']}
+                />
                 <Legend />
-                <Bar dataKey="revenue" name="Revenue" fill="#3b82f6" radius={[4,4,0,0]} />
-                <Bar dataKey="profit" name="Profit" fill="#22c55e" radius={[4,4,0,0]} />
+                <Bar dataKey="revenue" name="Revenue" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="profit" name="Profit" fill="#22c55e" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -372,7 +494,9 @@ export default function ReportsPage() {
       {/* Branches Tab */}
       {tab === 'branches' && (
         <Card>
-          <CardHeader className="pb-2"><CardTitle>Branch Comparison (This Month)</CardTitle></CardHeader>
+          <CardHeader className="pb-2">
+            <CardTitle>Branch Comparison ({searchFrom} to {searchTo})</CardTitle>
+          </CardHeader>
           <CardContent>
             <div className="space-y-4">
               {(branchData?.comparison || []).map((b: any) => (
@@ -384,9 +508,18 @@ export default function ReportsPage() {
                     </span>
                   </div>
                   <div className="grid grid-cols-3 gap-3 text-center text-sm">
-                    <div><p className="text-muted-foreground text-xs">Revenue</p><p className="font-bold text-blue-400">{formatCurrency(b.revenue)}</p></div>
-                    <div><p className="text-muted-foreground text-xs">Expenses</p><p className="font-bold text-red-400">{formatCurrency(b.expenses)}</p></div>
-                    <div><p className="text-muted-foreground text-xs">Invoices</p><p className="font-bold">{b.bills}</p></div>
+                    <div>
+                      <p className="text-muted-foreground text-xs">Revenue</p>
+                      <p className="font-bold text-blue-400">{formatCurrency(b.revenue)}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground text-xs">Expenses</p>
+                      <p className="font-bold text-red-400">{formatCurrency(b.expenses)}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground text-xs">Invoices</p>
+                      <p className="font-bold">{b.bills}</p>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -400,7 +533,7 @@ export default function ReportsPage() {
 
       {shouldFetch && (
         <div className="space-y-6">
-          {/* Summary Section */}
+          {/* Order Details & Summary Section */}
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
             {[
               { label: 'Total Orders', value: orderSummaryData?.summary?.totalOrders ?? 0, color: 'text-blue-400' },
@@ -413,8 +546,12 @@ export default function ReportsPage() {
             ].map((s) => (
               <Card key={s.label}>
                 <CardContent className="p-3 text-center">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold truncate" title={s.label}>{s.label}</p>
-                  <p className={cn('text-sm sm:text-base md:text-lg font-bold mt-1 truncate', s.color)} title={s.value}>{s.value}</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold truncate" title={s.label}>
+                    {s.label}
+                  </p>
+                  <p className={cn('text-sm sm:text-base md:text-lg font-bold mt-1 truncate', s.color)} title={s.value}>
+                    {s.value}
+                  </p>
                 </CardContent>
               </Card>
             ))}
@@ -452,7 +589,9 @@ export default function ReportsPage() {
                           <TableCell className="text-sm font-semibold text-red-400 whitespace-nowrap">
                             {tx.walletDebit > 0 ? `-${formatCurrency(tx.walletDebit)}` : '—'}
                           </TableCell>
-                          <TableCell className="text-sm font-bold text-blue-400 whitespace-nowrap">{formatCurrency(tx.remainingBalance)}</TableCell>
+                          <TableCell className="text-sm font-bold text-blue-400 whitespace-nowrap">
+                            {formatCurrency(tx.remainingBalance)}
+                          </TableCell>
                           <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                             {new Date(tx.createdAt).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
                           </TableCell>
@@ -476,8 +615,12 @@ export default function ReportsPage() {
                   {orderSummaryData.topSellingItems.map((item: any, idx: number) => (
                     <Card key={idx} className="bg-muted/30">
                       <CardContent className="p-4 text-center">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold truncate" title={item.category}>{item.category}</p>
-                        <p className="text-base font-bold mt-1 text-foreground truncate" title={item.name}>{item.name}</p>
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold truncate" title={item.category}>
+                          {item.category}
+                        </p>
+                        <p className="text-base font-bold mt-1 text-foreground truncate" title={item.name}>
+                          {item.name}
+                        </p>
                         <div className="inline-flex items-center gap-1.5 mt-2 bg-amber-500/10 text-amber-400 px-2.5 py-0.5 rounded-full text-xs font-bold border border-amber-500/25">
                           {item.quantitySold} sold
                         </div>

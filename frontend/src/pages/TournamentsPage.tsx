@@ -13,7 +13,7 @@ import autoTable from 'jspdf-autotable';
 function TournamentsList() {
   const navigate = useNavigate();
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [formData, setFormData] = useState({ name: '', maxParticipants: 32, description: '', branch: '', gameCategory: '8-Ball Pool', tournamentDate: '', startTime: '' });
+  const [formData, setFormData] = useState({ name: '', maxParticipants: 32, description: '', branch: '', gameCategory: '8-Ball Pool', tournamentDate: '', startTime: '', entryFee: '' });
   const { selectedBranch } = useAppStore();
   const { user } = useAuthStore();
   const queryClient = useQueryClient();
@@ -157,6 +157,16 @@ function TournamentsList() {
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
             />
           </div>
+          <div>
+            <Label>Entry Fee (₹)</Label>
+            <Input
+              type="number"
+              min="0"
+              value={formData.entryFee}
+              onChange={(e) => setFormData({ ...formData, entryFee: e.target.value })}
+              placeholder="e.g. 500"
+            />
+          </div>
           {canSelectBranch && (
             <div>
               <Label>Branch *</Label>
@@ -280,7 +290,8 @@ function EditTournamentModal({ isOpen, onClose, tournament }: { isOpen: boolean,
     maxParticipants: tournament.maxParticipants || 32,
     tournamentDate: tournament.tournamentDate ? new Date(tournament.tournamentDate).toISOString().split('T')[0] : '',
     startTime: tournament.startTime || '',
-    description: tournament.description || ''
+    description: tournament.description || '',
+    entryFee: tournament.entryFee || ''
   });
 
   const updateMutation = useMutation({
@@ -335,6 +346,16 @@ function EditTournamentModal({ isOpen, onClose, tournament }: { isOpen: boolean,
           <Label>Description</Label>
           <Input value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} />
         </div>
+        <div>
+          <Label>Entry Fee (₹)</Label>
+          <Input
+            type="number"
+            min="0"
+            value={formData.entryFee}
+            onChange={(e) => setFormData({ ...formData, entryFee: e.target.value })}
+            placeholder="e.g. 500"
+          />
+        </div>
         {tournament.status !== 'pending' && formData.maxParticipants !== tournament.maxParticipants && (
           <div className="bg-amber-500/10 border border-amber-500/30 p-3 rounded-lg text-sm text-amber-600 mt-2">
             <strong>Warning:</strong> The bracket is already generated. If you change the Max Participants, you must <strong>Regenerate the Bracket</strong> from the Participants Tab.
@@ -351,12 +372,273 @@ function EditTournamentModal({ isOpen, onClose, tournament }: { isOpen: boolean,
   );
 }
 
+// --- Edit Players Modal ---
+function EditPlayersModal({ isOpen, onClose, tournament, participants }: { isOpen: boolean, onClose: () => void, tournament: any, participants: any[] }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [customerId, setCustomerId] = useState('');
+  const [selectedParticipant, setSelectedParticipant] = useState<any>(null);
+  const [paymentForm, setPaymentForm] = useState({
+    paymentStatus: 'unpaid',
+    paymentMethod: '',
+    paidAmount: '',
+    cashAmount: '',
+    onlineAmount: '',
+    walletAmount: ''
+  });
+
+  const addPlayerMutation = useMutation({
+    mutationFn: (cid: string) => tournamentService.registerParticipant(tournament._id, cid),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tournament-participants', tournament._id] });
+      setCustomerId('');
+      toast.success('Player added successfully');
+    },
+    onError: (error: any) => toast.error(error.response?.data?.message || 'Error adding player')
+  });
+
+  const removePlayerMutation = useMutation({
+    mutationFn: (participantId: string) => tournamentService.removeParticipant(tournament._id, participantId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tournament-participants', tournament._id] });
+      toast.success('Player removed successfully');
+    },
+    onError: (error: any) => toast.error(error.response?.data?.message || 'Error removing player')
+  });
+
+  const updatePaymentMutation = useMutation({
+    mutationFn: (data: any) => tournamentService.updateParticipantPayment(tournament._id, selectedParticipant._id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tournament-participants', tournament._id] });
+      setSelectedParticipant(null);
+      setPaymentForm({
+        paymentStatus: 'unpaid',
+        paymentMethod: '',
+        paidAmount: '',
+        cashAmount: '',
+        onlineAmount: '',
+        walletAmount: ''
+      });
+      toast.success('Payment updated successfully');
+    },
+    onError: (error: any) => toast.error(error.response?.data?.message || 'Error updating payment')
+  });
+
+  const openPaymentModal = (participant: any) => {
+    setSelectedParticipant(participant);
+    setPaymentForm({
+      paymentStatus: participant.paymentStatus || 'unpaid',
+      paymentMethod: participant.paymentMethod || '',
+      paidAmount: participant.paidAmount?.toString() || '',
+      cashAmount: participant.cashAmount?.toString() || '',
+      onlineAmount: participant.onlineAmount?.toString() || '',
+      walletAmount: participant.walletAmount?.toString() || ''
+    });
+  };
+
+  const handlePaymentSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const entryFee = tournament.entryFee || 0;
+    const paidAmount = parseFloat(paymentForm.paidAmount) || 0;
+    
+    let calculatedStatus = paymentForm.paymentStatus;
+    if (paidAmount >= entryFee) {
+      calculatedStatus = 'paid';
+    } else if (paidAmount > 0) {
+      calculatedStatus = 'partial';
+    } else {
+      calculatedStatus = 'unpaid';
+    }
+
+    updatePaymentMutation.mutate({
+      ...paymentForm,
+      paymentStatus: calculatedStatus,
+      paidAmount,
+      cashAmount: parseFloat(paymentForm.cashAmount) || 0,
+      onlineAmount: parseFloat(paymentForm.onlineAmount) || 0,
+      walletAmount: parseFloat(paymentForm.walletAmount) || 0
+    });
+  };
+
+  const handleRemovePlayer = (participantId: string) => {
+    if (window.confirm('Are you sure you want to remove this player?')) {
+      removePlayerMutation.mutate(participantId);
+    }
+  };
+
+  return (
+    <>
+      <Modal open={isOpen} onClose={onClose} title="Edit Players">
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <Label>Add Player (Customer ID)</Label>
+              <Input
+                value={customerId}
+                onChange={(e) => setCustomerId(e.target.value)}
+                placeholder="Paste customer ID here..."
+              />
+            </div>
+            <Button 
+              onClick={() => addPlayerMutation.mutate(customerId)} 
+              disabled={!customerId || addPlayerMutation.isPending}
+              className="mt-5"
+            >
+              {addPlayerMutation.isPending ? 'Adding...' : 'Add'}
+            </Button>
+          </div>
+
+          <div className="max-h-96 overflow-y-auto border border-border rounded-lg">
+            {participants.length === 0 ? (
+              <div className="p-4 text-center text-muted-foreground">No players registered yet.</div>
+            ) : (
+              <div className="divide-y divide-border">
+                {participants.map((p: any) => (
+                  <div key={p._id} className="flex items-center justify-between p-3 hover:bg-accent/50">
+                    <div className="flex-1">
+                      <p className="font-medium">{p.customer?.name} <span className="text-muted-foreground text-sm">({p.customer?.customerId})</span></p>
+                      <p className="text-xs text-muted-foreground">
+                        Entry Fee: ₹{tournament.entryFee || 0} | Paid: ₹{p.paidAmount || 0} | Status: {p.paymentStatus?.toUpperCase() || 'UNPAID'}
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={() => openPaymentModal(p)}
+                      >
+                        Payment
+                      </Button>
+                      {tournament.status === 'pending' && (
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          className="text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                          onClick={() => handleRemovePlayer(p._id)}
+                          disabled={removePlayerMutation.isPending}
+                        >
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-3 mt-6">
+            <Button variant="outline" onClick={onClose}>Close</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Payment Modal */}
+      <Modal open={!!selectedParticipant} onClose={() => setSelectedParticipant(null)} title={`Update Payment: ${selectedParticipant?.customer?.name}`}>
+        {selectedParticipant && (
+          <form onSubmit={handlePaymentSubmit} className="space-y-4">
+            <div className="bg-muted/50 p-3 rounded-lg text-sm">
+              <p><strong>Entry Fee:</strong> ₹{tournament.entryFee || 0}</p>
+              <p><strong>Pending:</strong> ₹{Math.max(0, (tournament.entryFee || 0) - (selectedParticipant.paidAmount || 0))}</p>
+            </div>
+
+            <div>
+              <Label>Payment Status</Label>
+              <select
+                className="flex h-9 w-full rounded-xl border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors mt-1"
+                value={paymentForm.paymentStatus}
+                onChange={(e) => setPaymentForm({ ...paymentForm, paymentStatus: e.target.value })}
+              >
+                <option value="unpaid">Unpaid</option>
+                <option value="partial">Partial</option>
+                <option value="paid">Paid</option>
+              </select>
+            </div>
+
+            <div>
+              <Label>Payment Method</Label>
+              <select
+                className="flex h-9 w-full rounded-xl border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors mt-1"
+                value={paymentForm.paymentMethod}
+                onChange={(e) => setPaymentForm({ ...paymentForm, paymentMethod: e.target.value })}
+              >
+                <option value="">Select Method</option>
+                <option value="cash">Cash</option>
+                <option value="upi">Online (UPI)</option>
+                <option value="mixed">Mixed</option>
+                <option value="wallet">Wallet</option>
+              </select>
+            </div>
+
+            <div>
+              <Label>Total Amount Received (₹)</Label>
+              <Input
+                type="number"
+                min="0"
+                value={paymentForm.paidAmount}
+                onChange={(e) => setPaymentForm({ ...paymentForm, paidAmount: e.target.value })}
+                placeholder="e.g. 500"
+              />
+            </div>
+
+            {paymentForm.paymentMethod === 'mixed' && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Cash Amount (₹)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={paymentForm.cashAmount}
+                    onChange={(e) => setPaymentForm({ ...paymentForm, cashAmount: e.target.value })}
+                    placeholder="e.g. 300"
+                  />
+                </div>
+                <div>
+                  <Label>Online Amount (₹)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={paymentForm.onlineAmount}
+                    onChange={(e) => setPaymentForm({ ...paymentForm, onlineAmount: e.target.value })}
+                    placeholder="e.g. 200"
+                  />
+                </div>
+              </div>
+            )}
+
+            {paymentForm.paymentMethod === 'wallet' && (
+              <div>
+                <Label>Wallet Amount (₹)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  value={paymentForm.walletAmount}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, walletAmount: e.target.value })}
+                  placeholder="e.g. 500"
+                />
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 mt-6">
+              <Button type="button" variant="outline" onClick={() => setSelectedParticipant(null)}>Cancel</Button>
+              <Button type="submit" disabled={updatePaymentMutation.isPending}>
+                {updatePaymentMutation.isPending ? 'Saving...' : 'Save Payment'}
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+    </>
+  );
+}
+
 // --- Participants Tab ---
 function ParticipantsTab({ tournament }: { tournament: any }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [isRegenerateOpen, setIsRegenerateOpen] = useState(false);
+  const [isEditPlayersOpen, setIsEditPlayersOpen] = useState(false);
   const [customerId, setCustomerId] = useState('');
   
   const { data, isLoading } = useQuery({
@@ -403,8 +685,8 @@ function ParticipantsTab({ tournament }: { tournament: any }) {
         <div className="flex flex-wrap gap-3 w-full sm:w-auto">
           {tournament.status === 'pending' ? (
             <>
-              <Button variant="outline" onClick={() => setIsRegisterOpen(true)} disabled={participants.length >= tournament.maxParticipants}>
-                Add Player
+              <Button variant="outline" onClick={() => setIsEditPlayersOpen(true)} disabled={participants.length >= tournament.maxParticipants}>
+                Edit Players
               </Button>
               <Button 
                 onClick={() => generateMutation.mutate(false)} 
@@ -416,8 +698,8 @@ function ParticipantsTab({ tournament }: { tournament: any }) {
             </>
           ) : (
             <>
-              <Button variant="outline" onClick={() => setIsRegisterOpen(true)} disabled={participants.length >= tournament.maxParticipants}>
-                Add Player
+              <Button variant="outline" onClick={() => setIsEditPlayersOpen(true)} disabled={participants.length >= tournament.maxParticipants}>
+                Edit Players
               </Button>
               <Button 
                 onClick={() => setIsRegenerateOpen(true)} 
@@ -437,28 +719,63 @@ function ParticipantsTab({ tournament }: { tournament: any }) {
           <div className="p-8 text-center text-muted-foreground">No players registered yet.</div>
         ) : (
           <div className="divide-y divide-border">
-            {participants.map((p: any) => (
-              <div key={p._id} className="flex items-center justify-between p-4 hover:bg-accent/50 transition-colors">
-                <div className="flex items-center gap-4">
-                  <div className="h-10 w-10 rounded-full bg-accent flex items-center justify-center font-bold text-muted-foreground">
-                    #{p.seed}
+            {participants.map((p: any) => {
+              const entryFee = tournament.entryFee || 0;
+              const paidAmount = p.paidAmount || 0;
+              const pendingAmount = Math.max(0, entryFee - paidAmount);
+              const paymentStatus = p.paymentStatus || 'unpaid';
+              
+              return (
+                <div key={p._id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 hover:bg-accent/50 transition-colors gap-3">
+                  <div className="flex items-center gap-4 flex-1">
+                    <div className="h-10 w-10 rounded-full bg-accent flex items-center justify-center font-bold text-muted-foreground flex-shrink-0">
+                      #{p.seed}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-foreground">{p.customer?.name} <span className="text-muted-foreground font-normal text-sm">({p.customer?.customerId})</span></p>
+                      <p className="text-xs text-muted-foreground">{p.customer?.phone} • Registered: {new Date(p.createdAt).toLocaleString()}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="font-medium text-foreground">{p.customer?.name} <span className="text-muted-foreground font-normal text-sm">({p.customer?.customerId})</span></p>
-                    <p className="text-xs text-muted-foreground">{p.customer?.phone} • Registered: {new Date(p.createdAt).toLocaleString()}</p>
+                  
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-4 text-sm">
+                    <div className="text-right">
+                      <p className="text-muted-foreground text-xs">Entry Fee</p>
+                      <p className="font-medium">₹{entryFee}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-muted-foreground text-xs">Paid</p>
+                      <p className="font-medium">₹{paidAmount}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-muted-foreground text-xs">Pending</p>
+                      <p className={`font-medium ${pendingAmount > 0 ? 'text-red-500' : 'text-green-500'}`}>₹{pendingAmount}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-muted-foreground text-xs">Method</p>
+                      <p className="font-medium capitalize">{p.paymentMethod || '-'}</p>
+                    </div>
+                    <div>
+                      <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${
+                        paymentStatus === 'paid' ? 'bg-green-500/10 text-green-500' :
+                        paymentStatus === 'partial' ? 'bg-amber-500/10 text-amber-500' :
+                        'bg-red-500/10 text-red-500'
+                      }`}>
+                        {paymentStatus.toUpperCase()}
+                      </span>
+                    </div>
+                    <div>
+                      <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${
+                        p.status === 'active' ? 'bg-blue-500/10 text-blue-500' :
+                        p.status === 'winner' ? 'bg-yellow-500/10 text-yellow-500 font-bold' :
+                        'bg-gray-500/10 text-gray-500 opacity-60'
+                      }`}>
+                        {p.status.toUpperCase()}
+                      </span>
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${
-                    p.status === 'active' ? 'bg-green-500/10 text-green-500' :
-                    p.status === 'winner' ? 'bg-yellow-500/10 text-yellow-500 font-bold' :
-                    'bg-red-500/10 text-red-500 opacity-60'
-                  }`}>
-                    {p.status.toUpperCase()}
-                  </span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -503,6 +820,13 @@ function ParticipantsTab({ tournament }: { tournament: any }) {
           </div>
         </div>
       </Modal>
+
+      <EditPlayersModal 
+        isOpen={isEditPlayersOpen} 
+        onClose={() => setIsEditPlayersOpen(false)} 
+        tournament={tournament} 
+        participants={participants}
+      />
     </div>
   );
 }

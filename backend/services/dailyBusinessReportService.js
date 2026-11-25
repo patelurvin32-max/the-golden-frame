@@ -8,6 +8,8 @@ const Reservation = require('../models/Reservation');
 const { Expense } = require('../models/Operations');
 const { Settings } = require('../models/System');
 const DailyReportDelivery = require('../models/DailyReportDelivery');
+const TournamentParticipant = require('../models/TournamentParticipant');
+const Tournament = require('../models/Tournament');
 const { parseEmailList, resolveEmailProvider, sendEmail, buildSenderAddress } = require('./emailService');
 const { getDailyBusinessWindow } = require('../utils/reportWindow');
 
@@ -280,6 +282,7 @@ const generateDailyBusinessReportForBranch = async ({ branchId, settings, now = 
     sessionAggregation,
     reservationAggregation,
     walletAggregation,
+    tournamentAggregation,
     customerSummary,
     currentWalletBalance,
     activeSessionCounts,
@@ -444,6 +447,27 @@ const generateDailyBusinessReportForBranch = async ({ branchId, settings, now = 
         },
       },
     ]),
+    TournamentParticipant.aggregate([
+      {
+        $lookup: {
+          from: 'tournaments',
+          localField: 'tournament',
+          foreignField: '_id',
+          as: 'tournamentInfo'
+        }
+      },
+      { $unwind: '$tournamentInfo' },
+      { $match: { branch: branch._id, 'tournamentInfo.createdAt': { $gte: window.windowStart, $lt: window.windowEnd } } },
+      {
+        $group: {
+          _id: null,
+          totalCashCollection: { $sum: '$cashAmount' },
+          totalUPICollection: { $sum: '$onlineAmount' },
+          totalWalletPayments: { $sum: '$walletAmount' },
+          totalRevenue: { $sum: '$paidAmount' },
+        },
+      },
+    ]),
     Customer.countDocuments({ ...activeCustomerMatch, createdAt: { $gte: window.windowStart, $lt: window.windowEnd } }),
     Customer.aggregate([
       { $match: { branch: branch._id, isActive: true } },
@@ -477,6 +501,7 @@ const generateDailyBusinessReportForBranch = async ({ branchId, settings, now = 
   const reservationSummary = reservationAggregation[0] || {};
   const walletSummary = walletAggregation[0] || {};
   const walletBalanceSummary = currentWalletBalance[0] || {};
+  const tournamentSummary = tournamentAggregation[0] || {};
 
   const topSellingMap = new Map();
   for (const order of orders) {
@@ -546,14 +571,14 @@ const generateDailyBusinessReportForBranch = async ({ branchId, settings, now = 
         cancelledOrders: Number(overview.cancelledOrders || 0),
       },
       revenue: {
-        totalCashCollection: Number(overview.totalCashCollection || 0),
-        totalUPICollection: Number(overview.totalUPICollection || 0),
+        totalCashCollection: Number(overview.totalCashCollection || 0) + Number(tournamentSummary.totalCashCollection || 0),
+        totalUPICollection: Number(overview.totalUPICollection || 0) + Number(tournamentSummary.totalUPICollection || 0),
         totalMixedPayments: Number(overview.totalMixedPayments || 0),
-        totalWalletPayments: Number(overview.totalWalletPayments || 0),
+        totalWalletPayments: Number(overview.totalWalletPayments || 0) + Number(tournamentSummary.totalWalletPayments || 0),
         totalWalletCredits: Number(walletSummary.walletCredits || 0),
         totalWalletDebits: Number(walletSummary.walletDebits || 0),
         totalPendingPayments: Number(overview.totalPendingPayments || 0),
-        totalRevenue,
+        totalRevenue: totalRevenue + Number(tournamentSummary.totalRevenue || 0),
         averageOrderValue,
       },
       expense: {

@@ -392,7 +392,7 @@ exports.getCustomers = asyncHandler(async (req, res) => {
             $sum: { $cond: [{ $lt: ["$createdAt", overdueDate] }, 1, 0] }
           },
           highValueCustomersCount: {
-            $sum: { $cond: [{ $gt: [{ $ifNull: ["$billAmount", 0] }, 5000] }, 1, 0] }
+            $sum: { $cond: [{ $gt: [{ $ifNull: ["$billAmount", 0] }, 2000] }, 1, 0] }
           }
         }
       }

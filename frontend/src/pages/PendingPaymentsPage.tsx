@@ -119,7 +119,7 @@ export default function PendingPaymentsPage() {
       return daysSinceCreation > OVERDUE_DAYS;
     });
     
-    const highValueCustomers = customers.filter(c => ((c as any).billAmount || 0) > HIGH_VALUE_THRESHOLD);
+    const highValueCustomers = customers.filter(c => ((c as any).billAmount || 0) >= 2000);
 
     return {
       totalPendingAmount,
@@ -263,7 +263,7 @@ export default function PendingPaymentsPage() {
     setDetailsModal(true);
   };
 
-  const isHighValue = (customer: Customer) => ((customer as any).billAmount || 0) > HIGH_VALUE_THRESHOLD;
+  const isHighValue = (customer: Customer) => ((customer as any).billAmount || 0) >= 2000;
   const isOverdue = (customer: Customer) => {
     const createdDate = new Date(customer.createdAt || '');
     const daysSinceCreation = Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24));
@@ -514,15 +514,6 @@ export default function PendingPaymentsPage() {
               </p>
             </div>
             <div className="text-3xl">👥</div>
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Total Overdue Customers</p>
-              <p className="text-2xl font-bold mt-1 text-red-400">{summaryStats.overdueCustomersCount}</p>
-            </div>
-            <div className="text-3xl">⚠️</div>
           </div>
         </Card>
         <Card className="p-4">

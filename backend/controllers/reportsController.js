@@ -5,11 +5,14 @@ const Table = require('../models/Table');
 const Customer = require('../models/Customer');
 const Order = require('../models/Order');
 const WalletTransaction = require('../models/WalletTransaction');
+const TournamentParticipant = require('../models/TournamentParticipant');
+const Tournament = require('../models/Tournament');
 const asyncHandler = require('../utils/asyncHandler');
 const ExcelJS = require('exceljs');
 const { ROLES } = require('../config/constants');
 
 const mongoose = require('mongoose');
+const { parseDateRange, calculateReportMetrics, TIMEZONE_OFFSET } = require('../utils/reportMetricsHelper');
 
 const branchFilter = (req) => {
   const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
@@ -25,59 +28,8 @@ const branchFilter = (req) => {
 const { getBusinessDayStart } = require('../utils/businessDay');
 
 const getCollectionTotals = async (matchBranch, from, to) => {
-  // Helper to extract a cash or upi amount from a payment doc (handles mixed breakdown)
-  const cashExpr = {
-    $cond: [
-      { $eq: ['$method', 'cash'] },
-      '$amount',
-      { $reduce: { input: { $filter: { input: { $ifNull: ['$breakdown', []] }, cond: { $eq: ['$$this.method', 'cash'] } } }, initialValue: 0, in: { $add: ['$$value', '$$this.amount'] } } }
-    ]
-  };
-  const onlineExpr = {
-    $cond: [
-      { $eq: ['$method', 'upi'] },
-      '$amount',
-      { $reduce: { input: { $filter: { input: { $ifNull: ['$breakdown', []] }, cond: { $eq: ['$$this.method', 'upi'] } } }, initialValue: 0, in: { $add: ['$$value', '$$this.amount'] } } }
-    ]
-  };
-
-  const [billPayments, directPayments, orderPayments] = await Promise.all([
-    Bill.aggregate([
-      { $match: { ...matchBranch, createdAt: { $gte: from, $lte: to } } },
-      {
-        $group: {
-          _id: null,
-          cash: { $sum: '$cashAmount' },
-          online: { $sum: '$onlineAmount' }
-        }
-      }
-    ]),
-    Payment.aggregate([
-      { $match: { ...matchBranch, createdAt: { $gte: from, $lte: to } } },
-      {
-        $group: {
-          _id: null,
-          cash: { $sum: cashExpr },
-          online: { $sum: onlineExpr }
-        }
-      }
-    ]),
-    Order.aggregate([
-      { $match: { ...matchBranch, session: { $exists: false }, createdAt: { $gte: from, $lte: to } } },
-      {
-        $group: {
-          _id: null,
-          cash: { $sum: '$cashAmount' },
-          online: { $sum: '$onlineAmount' }
-        }
-      }
-    ])
-  ]);
-
-  const totalCash = (billPayments[0]?.cash || 0) + (directPayments[0]?.cash || 0) + (orderPayments[0]?.cash || 0);
-  const totalOnline = (billPayments[0]?.online || 0) + (directPayments[0]?.online || 0) + (orderPayments[0]?.online || 0);
-
-  return { totalCash, totalOnline };
+  const metrics = await calculateReportMetrics(matchBranch, from, to);
+  return { totalCash: metrics.totalCash, totalOnline: metrics.totalOnline };
 };
 
 // GET /api/reports/dashboard?branch=
@@ -135,7 +87,7 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
   ]);
 
   // ── Remaining simple lookups, all run in parallel ──
-  const [billStats, orderStats, expenseStats, tables, todayCustomers, walletResult, walletTxStats, todayColl, monthColl] =
+  const [billStats, orderStats, expenseStats, tables, todayCustomers, walletResult, walletTxStats, todayColl, monthColl, tournamentStats] =
     await Promise.all([
       billStatsPromise,
       orderStatsPromise,
@@ -154,6 +106,25 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
       ]),
       getCollectionTotals(matchBranch, todayStart, now),
       getCollectionTotals(matchBranch, monthStart, now),
+      TournamentParticipant.aggregate([
+        {
+          $lookup: {
+            from: 'tournaments',
+            localField: 'tournament',
+            foreignField: '_id',
+            as: 'tournamentInfo'
+          }
+        },
+        { $unwind: '$tournamentInfo' },
+        { $match: { ...matchBranch, paymentStatus: { $in: ['paid', 'partial'] } } },
+        {
+          $facet: {
+            todayRevenue: [{ $match: { 'tournamentInfo.createdAt': { $gte: todayStart } } }, { $group: { _id: null, v: { $sum: '$paidAmount' } } }],
+            monthRevenue: [{ $match: { 'tournamentInfo.createdAt': { $gte: monthStart } } }, { $group: { _id: null, v: { $sum: '$paidAmount' } } }],
+            yearRevenue:  [{ $match: { 'tournamentInfo.createdAt': { $gte: yearStart  } } }, { $group: { _id: null, v: { $sum: '$paidAmount' } } }],
+          },
+        },
+      ]),
     ]);
 
   // Helper to extract a facet value safely
@@ -162,9 +133,9 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
   const runningTables   = tables.filter((t) => t.status === 'running').length;
   const availableTables = tables.filter((t) => t.status === 'available').length;
 
-  const todayRev  = fv(billStats, 'todayRevenue') + fv(orderStats, 'todayRevenue');
-  const monthRev  = fv(billStats, 'monthRevenue') + fv(orderStats, 'monthRevenue');
-  const yearRev   = fv(billStats, 'yearRevenue')  + fv(orderStats, 'yearRevenue');
+  const todayRev  = fv(billStats, 'todayRevenue') + fv(orderStats, 'todayRevenue') + fv(tournamentStats, 'todayRevenue');
+  const monthRev  = fv(billStats, 'monthRevenue') + fv(orderStats, 'monthRevenue') + fv(tournamentStats, 'monthRevenue');
+  const yearRev   = fv(billStats, 'yearRevenue')  + fv(orderStats, 'yearRevenue')  + fv(tournamentStats, 'yearRevenue');
   const todayExp  = fv(expenseStats, 'today');
   const monthExp  = fv(expenseStats, 'month');
   const todayCash    = todayColl.totalCash;
@@ -204,46 +175,58 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
   const bf = branchFilter(req);
   const matchBranch = bf ? { branch: bf } : {};
 
-  let from = new Date(Date.now() - 30 * 86400000);
-  if (req.query.from) {
-    from = new Date(req.query.from);
-    from.setHours(0, 0, 0, 0);
-  }
-  let to = new Date();
-  if (req.query.to) {
-    to = new Date(req.query.to);
-    to.setHours(23, 59, 59, 999);
-  }
+  const { from, to } = parseDateRange(req.query.from, req.query.to);
 
   const groupBy = req.query.groupBy || 'day';
   const dateFormat = groupBy === 'month' ? '%Y-%m' : groupBy === 'week' ? '%Y-%U' : '%Y-%m-%d';
 
-  const [revenueBills, revenueOrders, expenses, customerCount, collections] = await Promise.all([
+  const [metrics, revenueBills, revenueOrders, revenueTournaments, expenses] = await Promise.all([
+    calculateReportMetrics(matchBranch, from, to),
     Bill.aggregate([
-      { $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: from, $lte: to } } },
-      { $group: { _id: { $dateToString: { format: dateFormat, date: '$createdAt' } }, total: { $sum: '$total' }, count: { $sum: 1 } } },
+      { $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: from, $lte: to }, order: { $in: [null, undefined] } } },
+      { $group: { _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: TIMEZONE_OFFSET } }, total: { $sum: '$total' }, count: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]),
     Order.aggregate([
-      { $match: { ...matchBranch, session: { $exists: false }, paymentStatus: 'paid', createdAt: { $gte: from, $lte: to } } },
-      { $group: { _id: { $dateToString: { format: dateFormat, date: '$createdAt' } }, total: { $sum: '$billAmount' }, count: { $sum: 1 } } },
+      { $match: { ...matchBranch, session: { $in: [null, undefined] }, isActive: { $ne: false }, paymentStatus: 'paid', createdAt: { $gte: from, $lte: to } } },
+      { $group: { _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: TIMEZONE_OFFSET } }, total: { $sum: '$billAmount' }, count: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+    ]),
+    TournamentParticipant.aggregate([
+      {
+        $lookup: {
+          from: 'tournaments',
+          localField: 'tournament',
+          foreignField: '_id',
+          as: 'tournamentInfo'
+        }
+      },
+      { $unwind: '$tournamentInfo' },
+      { $match: { ...matchBranch, paymentStatus: { $in: ['paid', 'partial'] }, 'tournamentInfo.createdAt': { $gte: from, $lte: to } } },
+      { $group: { _id: { $dateToString: { format: dateFormat, date: '$tournamentInfo.createdAt', timezone: TIMEZONE_OFFSET } }, total: { $sum: '$paidAmount' }, count: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]),
     Expense.aggregate([
       { $match: { ...matchBranch, date: { $gte: from, $lte: to } } },
-      { $group: { _id: { $dateToString: { format: dateFormat, date: '$date' } }, total: { $sum: '$amount' } } },
+      { $group: { _id: { $dateToString: { format: dateFormat, date: '$date', timezone: TIMEZONE_OFFSET } }, total: { $sum: '$amount' } } },
       { $sort: { _id: 1 } },
     ]),
-    Customer.countDocuments({ ...matchBranch, createdAt: { $gte: from, $lte: to } }),
-    getCollectionTotals(matchBranch, from, to)
   ]);
 
-  // Merge revenue from Bills and Orders by date
+  // Merge revenue from Bills, Orders, and Tournaments by date
   const revenueMap = {};
   revenueBills.forEach((r) => {
     revenueMap[r._id] = { _id: r._id, total: r.total, count: r.count };
   });
   revenueOrders.forEach((r) => {
+    if (revenueMap[r._id]) {
+      revenueMap[r._id].total += r.total;
+      revenueMap[r._id].count += r.count;
+    } else {
+      revenueMap[r._id] = { _id: r._id, total: r.total, count: r.count };
+    }
+  });
+  revenueTournaments.forEach((r) => {
     if (revenueMap[r._id]) {
       revenueMap[r._id].total += r.total;
       revenueMap[r._id].count += r.count;
@@ -265,9 +248,17 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
       revenue: mergedRevenue,
       expenses,
       summary: {
-        totalCash: collections.totalCash,
-        totalOnline: collections.totalOnline,
-        totalCustomers: customerCount,
+        totalRevenue: metrics.totalRevenue,
+        totalExpenses: metrics.totalExpenses,
+        netProfit: metrics.netProfit,
+        totalCash: metrics.totalCash,
+        totalOnline: metrics.totalOnline,
+        totalCustomers: metrics.totalCustomers,
+        totalPendingAmount: metrics.totalPendingAmount,
+        totalItemsSold: metrics.totalItemsSold,
+        highestSellingItem: metrics.highestSellingItem,
+        totalCashCollection: metrics.totalCash,
+        totalUPICollection: metrics.totalOnline,
       }
     }
   });
@@ -278,16 +269,7 @@ exports.getTableUsageReport = asyncHandler(async (req, res) => {
   const bf = branchFilter(req);
   const matchBranch = bf ? { branch: bf } : {};
 
-  let from = new Date(Date.now() - 30 * 86400000);
-  if (req.query.from) {
-    from = new Date(req.query.from);
-    from.setHours(0, 0, 0, 0);
-  }
-  let to = new Date();
-  if (req.query.to) {
-    to = new Date(req.query.to);
-    to.setHours(23, 59, 59, 999);
-  }
+  const { from, to } = parseDateRange(req.query.from, req.query.to);
 
   const usage = await Session.aggregate([
     { $match: { ...matchBranch, status: 'completed', startTime: { $gte: from, $lte: to } } },
@@ -307,53 +289,84 @@ exports.getTableUsageReport = asyncHandler(async (req, res) => {
   res.status(200).json({ success: true, data: { usage } });
 });
 
-// GET /api/reports/branch-comparison
+// GET /api/reports/branch-comparison?from=&to=
 exports.getBranchComparison = asyncHandler(async (req, res) => {
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
     return res.status(403).json({ success: false, message: 'Access denied. You do not have permission to view branch comparisons.' });
   }
 
-  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const { from, to } = parseDateRange(req.query.from, req.query.to);
 
   try {
-    const [revenueByBranch, expenseByBranch] = await Promise.all([
+    const [revenueByBranch, expenseByBranch, orderRevenueByBranch, branches] = await Promise.all([
       Bill.aggregate([
-        { $match: { paymentStatus: 'paid', createdAt: { $gte: monthStart } } },
+        { $match: { paymentStatus: 'paid', createdAt: { $gte: from, $lte: to }, order: { $in: [null, undefined] } } },
         { $group: { _id: '$branch', revenue: { $sum: '$total' }, bills: { $sum: 1 } } },
-        {
-          $lookup: {
-            from: 'branches',
-            let: { branchId: '$_id' },
-            pipeline: [
-              { $match: { $expr: { $eq: ['$_id', '$$branchId'] } } },
-              { $project: { name: 1 } }
-            ],
-            as: 'branchInfo'
-          }
-        },
-        { $unwind: { path: '$branchInfo', preserveNullAndEmptyArrays: true } },
-        { $project: { branchName: { $ifNull: ['$branchInfo.name', 'Unknown'] }, revenue: 1, bills: 1 } },
       ]),
       Expense.aggregate([
-        { $match: { date: { $gte: monthStart } } },
+        { $match: { date: { $gte: from, $lte: to } } },
         { $group: { _id: '$branch', expenses: { $sum: '$amount' } } },
       ]),
+      Order.aggregate([
+        { $match: { isActive: { $ne: false }, paymentStatus: 'paid', createdAt: { $gte: from, $lte: to }, session: { $in: [null, undefined] } } },
+        { $group: { _id: '$branch', revenue: { $sum: '$billAmount' }, bills: { $sum: 1 } } },
+      ]),
+      Branch.find({ isActive: true }).select('name code').lean(),
     ]);
 
-    const expenseMap = Object.fromEntries(expenseByBranch.map((e) => [e._id.toString(), e.expenses]));
-    const comparison = revenueByBranch.map((b) => ({
+    const branchNameMap = Object.fromEntries(branches.map(b => [b._id.toString(), b.name]));
+    const expenseMap = Object.fromEntries(expenseByBranch.map((e) => [e._id?.toString() || 'unknown', e.expenses || 0]));
+
+    const branchMap = {};
+
+    revenueByBranch.forEach(b => {
+      const bId = b._id?.toString() || 'unknown';
+      branchMap[bId] = {
+        _id: b._id,
+        branchName: branchNameMap[bId] || 'Unknown',
+        revenue: (branchMap[bId]?.revenue || 0) + (b.revenue || 0),
+        bills: (branchMap[bId]?.bills || 0) + (b.bills || 0),
+        expenses: expenseMap[bId] || 0,
+      };
+    });
+
+    orderRevenueByBranch.forEach(o => {
+      const bId = o._id?.toString() || 'unknown';
+      if (branchMap[bId]) {
+        branchMap[bId].revenue += (o.revenue || 0);
+        branchMap[bId].bills += (o.bills || 0);
+      } else {
+        branchMap[bId] = {
+          _id: o._id,
+          branchName: branchNameMap[bId] || 'Unknown',
+          revenue: o.revenue || 0,
+          bills: o.bills || 0,
+          expenses: expenseMap[bId] || 0,
+        };
+      }
+    });
+
+    expenseByBranch.forEach(e => {
+      const bId = e._id?.toString() || 'unknown';
+      if (!branchMap[bId]) {
+        branchMap[bId] = {
+          _id: e._id,
+          branchName: branchNameMap[bId] || 'Unknown',
+          revenue: 0,
+          bills: 0,
+          expenses: e.expenses || 0,
+        };
+      }
+    });
+
+    const comparison = Object.values(branchMap).map((b) => ({
       ...b,
-      expenses: expenseMap[b._id.toString()] || 0,
-      profit: b.revenue - (expenseMap[b._id.toString()] || 0),
-    }));
+      profit: Math.round((b.revenue - b.expenses) * 100) / 100,
+    })).sort((a, b) => b.revenue - a.revenue);
 
     res.status(200).json({ success: true, data: { comparison } });
   } catch (error) {
     console.error('❌ Branch comparison error:', error);
-    console.error('❌ Error details:', error.message);
-    console.error('❌ Error stack:', error.stack);
-    
-    // Return empty comparison instead of 500 error
     res.status(200).json({ 
       success: true, 
       data: { comparison: [] },
@@ -362,53 +375,223 @@ exports.getBranchComparison = asyncHandler(async (req, res) => {
   }
 });
 
-// GET /api/reports/export/excel?branch=&from=&to=&type=revenue|expenses|sessions
+// GET /api/reports/export/excel?branch=&from=&to=&type=revenue|expenses|orders|pending_payments|complete
 exports.exportExcel = asyncHandler(async (req, res) => {
   const bf = branchFilter(req);
   const matchBranch = bf ? { branch: bf } : {};
-  let from = new Date(Date.now() - 30 * 86400000);
-  if (req.query.from) {
-    from = new Date(req.query.from);
-    from.setHours(0, 0, 0, 0);
-  }
-  let to = new Date();
-  if (req.query.to) {
-    to = new Date(req.query.to);
-    to.setHours(23, 59, 59, 999);
-  }
-  const type = req.query.type || 'revenue';
+  const { from, to } = parseDateRange(req.query.from, req.query.to);
+  const type = req.query.type || 'complete';
 
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'The Golden Frame';
+
+  if (type === 'complete' || type === 'all') {
+    const metrics = await calculateReportMetrics(matchBranch, from, to);
+
+    let branchLabel = 'All Branches';
+    if (bf) {
+      const bDoc = await Branch.findById(bf).select('name').lean();
+      if (bDoc) branchLabel = bDoc.name;
+    }
+
+    const fromDateLabel = from.toLocaleDateString('en-IN');
+    const toDateLabel = to.toLocaleDateString('en-IN');
+
+    // Sheet 1: Summary
+    const summarySheet = workbook.addWorksheet('Summary');
+    summarySheet.columns = [
+      { header: 'Metric', key: 'metric', width: 30 },
+      { header: 'Value', key: 'value', width: 30 },
+    ];
+    summarySheet.addRow({ metric: 'Report Type', value: 'Complete Business & Analytics Report' });
+    summarySheet.addRow({ metric: 'Branch', value: branchLabel });
+    summarySheet.addRow({ metric: 'From Date', value: fromDateLabel });
+    summarySheet.addRow({ metric: 'To Date', value: toDateLabel });
+    summarySheet.addRow({ metric: 'Generated At', value: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) });
+    summarySheet.addRow({ metric: '', value: '' });
+    summarySheet.addRow({ metric: 'Total Revenue', value: metrics.totalRevenue });
+    summarySheet.addRow({ metric: 'Total Expenses', value: metrics.totalExpenses });
+    summarySheet.addRow({ metric: 'Net Profit', value: metrics.netProfit });
+    summarySheet.addRow({ metric: 'Total Cash Received', value: metrics.totalCash });
+    summarySheet.addRow({ metric: 'Total Online Payments', value: metrics.totalOnline });
+    summarySheet.addRow({ metric: 'Total Customers', value: metrics.totalCustomers });
+    summarySheet.addRow({ metric: 'Total Pending Amount', value: metrics.totalPendingAmount });
+    summarySheet.addRow({ metric: 'Total Items Sold', value: metrics.totalItemsSold });
+    summarySheet.addRow({ 
+      metric: 'Highest-Selling Item', 
+      value: `${metrics.highestSellingItem.name} (${metrics.highestSellingItem.quantitySold} sold)` 
+    });
+
+    // Sheet 2: Revenue & Invoices
+    const revSheet = workbook.addWorksheet('Revenue & Invoices');
+    revSheet.columns = [
+      { header: 'Invoice / Order #', key: 'number', width: 22 },
+      { header: 'Type', key: 'type', width: 16 },
+      { header: 'Date', key: 'date', width: 15 },
+      { header: 'Customer', key: 'customer', width: 20 },
+      { header: 'Phone', key: 'phone', width: 15 },
+      { header: 'Branch', key: 'branch', width: 16 },
+      { header: 'Total Amount', key: 'total', width: 14 },
+      { header: 'Payment Method', key: 'method', width: 16 },
+      { header: 'Status', key: 'status', width: 14 },
+    ];
+
+    const [billsList, ordersList] = await Promise.all([
+      Bill.find({ ...matchBranch, createdAt: { $gte: from, $lte: to }, order: { $in: [null, undefined] } })
+        .populate('customer', 'name phone')
+        .populate('branch', 'name')
+        .sort('-createdAt')
+        .lean(),
+      Order.find({ ...matchBranch, isActive: { $ne: false }, createdAt: { $gte: from, $lte: to }, session: { $in: [null, undefined] } })
+        .populate('customer', 'name phone')
+        .populate('branch', 'name')
+        .sort('-createdAt')
+        .lean(),
+    ]);
+
+    billsList.forEach(b => revSheet.addRow({
+      number: b.invoiceNumber,
+      type: 'Table Session',
+      date: new Date(b.createdAt).toLocaleDateString('en-IN'),
+      customer: b.customer?.name || b.customerName || 'Walk-in',
+      phone: b.customer?.phone || b.customerPhone || '',
+      branch: b.branch?.name || '',
+      total: b.total,
+      method: b.paymentMethod || 'cash',
+      status: b.paymentStatus,
+    }));
+
+    ordersList.forEach(o => revSheet.addRow({
+      number: o.orderId,
+      type: 'Direct Order',
+      date: new Date(o.createdAt).toLocaleDateString('en-IN'),
+      customer: o.customer?.name || 'Walk-in',
+      phone: o.customer?.phone || '',
+      branch: o.branch?.name || '',
+      total: o.billAmount,
+      method: o.paymentMethod || '—',
+      status: o.paymentStatus,
+    }));
+
+    // Sheet 3: Expenses
+    const expSheet = workbook.addWorksheet('Expenses');
+    expSheet.columns = [
+      { header: 'Date', key: 'date', width: 15 },
+      { header: 'Title', key: 'title', width: 25 },
+      { header: 'Category', key: 'category', width: 16 },
+      { header: 'Amount', key: 'amount', width: 14 },
+      { header: 'Branch', key: 'branch', width: 16 },
+      { header: 'Notes', key: 'notes', width: 30 },
+    ];
+    const expList = await Expense.find({ ...matchBranch, date: { $gte: from, $lte: to } })
+      .populate('branch', 'name').sort('-date').lean();
+    expList.forEach(e => expSheet.addRow({
+      date: new Date(e.date).toLocaleDateString('en-IN'),
+      title: e.title,
+      category: e.category,
+      amount: e.amount,
+      branch: e.branch?.name || '',
+      notes: e.notes || '',
+    }));
+
+    // Sheet 4: Pending Payments
+    const pendSheet = workbook.addWorksheet('Pending Payments');
+    pendSheet.columns = [
+      { header: 'Order / Invoice #', key: 'number', width: 22 },
+      { header: 'Customer', key: 'customer', width: 20 },
+      { header: 'Phone', key: 'phone', width: 15 },
+      { header: 'Branch', key: 'branch', width: 16 },
+      { header: 'Bill Amount', key: 'billAmount', width: 14 },
+      { header: 'Amount Paid', key: 'amountPaid', width: 14 },
+      { header: 'Pending Amount', key: 'pendingAmount', width: 16 },
+      { header: 'Payment Method', key: 'method', width: 16 },
+      { header: 'Date', key: 'date', width: 16 },
+    ];
+    const pendingOrdersList = await Order.find({ ...matchBranch, isActive: { $ne: false }, pendingPaymentAmount: { $gt: 0 }, createdAt: { $gte: from, $lte: to } })
+      .populate('customer', 'name phone')
+      .populate('branch', 'name')
+      .sort('-createdAt')
+      .lean();
+    pendingOrdersList.forEach(p => pendSheet.addRow({
+      number: p.orderId,
+      customer: p.customer?.name || 'Walk-in',
+      phone: p.customer?.phone || '',
+      branch: p.branch?.name || '',
+      billAmount: p.billAmount,
+      amountPaid: p.totalPaid || p.amountReceived || 0,
+      pendingAmount: p.pendingPaymentAmount,
+      method: p.paymentMethod || '—',
+      date: new Date(p.createdAt).toLocaleDateString('en-IN'),
+    }));
+
+    // Sheet 5: Items Sold
+    const itemSheet = workbook.addWorksheet('Items Sold');
+    itemSheet.columns = [
+      { header: 'Item Name', key: 'name', width: 30 },
+      { header: 'Quantity Sold', key: 'quantity', width: 16 },
+    ];
+    Object.entries(metrics.itemCounts || {})
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([name, count]) => itemSheet.addRow({ name, quantity: count }));
+
+    [summarySheet, revSheet, expSheet, pendSheet, itemSheet].forEach(s => {
+      s.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      s.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
+    });
+
+    const filename = `thegoldenframe-complete-report-${req.query.from || 'start'}-to-${req.query.to || 'end'}.xlsx`;
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    });
+    await workbook.xlsx.write(res);
+    return res.end();
+  }
+
   const sheet = workbook.addWorksheet(type.charAt(0).toUpperCase() + type.slice(1));
 
   if (type === 'revenue') {
-    const bills = await Bill.find({ ...matchBranch, createdAt: { $gte: from, $lte: to } })
-      .populate('customer', 'name phone')
-      .populate('branch', 'name')
-      .sort('-createdAt');
+    const [bills, orders] = await Promise.all([
+      Bill.find({ ...matchBranch, createdAt: { $gte: from, $lte: to }, order: { $in: [null, undefined] } })
+        .populate('customer', 'name phone')
+        .populate('branch', 'name')
+        .sort('-createdAt')
+        .lean(),
+      Order.find({ ...matchBranch, isActive: { $ne: false }, createdAt: { $gte: from, $lte: to }, session: { $in: [null, undefined] } })
+        .populate('customer', 'name phone')
+        .populate('branch', 'name')
+        .sort('-createdAt')
+        .lean(),
+    ]);
 
     sheet.columns = [
-      { header: 'Invoice #', key: 'invoice', width: 20 },
+      { header: 'Invoice / Order #', key: 'invoice', width: 22 },
+      { header: 'Type', key: 'type', width: 16 },
       { header: 'Date', key: 'date', width: 15 },
       { header: 'Customer', key: 'customer', width: 20 },
       { header: 'Branch', key: 'branch', width: 15 },
-      { header: 'Subtotal', key: 'subtotal', width: 12 },
-      { header: 'Discount', key: 'discount', width: 12 },
-      { header: 'Tax', key: 'tax', width: 10 },
       { header: 'Total', key: 'total', width: 12 },
       { header: 'Status', key: 'status', width: 12 },
     ];
+
     bills.forEach((b) => sheet.addRow({
       invoice: b.invoiceNumber,
-      date: b.createdAt.toLocaleDateString('en-IN'),
-      customer: b.customer?.name || 'Walk-in',
+      type: 'Table Session',
+      date: new Date(b.createdAt).toLocaleDateString('en-IN'),
+      customer: b.customer?.name || b.customerName || 'Walk-in',
       branch: b.branch?.name || '',
-      subtotal: b.subtotal,
-      discount: b.discountAmount + b.membershipDiscount,
-      tax: b.tax,
       total: b.total,
       status: b.paymentStatus,
+    }));
+
+    orders.forEach((o) => sheet.addRow({
+      invoice: o.orderId,
+      type: 'Direct Order',
+      date: new Date(o.createdAt).toLocaleDateString('en-IN'),
+      customer: o.customer?.name || 'Walk-in',
+      branch: o.branch?.name || '',
+      total: o.billAmount,
+      status: o.paymentStatus,
     }));
   } else if (type === 'expenses') {
     const expenses = await Expense.find({ ...matchBranch, date: { $gte: from, $lte: to } })
@@ -711,17 +894,8 @@ exports.getOrderDetailsReport = asyncHandler(async (req, res, next) => {
   }
 
   if (req.query.from || req.query.to) {
-    matchStage.createdAt = {};
-    if (req.query.from) {
-      const fromDate = new Date(req.query.from);
-      fromDate.setHours(0, 0, 0, 0);
-      matchStage.createdAt.$gte = fromDate;
-    }
-    if (req.query.to) {
-      const toDate = new Date(req.query.to);
-      toDate.setHours(23, 59, 59, 999);
-      matchStage.createdAt.$lte = toDate;
-    }
+    const { from, to } = parseDateRange(req.query.from, req.query.to);
+    matchStage.createdAt = { $gte: from, $lte: to };
   }
 
   const pipeline = [
@@ -852,17 +1026,8 @@ exports.getOrderSummaryReport = asyncHandler(async (req, res, next) => {
   }
 
   if (req.query.from || req.query.to) {
-    matchStage.createdAt = {};
-    if (req.query.from) {
-      const fromDate = new Date(req.query.from);
-      fromDate.setHours(0, 0, 0, 0);
-      matchStage.createdAt.$gte = fromDate;
-    }
-    if (req.query.to) {
-      const toDate = new Date(req.query.to);
-      toDate.setHours(23, 59, 59, 999);
-      matchStage.createdAt.$lte = toDate;
-    }
+    const { from, to } = parseDateRange(req.query.from, req.query.to);
+    matchStage.createdAt = { $gte: from, $lte: to };
   }
 
   // 1. Summary totals
@@ -964,15 +1129,8 @@ exports.getOrderSummaryReport = asyncHandler(async (req, res, next) => {
     walletMatch.branch = bf;
   }
   if (req.query.from || req.query.to) {
-    walletMatch.createdAt = {};
-    if (req.query.from) {
-      walletMatch.createdAt.$gte = new Date(req.query.from);
-    }
-    if (req.query.to) {
-      const toDate = new Date(req.query.to);
-      toDate.setHours(23, 59, 59, 999);
-      walletMatch.createdAt.$lte = toDate;
-    }
+    const { from, to } = parseDateRange(req.query.from, req.query.to);
+    walletMatch.createdAt = { $gte: from, $lte: to };
   }
 
   const [summaryResult, pendingResult, topSellingResult, walletTransactions] = await Promise.all([

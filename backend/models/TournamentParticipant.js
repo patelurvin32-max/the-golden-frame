@@ -9,7 +9,21 @@ const tournamentParticipantSchema = new mongoose.Schema(
       enum: ['active', 'eliminated', 'winner'],
       default: 'active'
     },
-    seed: { type: Number }
+    seed: { type: Number },
+    paymentStatus: {
+      type: String,
+      enum: ['unpaid', 'paid', 'partial'],
+      default: 'unpaid'
+    },
+    paymentMethod: {
+      type: String,
+      enum: ['cash', 'upi', 'mixed', 'wallet'],
+      default: null
+    },
+    paidAmount: { type: Number, default: 0 },
+    cashAmount: { type: Number, default: 0 },
+    onlineAmount: { type: Number, default: 0 },
+    walletAmount: { type: Number, default: 0 }
   },
   { timestamps: true }
 );

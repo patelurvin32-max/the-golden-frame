@@ -7,6 +7,8 @@ const {
   deleteTournament,
   registerParticipant,
   getParticipants,
+  removeParticipant,
+  updateParticipantPayment,
   generateBracket,
   getBracket,
   updateMatchResult
@@ -33,6 +35,9 @@ router.route('/:id')
 router.route('/:id/participants')
   .get(getParticipants)
   .post(registerParticipant);
+
+router.delete('/:id/participants/:participantId', removeParticipant);
+router.patch('/:id/participants/:participantId/payment', updateParticipantPayment);
 
 // Bracket & Matches
 router.post('/:id/generate-bracket', generateBracket);

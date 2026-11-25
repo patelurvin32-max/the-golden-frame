@@ -129,7 +129,7 @@ export const Sidebar = () => {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+      <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1 min-h-0">
         {orderedFiltered.map((item) => {
           if (item.isParent) {
             const children = orderedFiltered
@@ -216,7 +216,7 @@ export const Sidebar = () => {
       </nav>
 
       {/* User profile */}
-      <div className="border-t border-border p-4">
+      <div className="border-t border-border p-4 flex-shrink-0">
         <div className="flex items-center gap-3 mb-3">
           <div className="h-9 w-9 rounded-xl gradient-brand flex items-center justify-center text-white font-semibold text-sm">
             {user?.name?.[0]?.toUpperCase()}
