@@ -94,14 +94,18 @@ exports.createExpense = asyncHandler(async (req, res, next) => {
   // For Branch Manager and Staff, auto-assign branch from their assigned branches
   let finalBranch = req.body.branch;
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN && req.user.branches && req.user.branches.length > 0) {
-    finalBranch = req.user.branches[0];
+    // branches are populated objects from auth middleware, extract _id
+    const b = req.user.branches[0];
+    finalBranch = (b._id || b).toString();
   }
 
   if (req.user.role !== ROLES.SUPER_ADMIN && req.user.role !== ROLES.ADMIN) {
     const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
-    if (!finalBranch || !userBranchIds.includes(finalBranch.toString())) {
+    const finalBranchStr = finalBranch ? (finalBranch._id || finalBranch).toString() : '';
+    if (!finalBranchStr || !userBranchIds.includes(finalBranchStr)) {
       return next(new AppError('You do not have access to this branch.', 403));
     }
+    finalBranch = finalBranchStr;
   }
 
   const { paymentStatus, paymentMethod, cashAmount, onlineAmount, walletAmount, totalPaid, pendingAmount } = req.body;

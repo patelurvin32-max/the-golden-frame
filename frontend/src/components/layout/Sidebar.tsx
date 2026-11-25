@@ -34,12 +34,23 @@ const NAV_ITEMS = [
 export const Sidebar = () => {
   const { pathname } = useLocation();
   const { user, logout } = useAuthStore();
-  const { sidebarOpen, setSidebarOpen, masterMenuOpen, toggleMasterMenu, appMenuOpen, toggleAppMenu, selectedBranch } = useAppStore();
+  const { sidebarOpen, setSidebarOpen, masterMenuOpen, toggleMasterMenu, appMenuOpen, toggleAppMenu, clientMenuOpen, toggleClientMenu, selectedBranch } = useAppStore();
   const role = user?.role || 'staff';
 
   const isSuperOrBranchAdmin = role === 'super_admin' || role === 'branch_admin';
 
   const dynamicNavItems = [...NAV_ITEMS];
+  
+  if (role === 'super_admin') {
+    dynamicNavItems.push({ id: 'client', label: 'Client Master', icon: '⚙️', roles: ['super_admin'], isParent: true });
+    dynamicNavItems.push({ path: '/active-users', label: 'Active Users', icon: '🟢', roles: ['super_admin'], parent: 'client' });
+    
+    const contactUsItem = dynamicNavItems.find(item => item.path === '/contact-us');
+    if (contactUsItem) {
+      contactUsItem.parent = 'client';
+    }
+  }
+
   if (isSuperOrBranchAdmin) {
     dynamicNavItems.push({ id: 'app', label: 'App Master', icon: '⚙️', roles: ['super_admin', 'branch_admin'], isParent: true });
     dynamicNavItems.forEach(item => {
@@ -86,11 +97,11 @@ export const Sidebar = () => {
   // Custom ordering for Staff role
   const staffOrder = ['customers', 'reservations', 'pending-payments', 'tables', 'billing', 'my-attendance', 'master'];
   // Custom ordering for Branch Manager / Branch Admin role
-  const branchManagerOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master'];
+  const branchManagerOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master', 'client', 'app'];
   // Custom ordering for Super Admin / Admin role
-  const superAdminOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master'];
-  // Custom ordering for Master and App children
-  const masterChildOrder = ['menu', 'users', 'inventory', 'wallet', 'central-customers', 'transactions', 'tournaments', 'branches', 'settings', 'logs'];
+  const superAdminOrder = ['dashboard', 'customers', 'reservations', 'pending-payments', 'tables', 'billing', 'expenses', 'attendance', 'reports', 'master', 'client', 'app'];
+  // Custom ordering for Master, Client, and App children
+  const masterChildOrder = ['contact-us', 'active-users', 'menu', 'users', 'inventory', 'wallet', 'central-customers', 'transactions', 'tournaments', 'branches', 'settings', 'logs'];
 
   const orderedFiltered = role === 'staff'
     ? filtered.sort((a, b) => {
@@ -141,8 +152,8 @@ export const Sidebar = () => {
                 const indexB = masterChildOrder.indexOf(keyB);
                 return (indexA === -1 ? 99 : indexA) - (indexB === -1 ? 99 : indexB);
               });
-            const isOpen = item.id === 'master' ? masterMenuOpen : appMenuOpen;
-            const toggle = item.id === 'master' ? toggleMasterMenu : toggleAppMenu;
+            const isOpen = item.id === 'master' ? masterMenuOpen : item.id === 'app' ? appMenuOpen : item.id === 'client' ? clientMenuOpen : false;
+            const toggle = item.id === 'master' ? toggleMasterMenu : item.id === 'app' ? toggleAppMenu : item.id === 'client' ? toggleClientMenu : () => {};
 
             return (
               <div key={item.id}>

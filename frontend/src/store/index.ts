@@ -126,6 +126,7 @@ interface AppState {
   sidebarOpen: boolean;
   masterMenuOpen: boolean;
   appMenuOpen: boolean;
+  clientMenuOpen: boolean;
   setSelectedBranch: (id: string | null) => void;
   toggleDarkMode: () => void;
   toggleSidebar: () => void;
@@ -134,6 +135,8 @@ interface AppState {
   setMasterMenuOpen: (open: boolean) => void;
   toggleAppMenu: () => void;
   setAppMenuOpen: (open: boolean) => void;
+  toggleClientMenu: () => void;
+  setClientMenuOpen: (open: boolean) => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -144,6 +147,7 @@ export const useAppStore = create<AppState>()(
       sidebarOpen: typeof window !== 'undefined' ? !window.matchMedia('(max-width: 1024px)').matches : true,
       masterMenuOpen: false,
       appMenuOpen: false,
+      clientMenuOpen: false,
       setSelectedBranch: (id) => set({ selectedBranch: id }),
       toggleDarkMode: () => set((s) => ({ isDarkMode: !s.isDarkMode })),
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
@@ -152,6 +156,8 @@ export const useAppStore = create<AppState>()(
       setMasterMenuOpen: (open) => set({ masterMenuOpen: open }),
       toggleAppMenu: () => set((s) => ({ appMenuOpen: !s.appMenuOpen })),
       setAppMenuOpen: (open) => set({ appMenuOpen: open }),
+      toggleClientMenu: () => set((s) => ({ clientMenuOpen: !s.clientMenuOpen })),
+      setClientMenuOpen: (open) => set({ clientMenuOpen: open }),
     }),
     { name: 'thegoldenframe-app', partialize: (s) => ({ selectedBranch: s.selectedBranch, isDarkMode: s.isDarkMode }) }
   )

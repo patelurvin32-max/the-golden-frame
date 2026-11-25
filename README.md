@@ -240,13 +240,6 @@ npm run dev         # Starts on :5173 with HMR
 
 ---
 
-## 🔐 Default Login
-
-| Field | Value |
-|---|---|
-| Email | `admin@thegoldenframe.app` |
-| Password | `Admin@123456` |
-| Role | Super Admin |
 
 > **⚠️ Change the default password immediately after first login.**
 
