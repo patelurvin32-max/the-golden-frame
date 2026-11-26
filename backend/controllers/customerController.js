@@ -14,6 +14,7 @@ const Transaction = require('../models/Transaction');
 const TransactionCounter = require('../models/TransactionCounter');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
+const ExcelJS = require('exceljs');
 const { ROLES, BUSINESS_SHORT_CODE } = require('../config/constants');
 const { createBranchNotification } = require('../services/notificationService');
 
@@ -381,18 +382,25 @@ exports.getCustomers = asyncHandler(async (req, res) => {
       { $match: aggregateFilter },
       {
         $group: {
-          _id: null,
-          totalPendingAmount: { 
-            $sum: { 
-              $max: [0, { $subtract: [{ $ifNull: ["$billAmount", 0] }, { $ifNull: ["$totalPaid", 0] }] }] 
-            } 
+          _id: '$customer',
+          totalPendingAmount: {
+            $sum: {
+              $max: [0, { $subtract: [{ $ifNull: ["$billAmount", 0] }, { $ifNull: ["$totalPaid", 0] }] }]
+            }
           },
+          earliestOrderDate: { $min: '$createdAt' }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalPendingAmount: { $sum: '$totalPendingAmount' },
           totalPendingCustomers: { $sum: 1 },
           overdueCustomersCount: {
-            $sum: { $cond: [{ $lt: ["$createdAt", overdueDate] }, 1, 0] }
+            $sum: { $cond: [{ $lt: ['$earliestOrderDate', overdueDate] }, 1, 0] }
           },
           highValueCustomersCount: {
-            $sum: { $cond: [{ $gt: [{ $ifNull: ["$billAmount", 0] }, 2000] }, 1, 0] }
+            $sum: { $cond: [{ $gt: ['$totalPendingAmount', 2000] }, 1, 0] }
           }
         }
       }
@@ -2843,5 +2851,91 @@ exports.getCustomerTimeline = asyncHandler(async (req, res, next) => {
       }
     }
   });
+});
+
+// GET /api/customers/export/excel?branch=&search=
+exports.exportCustomersExcel = asyncHandler(async (req, res) => {
+  const isSuperAdmin = req.user.role === ROLES.SUPER_ADMIN;
+  const isBranchAdmin = req.user.role === ROLES.BRANCH_ADMIN;
+  const isBranchManager = req.user.role === ROLES.BRANCH_MANAGER;
+  const isStaff = req.user.role === ROLES.STAFF;
+
+  const isBranchScoped = isBranchAdmin || isBranchManager || isStaff;
+
+  if (!isSuperAdmin && !isBranchScoped) {
+    return res.status(403).json({ success: false, message: 'Access denied.' });
+  }
+
+  const userBranchIds = (req.user.branches || []).map((b) => (b._id || b).toString());
+
+  const filter = { isActive: true };
+  if (req.query.branch) {
+    if (isBranchScoped && !userBranchIds.includes(req.query.branch.toString())) {
+      return res.status(403).json({ success: false, message: 'Access denied to this branch.' });
+    }
+    filter.branch = req.query.branch;
+  } else if (isBranchScoped) {
+    filter.branch = { $in: userBranchIds };
+  }
+
+  if (req.query.search) {
+    const searchRegex = new RegExp(req.query.search.trim(), 'i');
+    filter.$or = [
+      { name: searchRegex },
+      { phone: searchRegex },
+      { email: searchRegex },
+      { customerId: searchRegex },
+    ];
+  }
+
+  const customers = await Customer.find(filter)
+    .populate('branch', 'name code')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'The Golden Frame';
+
+  const sheet = workbook.addWorksheet('Customers');
+  sheet.columns = [
+    { header: 'Customer ID', key: 'customerId', width: 20 },
+    { header: 'Name', key: 'name', width: 30 },
+    { header: 'Branch', key: 'branch', width: 25 },
+    { header: 'Mobile Number', key: 'phone', width: 15 },
+    { header: 'Email', key: 'email', width: 30 },
+    { header: 'Address', key: 'address', width: 40 },
+    { header: 'Wallet Balance', key: 'walletBalance', width: 15 },
+    { header: 'Pending Payment', key: 'outstandingBalance', width: 15 },
+    { header: 'Source Module', key: 'sourceModule', width: 20 },
+    { header: 'Created At', key: 'createdAt', width: 20 },
+  ];
+
+  customers.forEach((cust) => {
+    const branchObj = typeof cust.branch === 'object' ? cust.branch : null;
+    sheet.addRow({
+      customerId: cust.customerId || '—',
+      name: cust.name || '—',
+      branch: branchObj ? `${branchObj.name} (${branchObj.code})` : '—',
+      phone: cust.phone || '—',
+      email: cust.email || '—',
+      address: cust.address || '—',
+      walletBalance: cust.walletBalance || 0,
+      outstandingBalance: cust.outstandingBalance || 0,
+      sourceModule: cust.sourceModule || 'Customer',
+      createdAt: cust.createdAt ? new Date(cust.createdAt).toLocaleString('en-IN') : '—',
+    });
+  });
+
+  // Style header row
+  sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
+
+  const filename = `thegoldenframe-customers-${new Date().toISOString().split('T')[0]}.xlsx`;
+  res.set({
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': `attachment; filename="${filename}"`,
+  });
+  await workbook.xlsx.write(res);
+  res.end();
 });
 

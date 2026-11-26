@@ -62,6 +62,7 @@ export const customerService = {
   receivePayment: (id: string, data: Record<string, unknown>) => api.post<ApiResponse<{ customer: Customer }>>(`/customers/${id}/receive-payment`, data),
   getPaymentHistory: (id: string) => api.get<ApiResponse<{ paymentHistory: any[] }>>(`/customers/${id}/payment-history`),
   getStats: (params?: Record<string, string>) => api.get<ApiResponse<{ today: number; week: number; month: number; total: number }>>('/customers/stats', { params }),
+  exportExcel: (params?: Record<string, string>) => api.get('/customers/export/excel', { params, responseType: 'blob' }),
 };
 
 // ── Transactions ──────────────────────────────────────────────────────────────

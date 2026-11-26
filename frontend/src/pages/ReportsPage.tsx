@@ -156,22 +156,6 @@ export default function ReportsPage() {
     enabled: shouldFetch,
   });
 
-  const handleExportCustomers = async () => {
-    try {
-      const res = await reportService.exportExcel({
-        ...searchParams,
-        type: 'orders',
-        search: orderSearch,
-        sortBy: orderSortBy,
-        sortOrder: orderSortOrder,
-      });
-      downloadBlob(res.data as Blob, `thegoldenframe-customers-${searchFrom}-to-${searchTo}.xlsx`);
-      toast.success('Customer details report exported!');
-    } catch {
-      toast.error('Export failed');
-    }
-  };
-
   const handleExportPendingPayments = async () => {
     try {
       const res = await reportService.exportExcel({
@@ -280,15 +264,6 @@ export default function ReportsPage() {
             >
               📥 Download Excel
             </Button>
-            <Button size="sm" variant="outline" className="flex-1 min-w-[120px] sm:flex-none text-center justify-center" onClick={() => handleExport('revenue')}>
-              Revenue Excel
-            </Button>
-            <Button size="sm" variant="outline" className="flex-1 min-w-[120px] sm:flex-none text-center justify-center" onClick={() => handleExport('expenses')}>
-              Expenses Excel
-            </Button>
-            <Button size="sm" variant="outline" className="flex-1 min-w-[140px] sm:flex-none text-center justify-center" onClick={handleExportCustomers}>
-              Customer Details Excel
-            </Button>
             <Button size="sm" variant="outline" className="flex-1 min-w-[140px] sm:flex-none text-center justify-center" onClick={handleExportPendingPayments}>
               Pending Payments Excel
             </Button>
@@ -340,7 +315,7 @@ export default function ReportsPage() {
               <p className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wider font-semibold truncate" title={s.label}>
                 {s.label}
               </p>
-              <p className={cn('text-base sm:text-lg md:text-xl font-bold mt-1 truncate', s.color)} title={s.value}>
+              <p className={cn('text-base sm:text-lg md:text-xl font-bold mt-1 break-words', s.color)} title={s.value}>
                 {s.value}
               </p>
             </CardContent>
@@ -544,7 +519,7 @@ export default function ReportsPage() {
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold truncate" title={s.label}>
                     {s.label}
                   </p>
-                  <p className={cn('text-sm sm:text-base md:text-lg font-bold mt-1 truncate', s.color)} title={s.value}>
+                  <p className={cn('text-sm sm:text-base md:text-lg font-bold mt-1 break-words', s.color)} title={s.value}>
                     {s.value}
                   </p>
                 </CardContent>

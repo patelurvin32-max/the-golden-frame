@@ -41,6 +41,7 @@ router.post(
   validate,
   customerController.createSuperAdminCustomer
 );
+router.get('/export/excel', protect, restrictTo(ROLES.SUPER_ADMIN, ROLES.BRANCH_ADMIN, ROLES.BRANCH_MANAGER, ROLES.STAFF), customerController.exportCustomersExcel);
 
 // Customer Routes - GET uses customers:view, others use customers:manage
 router

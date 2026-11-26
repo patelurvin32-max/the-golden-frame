@@ -7,8 +7,8 @@ import {
   PageHeader, Skeleton, EmptyState, Table2, TableHeader, TableBody,
   TableRow, TableHead, TableCell, Badge, Modal, useToast
 } from '@/components/ui';
-import { Search, RefreshCw, Edit3, Phone, Building2, UserCheck, Plus, Mail, MapPin, Wallet, AlertCircle } from 'lucide-react';
-import { formatCurrency, cn } from '@/utils';
+import { Search, RefreshCw, Edit3, Phone, Building2, UserCheck, Plus, Mail, MapPin, Wallet, AlertCircle, Download } from 'lucide-react';
+import { formatCurrency, cn, downloadBlob } from '@/utils';
 import type { Customer } from '@/types';
 
 export function CentralCustomersPage() {
@@ -245,12 +245,30 @@ export function CentralCustomersPage() {
     });
   };
 
+  const handleExportExcel = async () => {
+    try {
+      const res = await customerService.exportExcel({
+        ...(debouncedSearch ? { search: debouncedSearch } : {}),
+        ...(selectedBranch ? { branch: selectedBranch } : {}),
+      });
+      const filename = `thegoldenframe-customers-${new Date().toISOString().split('T')[0]}.xlsx`;
+      downloadBlob(res.data as Blob, filename);
+      toast.success('Customers exported successfully!');
+    } catch {
+      toast.error('Export failed');
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="Central Customers Management"
         actions={
           <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={handleExportExcel}>
+              <Download className="h-4 w-4 mr-1.5" />
+              Download Excel
+            </Button>
             <Button size="sm" onClick={openAddModal}>
               <Plus className="h-4 w-4 mr-1.5" />
               Add Customer

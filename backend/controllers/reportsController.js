@@ -7,6 +7,7 @@ const Order = require('../models/Order');
 const WalletTransaction = require('../models/WalletTransaction');
 const TournamentParticipant = require('../models/TournamentParticipant');
 const Tournament = require('../models/Tournament');
+const Branch = require('../models/Branch');
 const asyncHandler = require('../utils/asyncHandler');
 const ExcelJS = require('exceljs');
 const { ROLES } = require('../config/constants');
@@ -30,6 +31,229 @@ const { getBusinessDayStart } = require('../utils/businessDay');
 const getCollectionTotals = async (matchBranch, from, to) => {
   const metrics = await calculateReportMetrics(matchBranch, from, to);
   return { totalCash: metrics.totalCash, totalOnline: metrics.totalOnline };
+};
+
+/**
+ * Calculate daily metrics for date-wise Excel report
+ */
+const calculateDailyMetrics = async (matchBranch, from, to) => {
+  const dailyData = [];
+  const currentDate = new Date(from);
+  currentDate.setHours(0, 0, 0, 0);
+  const endDate = new Date(to);
+  endDate.setHours(23, 59, 59, 999);
+
+  // Fetch all data for the entire date range at once
+  const [bills, directOrders, tournamentParticipants, expenses, billPayments] = await Promise.all([
+    Bill.find({
+      ...matchBranch,
+      createdAt: { $gte: from, $lte: to },
+      order: { $in: [null, undefined] },
+    }).lean(),
+    Order.find({
+      ...matchBranch,
+      isActive: { $ne: false },
+      createdAt: { $gte: from, $lte: to },
+      session: { $in: [null, undefined] },
+    }).populate('menuItemId', 'name').lean(),
+    TournamentParticipant.find({
+      ...matchBranch,
+      createdAt: { $gte: from, $lte: to },
+      paymentStatus: { $in: ['paid', 'partial'] },
+    }).lean(),
+    Expense.find({
+      ...matchBranch,
+      date: { $gte: from, $lte: to },
+    }).lean(),
+    Payment.find({
+      ...matchBranch,
+      createdAt: { $gte: from, $lte: to },
+    }).lean(),
+  ]);
+
+  const billIds = bills.map(b => b._id);
+  const billPaymentsFiltered = billPayments.filter(p => billIds.includes(p.bill));
+  const billsWithPaymentDoc = new Set(billPaymentsFiltered.map(p => String(p.bill)));
+
+  // Create date-based maps
+  const dateFormat = (date) => date.toISOString().split('T')[0];
+
+  const dateMap = {};
+
+  // Initialize all dates in range
+  while (currentDate <= endDate) {
+    const dateKey = dateFormat(currentDate);
+    dateMap[dateKey] = {
+      totalRevenue: 0,
+      totalExpenses: 0,
+      netProfit: 0,
+      totalCash: 0,
+      totalOnline: 0,
+      totalPendingAmount: 0,
+      totalCustomers: new Set(),
+      totalItemsSold: 0,
+      itemCounts: {},
+    };
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  // Process bills
+  bills.forEach(b => {
+    const dateKey = dateFormat(new Date(b.createdAt));
+    if (!dateMap[dateKey]) return;
+
+    let revenue = 0;
+    if (b.paymentStatus === 'paid') revenue = b.total || 0;
+    else if (b.paymentStatus === 'partial') revenue = Math.max(0, (b.total || 0) - (b.pendingPaymentAmount || 0));
+
+    dateMap[dateKey].totalRevenue += revenue;
+
+    // Cash/Online from bills
+    if (!billsWithPaymentDoc.has(String(b._id))) {
+      if (b.paymentMethod === 'cash') {
+        dateMap[dateKey].totalCash += (b.cashAmount || (b.paymentStatus === 'paid' ? b.total : b.amountReceived) || 0);
+      } else if (b.paymentMethod === 'upi' || b.paymentMethod === 'card') {
+        dateMap[dateKey].totalOnline += (b.onlineAmount || (b.paymentStatus === 'paid' ? b.total : b.amountReceived) || 0);
+      } else if (b.paymentMethod === 'mixed') {
+        dateMap[dateKey].totalCash += (b.cashAmount || 0);
+        dateMap[dateKey].totalOnline += (b.onlineAmount || 0);
+      }
+    }
+
+    // Pending amount
+    if (b.paymentStatus !== 'paid') {
+      dateMap[dateKey].totalPendingAmount += (b.pendingPaymentAmount || Math.max(0, (b.total || 0) - (b.amountReceived || 0)));
+    }
+
+    // Customers
+    if (b.customer) dateMap[dateKey].totalCustomers.add(String(b.customer));
+
+    // Items from bills
+    if (Array.isArray(b.items) && b.items.length > 0) {
+      b.items.forEach(it => {
+        if (it.type === 'inventory') {
+          const cleanName = (it.description || 'Item').replace(/^[^-]+-\s*/, '').trim();
+          dateMap[dateKey].itemCounts[cleanName] = (dateMap[dateKey].itemCounts[cleanName] || 0) + (Number(it.quantity) || 1);
+        }
+      });
+    }
+  });
+
+  // Process bill payments
+  billPaymentsFiltered.forEach(p => {
+    const dateKey = dateFormat(new Date(p.createdAt));
+    if (!dateMap[dateKey]) return;
+
+    if (p.method === 'cash') {
+      dateMap[dateKey].totalCash += (p.amount || 0);
+    } else if (p.method === 'upi' || p.method === 'card') {
+      dateMap[dateKey].totalOnline += (p.amount || 0);
+    } else if (p.method === 'mixed') {
+      if (p.breakdown && p.breakdown.length > 0) {
+        p.breakdown.forEach(b => {
+          if (b.method === 'cash') dateMap[dateKey].totalCash += (b.amount || 0);
+          if (b.method === 'upi' || b.method === 'card') dateMap[dateKey].totalOnline += (b.amount || 0);
+        });
+      } else {
+        dateMap[dateKey].totalCash += (p.amount || 0);
+      }
+    }
+  });
+
+  // Process direct orders
+  directOrders.forEach(o => {
+    const dateKey = dateFormat(new Date(o.createdAt));
+    if (!dateMap[dateKey]) return;
+
+    let revenue = 0;
+    if (o.paymentStatus === 'paid') revenue = o.billAmount || o.totalPaid || 0;
+    else if (o.paymentStatus === 'partial') revenue = o.totalPaid || o.amountReceived || Math.max(0, (o.billAmount || 0) - (o.pendingPaymentAmount || 0));
+
+    dateMap[dateKey].totalRevenue += revenue;
+
+    // Cash/Online from orders
+    if (o.paymentMethod === 'cash') {
+      const paid = Math.max(o.cashAmount || 0, o.totalPaid || o.amountReceived || (o.paymentStatus === 'paid' ? o.billAmount : 0) || 0);
+      dateMap[dateKey].totalCash += paid;
+    } else if (o.paymentMethod === 'upi' || o.paymentMethod === 'card') {
+      const paid = Math.max(o.onlineAmount || 0, o.totalPaid || o.amountReceived || (o.paymentStatus === 'paid' ? o.billAmount : 0) || 0);
+      dateMap[dateKey].totalOnline += paid;
+    } else if (o.paymentMethod === 'mixed') {
+      dateMap[dateKey].totalCash += (o.cashAmount || 0);
+      dateMap[dateKey].totalOnline += (o.onlineAmount || 0);
+    }
+
+    // Pending amount
+    dateMap[dateKey].totalPendingAmount += (o.pendingPaymentAmount || 0);
+
+    // Customers
+    if (o.customer) dateMap[dateKey].totalCustomers.add(String(o.customer));
+
+    // Items from orders
+    if (o.menuItemId) {
+      const name = o.menuItemId?.name || o.menuItem || 'Menu Item';
+      dateMap[dateKey].itemCounts[name] = (dateMap[dateKey].itemCounts[name] || 0) + 1;
+    }
+    if (Array.isArray(o.addedItems) && o.addedItems.length > 0) {
+      o.addedItems.forEach(ai => {
+        const name = ai.itemName || 'Item';
+        dateMap[dateKey].itemCounts[name] = (dateMap[dateKey].itemCounts[name] || 0) + (Number(ai.quantity) || 1);
+      });
+    }
+  });
+
+  // Process tournament participants
+  tournamentParticipants.forEach(t => {
+    const dateKey = dateFormat(new Date(t.createdAt));
+    if (!dateMap[dateKey]) return;
+
+    dateMap[dateKey].totalRevenue += (t.paidAmount || 0);
+    dateMap[dateKey].totalCash += (t.cashAmount || 0);
+    dateMap[dateKey].totalOnline += (t.onlineAmount || 0);
+  });
+
+  // Process expenses
+  expenses.forEach(e => {
+    const dateKey = dateFormat(new Date(e.date));
+    if (!dateMap[dateKey]) return;
+
+    dateMap[dateKey].totalExpenses += (e.amount || 0);
+  });
+
+  // Fetch registered customers for each date
+  const registeredCustomers = await Customer.find({
+    ...matchBranch,
+    createdAt: { $gte: from, $lte: to },
+  }).select('_id createdAt').lean();
+
+  registeredCustomers.forEach(c => {
+    const dateKey = dateFormat(new Date(c.createdAt));
+    if (dateMap[dateKey]) {
+      dateMap[dateKey].totalCustomers.add(String(c._id));
+    }
+  });
+
+  // Build final daily data array
+  const sortedDates = Object.keys(dateMap).sort();
+  sortedDates.forEach(dateKey => {
+    const day = dateMap[dateKey];
+    const totalItemsSold = Object.values(day.itemCounts).reduce((sum, count) => sum + count, 0);
+    const netProfit = day.totalRevenue - day.totalExpenses;
+
+    dailyData.push({
+      date: new Date(dateKey).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+      totalRevenue: Math.round(day.totalRevenue * 100) / 100,
+      totalExpenses: Math.round(day.totalExpenses * 100) / 100,
+      netProfit: Math.round(netProfit * 100) / 100,
+      totalCash: Math.round(day.totalCash * 100) / 100,
+      totalOnline: Math.round(day.totalOnline * 100) / 100,
+      totalPendingAmount: Math.round(day.totalPendingAmount * 100) / 100,
+      totalCustomers: day.totalCustomers.size,
+      totalItemsSold: totalItemsSold,
+    });
+  });
+
+  return dailyData;
 };
 
 // GET /api/reports/dashboard?branch=
@@ -417,12 +641,82 @@ exports.exportExcel = asyncHandler(async (req, res) => {
     summarySheet.addRow({ metric: 'Total Customers', value: metrics.totalCustomers });
     summarySheet.addRow({ metric: 'Total Pending Amount', value: metrics.totalPendingAmount });
     summarySheet.addRow({ metric: 'Total Items Sold', value: metrics.totalItemsSold });
-    summarySheet.addRow({ 
-      metric: 'Highest-Selling Item', 
-      value: `${metrics.highestSellingItem.name} (${metrics.highestSellingItem.quantitySold} sold)` 
+    summarySheet.addRow({
+      metric: 'Highest-Selling Item',
+      value: `${metrics.highestSellingItem.name} (${metrics.highestSellingItem.quantitySold} sold)`
     });
 
-    // Sheet 2: Revenue & Invoices
+    // Sheet 2: Date-wise Summary
+    const dailySheet = workbook.addWorksheet('Date-wise Summary');
+    dailySheet.columns = [
+      { header: 'Sr. No.', key: 'srNo', width: 10 },
+      { header: 'Date', key: 'date', width: 15 },
+      { header: 'Total Revenue', key: 'totalRevenue', width: 18 },
+      { header: 'Total Expenses', key: 'totalExpenses', width: 18 },
+      { header: 'Net Profit', key: 'netProfit', width: 15 },
+      { header: 'Total Cash Received', key: 'totalCash', width: 20 },
+      { header: 'Total Online Payments', key: 'totalOnline', width: 22 },
+      { header: 'Total Pending Amount', key: 'totalPendingAmount', width: 22 },
+      { header: 'Total Customers', key: 'totalCustomers', width: 18 },
+      { header: 'Total Items Sold', key: 'totalItemsSold', width: 18 },
+    ];
+
+    const dailyMetrics = await calculateDailyMetrics(matchBranch, from, to);
+
+    let grandTotal = {
+      totalRevenue: 0,
+      totalExpenses: 0,
+      netProfit: 0,
+      totalCash: 0,
+      totalOnline: 0,
+      totalPendingAmount: 0,
+      totalCustomers: 0,
+      totalItemsSold: 0,
+    };
+
+    dailyMetrics.forEach((day, index) => {
+      dailySheet.addRow({
+        srNo: index + 1,
+        date: day.date,
+        totalRevenue: day.totalRevenue,
+        totalExpenses: day.totalExpenses,
+        netProfit: day.netProfit,
+        totalCash: day.totalCash,
+        totalOnline: day.totalOnline,
+        totalPendingAmount: day.totalPendingAmount,
+        totalCustomers: day.totalCustomers,
+        totalItemsSold: day.totalItemsSold,
+      });
+
+      grandTotal.totalRevenue += day.totalRevenue;
+      grandTotal.totalExpenses += day.totalExpenses;
+      grandTotal.netProfit += day.netProfit;
+      grandTotal.totalCash += day.totalCash;
+      grandTotal.totalOnline += day.totalOnline;
+      grandTotal.totalPendingAmount += day.totalPendingAmount;
+      grandTotal.totalCustomers += day.totalCustomers;
+      grandTotal.totalItemsSold += day.totalItemsSold;
+    });
+
+    // Add Grand Total row
+    const grandTotalRow = dailySheet.addRow({
+      srNo: 'Grand Total',
+      date: '',
+      totalRevenue: Math.round(grandTotal.totalRevenue * 100) / 100,
+      totalExpenses: Math.round(grandTotal.totalExpenses * 100) / 100,
+      netProfit: Math.round(grandTotal.netProfit * 100) / 100,
+      totalCash: Math.round(grandTotal.totalCash * 100) / 100,
+      totalOnline: Math.round(grandTotal.totalOnline * 100) / 100,
+      totalPendingAmount: Math.round(grandTotal.totalPendingAmount * 100) / 100,
+      totalCustomers: grandTotal.totalCustomers,
+      totalItemsSold: grandTotal.totalItemsSold,
+    });
+
+    // Style the Grand Total row
+    grandTotalRow.font = { bold: true };
+    grandTotalRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } };
+
+    // Sheet 3: Revenue & Invoices
     const revSheet = workbook.addWorksheet('Revenue & Invoices');
     revSheet.columns = [
       { header: 'Invoice / Order #', key: 'number', width: 22 },
@@ -473,7 +767,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       status: o.paymentStatus,
     }));
 
-    // Sheet 3: Expenses
+    // Sheet 4: Expenses
     const expSheet = workbook.addWorksheet('Expenses');
     expSheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
@@ -494,7 +788,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       notes: e.notes || '',
     }));
 
-    // Sheet 4: Pending Payments
+    // Sheet 5: Pending Payments
     const pendSheet = workbook.addWorksheet('Pending Payments');
     pendSheet.columns = [
       { header: 'Order / Invoice #', key: 'number', width: 22 },
@@ -524,7 +818,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       date: new Date(p.createdAt).toLocaleDateString('en-IN'),
     }));
 
-    // Sheet 5: Items Sold
+    // Sheet 6: Items Sold
     const itemSheet = workbook.addWorksheet('Items Sold');
     itemSheet.columns = [
       { header: 'Item Name', key: 'name', width: 30 },
@@ -534,7 +828,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       .sort((a, b) => b[1] - a[1])
       .forEach(([name, count]) => itemSheet.addRow({ name, quantity: count }));
 
-    [summarySheet, revSheet, expSheet, pendSheet, itemSheet].forEach(s => {
+    [summarySheet, dailySheet, revSheet, expSheet, pendSheet, itemSheet].forEach(s => {
       s.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
       s.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
     });
