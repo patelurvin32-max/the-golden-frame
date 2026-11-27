@@ -540,13 +540,11 @@ const calculateReportMetrics = async (matchBranch, from, to) => {
     paymentStatus: { $nin: ['refunded', 'cancelled'] },
   }).populate('menuItemId', 'name').lean();
 
-  // 3. Fetch subsequent partial/final payments (paymentNumber > 1) received inside [from, to]
-  //    for orders created BEFORE `from` so collections received in the period are reflected,
-  //    while payments for orders created INSIDE [from, to] are not double-counted.
-  const orderIdsInRange = new Set(directOrders.map((o) => String(o._id)));
+  // 3. Fetch subsequent partial/final payments strictly AFTER `to` (if querying a historical To Date)
+  //    and active split sub-orders so parent orders never double-count pending-player splits.
   const orderIdsArr = directOrders.map((o) => o._id);
 
-  const [tournamentParticipants, expenses, billPayments, laterPaymentsForInRangeOrders, extraPaymentsInRangeFromOlderOrders, pendingSummary] = await Promise.all([
+  const [tournamentParticipants, expenses, billPayments, laterPaymentsForInRangeOrders, subOrders, pendingSummary] = await Promise.all([
     TournamentParticipant.find({
       ...matchBranch,
       createdAt: { $gte: from, $lte: to },
@@ -560,16 +558,19 @@ const calculateReportMetrics = async (matchBranch, from, to) => {
       bill: { $in: bills.map((b) => b._id) },
       createdAt: { $gte: from, $lte: to },
     }).lean(),
-    PaymentHistory.find({
-      order: { $in: orderIdsArr },
-      paymentNumber: { $gt: 1 },
-    }).lean(),
-    PaymentHistory.find({
-      ...matchBranch,
-      paymentNumber: { $gt: 1 },
-      createdAt: { $gte: from, $lte: to },
-      order: { $type: 'objectId', $nin: orderIdsArr },
-    }).lean(),
+    orderIdsArr.length
+      ? PaymentHistory.find({
+        order: { $in: orderIdsArr },
+        paymentNumber: { $gt: 1 },
+        createdAt: { $gt: to },
+      }).lean()
+      : [],
+    orderIdsArr.length
+      ? Order.find({
+        parentOrder: { $in: orderIdsArr },
+        isActive: { $ne: false },
+      }).select('parentOrder billAmount').lean()
+      : [],
     calculateOutstandingPendingSummary(matchBranch, from, to),
   ]);
 
@@ -585,6 +586,12 @@ const calculateReportMetrics = async (matchBranch, from, to) => {
     const key = String(ph.order);
     if (!laterPHByInRangeOrder.has(key)) laterPHByInRangeOrder.set(key, []);
     laterPHByInRangeOrder.get(key).push(ph);
+  });
+
+  const subAllocByParent = new Map();
+  subOrders.forEach((so) => {
+    const key = String(so.parentOrder);
+    subAllocByParent.set(key, (subAllocByParent.get(key) || 0) + (Number(so.billAmount) || 0));
   });
 
   let totalCash = 0;
@@ -605,27 +612,16 @@ const calculateReportMetrics = async (matchBranch, from, to) => {
 
   let orderRevenue = 0;
   directOrders.forEach((o) => {
+    const subAlloc = o.parentOrder ? 0 : (subAllocByParent.get(String(o._id)) ?? null);
     const bd = resolveOrderPaymentBreakdown(o, {
       asOfDate: to,
       laterPayments: laterPHByInRangeOrder.get(String(o._id)) || [],
+      subOrdersAllocated: subAlloc,
     });
     totalBillAmount += bd.collectibleBill;
     orderRevenue += bd.collectedTowardBill;
     totalCash += bd.cashAmount;
     totalOnline += bd.onlineAmount;
-  });
-
-  // Add collections received during [from, to] on older orders created before `from`
-  extraPaymentsInRangeFromOlderOrders.forEach((ph) => {
-    if (ph.order && orderIdsInRange.has(String(ph.order))) return;
-    const paid = Number(ph.totalPaid) || 0;
-    let cash = Number(ph.cashAmount) || 0;
-    let online = Number(ph.onlineAmount) || 0;
-    if (ph.paymentMethod === 'cash' && cash === 0 && paid > 0) cash = paid;
-    if ((ph.paymentMethod === 'upi' || ph.paymentMethod === 'card') && online === 0 && paid > 0) online = paid;
-    totalCash += cash;
-    totalOnline += online;
-    orderRevenue += paid;
   });
 
   const tournamentRevenue = tournamentParticipants.reduce((sum, t) => sum + (t.paidAmount || 0), 0);

@@ -103,26 +103,34 @@ const calculateDailyMetrics = async (matchBranch, from, to) => {
   ]);
 
   const directOrderIds = directOrders.map((o) => o._id);
-  const directOrderIdSet = new Set(directOrderIds.map((id) => String(id)));
 
-  const [inRangeOrderSubsequentPH, olderOrderSubsequentPHInRange] = await Promise.all([
-    PaymentHistory.find({
-      order: { $in: directOrderIds },
-      paymentNumber: { $gt: 1 },
-    }).lean(),
-    PaymentHistory.find({
-      ...matchBranch,
-      paymentNumber: { $gt: 1 },
-      createdAt: { $gte: from, $lte: to },
-      order: { $type: 'objectId', $nin: directOrderIds },
-    }).lean(),
+  const [inRangeOrderLaterPH, subOrders] = await Promise.all([
+    directOrderIds.length
+      ? PaymentHistory.find({
+        order: { $in: directOrderIds },
+        paymentNumber: { $gt: 1 },
+        createdAt: { $gt: to },
+      }).lean()
+      : [],
+    directOrderIds.length
+      ? Order.find({
+        parentOrder: { $in: directOrderIds },
+        isActive: { $ne: false },
+      }).select('parentOrder billAmount').lean()
+      : [],
   ]);
 
   const phByInRangeOrder = new Map();
-  inRangeOrderSubsequentPH.forEach((ph) => {
+  inRangeOrderLaterPH.forEach((ph) => {
     const key = String(ph.order);
     if (!phByInRangeOrder.has(key)) phByInRangeOrder.set(key, []);
     phByInRangeOrder.get(key).push(ph);
+  });
+
+  const subAllocByParent = new Map();
+  subOrders.forEach((so) => {
+    const key = String(so.parentOrder);
+    subAllocByParent.set(key, (subAllocByParent.get(key) || 0) + (Number(so.billAmount) || 0));
   });
 
   const billIds = new Set(bills.map((b) => String(b._id)));
@@ -161,38 +169,23 @@ const calculateDailyMetrics = async (matchBranch, from, to) => {
     }
   });
 
-  // Process direct orders (attribute initial payment on order creation date, subsequent payments on their payment date)
+  // Process direct orders using each order's resolved payment breakdown as of `to`
+  // so daily billed, collected revenue, cash, online, and pending reconcile exactly with Order Details & Payment Summary
   directOrders.forEach((o) => {
     const dateKey = formatDateKeyIST(o.createdAt);
     if (!dateMap[dateKey]) return;
 
-    const subsequentPH = phByInRangeOrder.get(String(o._id)) || [];
-    // Compute initial payment as of order creation by subtracting all subsequent paymentNumber > 1
-    const initialBd = resolveOrderPaymentBreakdown(o, {
-      asOfDate: new Date(o.createdAt),
-      laterPayments: subsequentPH,
+    const subAlloc = o.parentOrder ? 0 : (subAllocByParent.get(String(o._id)) ?? null);
+    const bd = resolveOrderPaymentBreakdown(o, {
+      asOfDate: to,
+      laterPayments: phByInRangeOrder.get(String(o._id)) || [],
+      subOrdersAllocated: subAlloc,
     });
 
-    dateMap[dateKey].totalBillAmount += initialBd.collectibleBill;
-    dateMap[dateKey].totalRevenue += initialBd.collectedTowardBill;
-    dateMap[dateKey].totalCash += initialBd.cashAmount;
-    dateMap[dateKey].totalOnline += initialBd.onlineAmount;
-
-    // Attribute subsequent partial/final payments inside [from, to] to the date each payment was received
-    subsequentPH.forEach((ph) => {
-      const phDate = new Date(ph.createdAt);
-      if (phDate < from || phDate > to) return;
-      const phKey = formatDateKeyIST(phDate);
-      if (!dateMap[phKey]) return;
-      const paid = Number(ph.totalPaid) || 0;
-      let cash = Number(ph.cashAmount) || 0;
-      let online = Number(ph.onlineAmount) || 0;
-      if (ph.paymentMethod === 'cash' && cash === 0 && paid > 0) cash = paid;
-      if ((ph.paymentMethod === 'upi' || ph.paymentMethod === 'card') && online === 0 && paid > 0) online = paid;
-      dateMap[phKey].totalRevenue += paid;
-      dateMap[phKey].totalCash += cash;
-      dateMap[phKey].totalOnline += online;
-    });
+    dateMap[dateKey].totalBillAmount += bd.collectibleBill;
+    dateMap[dateKey].totalRevenue += bd.collectedTowardBill;
+    dateMap[dateKey].totalCash += bd.cashAmount;
+    dateMap[dateKey].totalOnline += bd.onlineAmount;
 
     if (o.customer) dateMap[dateKey].totalCustomers.add(String(o.customer));
 
@@ -208,21 +201,6 @@ const calculateDailyMetrics = async (matchBranch, from, to) => {
         });
       }
     }
-  });
-
-  // Payments received in [from, to] for orders created before `from`
-  olderOrderSubsequentPHInRange.forEach((ph) => {
-    if (ph.order && directOrderIdSet.has(String(ph.order))) return;
-    const phKey = formatDateKeyIST(ph.createdAt);
-    if (!dateMap[phKey]) return;
-    const paid = Number(ph.totalPaid) || 0;
-    let cash = Number(ph.cashAmount) || 0;
-    let online = Number(ph.onlineAmount) || 0;
-    if (ph.paymentMethod === 'cash' && cash === 0 && paid > 0) cash = paid;
-    if ((ph.paymentMethod === 'upi' || ph.paymentMethod === 'card') && online === 0 && paid > 0) online = paid;
-    dateMap[phKey].totalRevenue += paid;
-    dateMap[phKey].totalCash += cash;
-    dateMap[phKey].totalOnline += online;
   });
 
   // Process tournament participants
@@ -687,33 +665,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
     const fromDateLabel = formatDisplayDateIST(from);
     const toDateLabel = formatDisplayDateIST(to);
 
-    // Sheet 1: Summary
-    const summarySheet = workbook.addWorksheet('Summary');
-    summarySheet.columns = [
-      { header: 'Metric', key: 'metric', width: 30 },
-      { header: 'Value', key: 'value', width: 30 },
-    ];
-    summarySheet.addRow({ metric: 'Report Type', value: 'Complete Business & Analytics Report' });
-    summarySheet.addRow({ metric: 'Branch', value: branchLabel });
-    summarySheet.addRow({ metric: 'From Date', value: fromDateLabel });
-    summarySheet.addRow({ metric: 'To Date', value: toDateLabel });
-    summarySheet.addRow({ metric: 'Generated At', value: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) });
-    summarySheet.addRow({ metric: '', value: '' });
-    summarySheet.addRow({ metric: 'Total Bill Amount', value: metrics.totalBillAmount });
-    summarySheet.addRow({ metric: 'Total Revenue', value: metrics.totalRevenue });
-    summarySheet.addRow({ metric: 'Total Expenses', value: metrics.totalExpenses });
-    summarySheet.addRow({ metric: 'Net Profit', value: metrics.netProfit });
-    summarySheet.addRow({ metric: 'Total Cash Received', value: metrics.totalCash });
-    summarySheet.addRow({ metric: 'Total Online Payments', value: metrics.totalOnline });
-    summarySheet.addRow({ metric: 'Total Customers', value: metrics.totalCustomers });
-    summarySheet.addRow({ metric: 'Total Pending Amount', value: metrics.totalPendingAmount });
-    summarySheet.addRow({ metric: 'Total Items Sold', value: metrics.totalItemsSold });
-    summarySheet.addRow({
-      metric: 'Highest-Selling Item',
-      value: `${metrics.highestSellingItem.name} (${metrics.highestSellingItem.quantitySold} sold)`
-    });
-
-    // Sheet 2: Date-wise Summary
+    // Sheet 1: Date-wise Summary
     const dailySheet = workbook.addWorksheet('Date-wise Summary');
     dailySheet.columns = [
       { header: 'Sr. No.', key: 'srNo', width: 10 },
@@ -789,58 +741,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
     grandTotalRow.font = { bold: true };
     grandTotalRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } };
 
-    // Sheet 3: Revenue & Invoices
-    const revSheet = workbook.addWorksheet('Revenue & Invoices');
-    revSheet.columns = [
-      { header: 'Invoice / Order #', key: 'number', width: 22 },
-      { header: 'Type', key: 'type', width: 16 },
-      { header: 'Date', key: 'date', width: 15 },
-      { header: 'Customer', key: 'customer', width: 20 },
-      { header: 'Phone', key: 'phone', width: 15 },
-      { header: 'Branch', key: 'branch', width: 16 },
-      { header: 'Total Amount', key: 'total', width: 14 },
-      { header: 'Payment Method', key: 'method', width: 16 },
-      { header: 'Status', key: 'status', width: 14 },
-    ];
-
-    const [billsList, ordersList] = await Promise.all([
-      Bill.find({ ...matchBranch, createdAt: { $gte: from, $lte: to }, order: { $in: [null, undefined] } })
-        .populate('customer', 'name phone')
-        .populate('branch', 'name')
-        .sort('-createdAt')
-        .lean(),
-      Order.find({ ...matchBranch, isActive: { $ne: false }, createdAt: { $gte: from, $lte: to }, session: { $in: [null, undefined] } })
-        .populate('customer', 'name phone')
-        .populate('branch', 'name')
-        .sort('-createdAt')
-        .lean(),
-    ]);
-
-    billsList.forEach(b => revSheet.addRow({
-      number: b.invoiceNumber,
-      type: 'Table Session',
-      date: formatDisplayDateIST(b.createdAt),
-      customer: b.customer?.name || b.customerName || 'Walk-in',
-      phone: b.customer?.phone || b.customerPhone || '',
-      branch: b.branch?.name || '',
-      total: b.total,
-      method: b.paymentMethod || '—',
-      status: b.paymentStatus,
-    }));
-
-    ordersList.forEach(o => revSheet.addRow({
-      number: o.orderId,
-      type: 'Direct Order',
-      date: formatDisplayDateIST(o.createdAt),
-      customer: o.customer?.name || 'Walk-in',
-      phone: o.customer?.phone || '',
-      branch: o.branch?.name || '',
-      total: o.billAmount,
-      method: o.paymentMethod || '—',
-      status: o.paymentStatus,
-    }));
-
-    // Sheet 4: Expenses
+    // Sheet 2: Expenses
     const expSheet = workbook.addWorksheet('Expenses');
     expSheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
@@ -1004,7 +905,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
     paymentSummarySheet.addRow({ metric: 'Partially Paid Orders Count', value: orderPaySummary.partialOrdersCount });
     paymentSummarySheet.addRow({ metric: 'Unpaid Orders Count', value: orderPaySummary.unpaidOrdersCount });
 
-    [summarySheet, dailySheet, revSheet, orderDetailsSheet, paymentSummarySheet, expSheet, pendSheet, itemSheet].forEach(s => {
+    [dailySheet, expSheet, pendSheet, itemSheet, orderDetailsSheet, paymentSummarySheet].forEach(s => {
       s.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
       s.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
     });
