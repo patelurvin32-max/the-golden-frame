@@ -3,8 +3,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { reportService } from '@/services';
 import { useAppStore, useAuthStore } from '@/store';
-import { Button, Card, CardContent, CardHeader, CardTitle, PageHeader, Skeleton, useToast, Table2, TableHeader, TableBody, TableRow, TableHead, TableCell, Input, Badge } from '@/components/ui';
-import { formatCurrency, formatDuration, downloadBlob, cn } from '@/utils';
+import { Button, Card, CardContent, CardHeader, CardTitle, PageHeader, Skeleton, useToast, Table2, TableHeader, TableBody, TableRow, TableHead, TableCell, Input, Badge, Modal } from '@/components/ui';
+import { formatCurrency, formatDuration, formatDateTime, downloadBlob, cn } from '@/utils';
+import { useDebounce } from '@/hooks/useDebounce';
 
 type GroupBy = 'day' | 'week' | 'month';
 
@@ -95,28 +96,6 @@ export default function ReportsPage() {
     };
   });
 
-  // Extract authoritative summary metrics from backend
-  const summary = revenueData?.summary || {};
-  const totalRevenue = summary.totalRevenue ?? chartData.reduce((s: number, d: any) => s + d.revenue, 0);
-  const totalExpenses = summary.totalExpenses ?? chartData.reduce((s: number, d: any) => s + d.expenses, 0);
-  const totalProfit = summary.netProfit ?? (totalRevenue - totalExpenses);
-  const totalCash = summary.totalCash ?? 0;
-  const totalOnline = summary.totalOnline ?? 0;
-  const totalCustomers = summary.totalCustomers ?? 0;
-  const totalPendingAmount = summary.totalPendingAmount ?? 0;
-  const totalItemsSold = summary.totalItemsSold ?? 0;
-  const highestSellingItem = summary.highestSellingItem ?? { name: 'None', quantitySold: 0 };
-
-  const summaryCards = [
-    { label: 'Total Revenue', value: formatCurrency(totalRevenue), color: 'text-blue-400' },
-    { label: 'Total Expenses', value: formatCurrency(totalExpenses), color: 'text-red-400' },
-    { label: 'Total Cash Received', value: formatCurrency(totalCash), color: 'text-green-400' },
-    { label: 'Total Online Payments', value: formatCurrency(totalOnline), color: 'text-purple-400' },
-    { label: 'Total Customers', value: totalCustomers.toString(), color: 'text-orange-400' },
-    { label: 'Total Pending Amount', value: formatCurrency(totalPendingAmount), color: 'text-amber-400' },
-    { label: 'Total Items Sold', value: totalItemsSold.toString(), color: 'text-cyan-400' },
-  ];
-
   const handleExport = async (type: string) => {
     try {
       const res = await reportService.exportExcel({ ...searchParams, type, groupBy });
@@ -132,19 +111,21 @@ export default function ReportsPage() {
 
   const [orderPage, setOrderPage] = useState(1);
   const [orderSearch, setOrderSearch] = useState('');
+  const debouncedOrderSearch = useDebounce(orderSearch, 300);
   const [orderSortBy, setOrderSortBy] = useState('createdAt');
   const [orderSortOrder, setOrderSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [selectedInvoice, setSelectedInvoice] = useState<any>(null);
 
   const { data: orderData, isLoading: ordersLoading } = useQuery({
-    queryKey: ['report-orders', searchBranch, searchFrom, searchTo, orderPage, orderSearch, orderSortBy, orderSortOrder, shouldFetch],
+    queryKey: ['report-orders', searchBranch, searchFrom, searchTo, orderPage, debouncedOrderSearch, orderSortBy, orderSortOrder, shouldFetch],
     queryFn: () => reportService.getOrders({
       ...searchParams,
       page: String(orderPage),
       limit: '10',
-      search: orderSearch,
+      search: debouncedOrderSearch,
       sortBy: orderSortBy,
       sortOrder: orderSortOrder,
-    }).then((r) => r.data),
+    }).then((r) => r.data.data),
     enabled: shouldFetch,
   });
 
@@ -305,22 +286,6 @@ export default function ReportsPage() {
             </button>
           ))}
         </div>
-      </div>
-
-      {/* 9 Summary Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9 gap-3 sm:gap-4">
-        {summaryCards.map((s) => (
-          <Card key={s.label} className="flex flex-col justify-between hover:border-primary/40 transition-colors">
-            <CardContent className="p-3 sm:p-4 text-center">
-              <p className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wider font-semibold truncate" title={s.label}>
-                {s.label}
-              </p>
-              <p className={cn('text-base sm:text-lg md:text-xl font-bold mt-1 break-words', s.color)} title={s.value}>
-                {s.value}
-              </p>
-            </CardContent>
-          </Card>
-        ))}
       </div>
 
       {/* Tab nav */}
@@ -504,9 +469,10 @@ export default function ReportsPage() {
       {shouldFetch && (
         <div className="space-y-6">
           {/* Order Details & Summary Section */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 sm:gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-4 lg:grid-cols-8 gap-3 sm:gap-4">
             {[
               { label: 'Total Orders', value: orderSummaryData?.summary?.totalOrders ?? 0, color: 'text-blue-400' },
+              { label: 'Total Bill Amount', value: formatCurrency(orderSummaryData?.summary?.totalBilled ?? 0), color: 'text-sky-400' },
               { label: 'Total Revenue', value: formatCurrency(orderSummaryData?.summary?.totalRevenue ?? 0), color: 'text-emerald-400' },
               { label: 'Cash Collection', value: formatCurrency(orderSummaryData?.summary?.totalCashCollection ?? 0), color: 'text-green-400' },
               { label: 'UPI Collection', value: formatCurrency(orderSummaryData?.summary?.totalUPICollection ?? 0), color: 'text-purple-400' },
@@ -601,6 +567,308 @@ export default function ReportsPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Revenue & Invoices Table */}
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <CardTitle className="text-blue-400">💰 Revenue & Invoices</CardTitle>
+                <div className="flex items-center gap-2">
+                  <Input
+                    placeholder="Search invoice, customer, phone..."
+                    value={orderSearch}
+                    onChange={(e) => { setOrderSearch(e.target.value); setOrderPage(1); }}
+                    className="w-56 h-8 text-sm"
+                  />
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto border border-border rounded-xl">
+                <Table2>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead 
+                        className="whitespace-nowrap cursor-pointer hover:bg-accent"
+                        onClick={() => handleSort('orderId')}
+                      >
+                        Invoice / Order # {orderSortBy === 'orderId' && (orderSortOrder === 'asc' ? '↑' : '↓')}
+                      </TableHead>
+                      <TableHead className="whitespace-nowrap">Customer</TableHead>
+                      <TableHead className="whitespace-nowrap">Phone</TableHead>
+                      <TableHead className="whitespace-nowrap">Branch</TableHead>
+                      <TableHead 
+                        className="whitespace-nowrap cursor-pointer hover:bg-accent"
+                        onClick={() => handleSort('billAmount')}
+                      >
+                        Total Bill {orderSortBy === 'billAmount' && (orderSortOrder === 'asc' ? '↑' : '↓')}
+                      </TableHead>
+                      <TableHead className="whitespace-nowrap">Cash Received</TableHead>
+                      <TableHead className="whitespace-nowrap">Online Received</TableHead>
+                      <TableHead
+                        className="whitespace-nowrap cursor-pointer hover:bg-accent"
+                        onClick={() => handleSort('pendingAmount')}
+                      >
+                        Pending Amount {orderSortBy === 'pendingAmount' && (orderSortOrder === 'asc' ? '↑' : '↓')}
+                      </TableHead>
+                      <TableHead className="whitespace-nowrap">Payment Method</TableHead>
+                      <TableHead className="whitespace-nowrap">Payment Status</TableHead>
+                      <TableHead 
+                        className="whitespace-nowrap cursor-pointer hover:bg-accent"
+                        onClick={() => handleSort('createdAt')}
+                      >
+                        Date {orderSortBy === 'createdAt' && (orderSortOrder === 'asc' ? '↑' : '↓')}
+                      </TableHead>
+                      <TableHead className="whitespace-nowrap">Details</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {ordersLoading ? (
+                      <TableRow>
+                        <TableCell colSpan={12} className="text-center py-8">
+                          <Skeleton className="h-8 w-full" />
+                        </TableCell>
+                      </TableRow>
+                    ) : orderData?.data && orderData.data.length > 0 ? (
+                      orderData.data.map((order: any, idx: number) => {
+                        const cashAmt = order.cashAmount || 0;
+                        const onlineAmt = order.onlineAmount || 0;
+                        const totalReceived = order.totalReceived ?? order.totalPaid ?? order.amountReceived ?? (cashAmt + onlineAmt + (order.walletUsed || 0));
+                        const pendingAmount = order.pendingAmount ?? Math.max(0, (order.billAmount || 0) - totalReceived);
+                        const paymentMethodDisplay = order.paymentMethodDisplay || (order.paymentMethod === 'upi' || order.paymentMethod === 'card' ? 'Online' : order.paymentMethod || '—');
+                        const paymentStatusDisplay = order.paymentStatusDisplay || (order.paymentStatus === 'paid' ? 'Paid' : order.paymentStatus === 'partial' ? 'Partially Paid' : order.paymentStatus === 'refunded' ? 'Refunded' : 'Unpaid');
+                        return (
+                          <TableRow key={order._id || idx} className="hover:bg-muted/20">
+                            <TableCell className="font-mono text-xs whitespace-nowrap">
+                              <div>{order.orderId}</div>
+                              {order.recordType && (
+                                <span className="text-[10px] text-muted-foreground">{order.recordType}</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-sm font-medium whitespace-nowrap">{order.customerName || 'Walk-in'}</TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">{order.mobileNumber || '—'}</TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">{order.branchName || '—'}</TableCell>
+                            <TableCell className="text-sm font-bold text-blue-400 whitespace-nowrap">
+                              {formatCurrency(order.billAmount || 0)}
+                            </TableCell>
+                            <TableCell className="text-sm font-semibold text-green-400 whitespace-nowrap">
+                              {formatCurrency(cashAmt)}
+                            </TableCell>
+                            <TableCell className="text-sm font-semibold text-purple-400 whitespace-nowrap">
+                              {formatCurrency(onlineAmt)}
+                            </TableCell>
+                            <TableCell className={cn('text-sm font-bold whitespace-nowrap', pendingAmount > 0 ? 'text-red-400' : 'text-muted-foreground')}>
+                              {formatCurrency(pendingAmount)}
+                            </TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">
+                              <div>{paymentMethodDisplay}</div>
+                              {paymentMethodDisplay === 'Mixed' && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  C: {formatCurrency(cashAmt)} · O: {formatCurrency(onlineAmt)}
+                                </span>
+                              )}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap">
+                              <Badge
+                                variant={order.paymentStatus === 'paid' ? 'success' : order.paymentStatus === 'partial' ? 'warning' : 'danger'}
+                              >
+                                {paymentStatusDisplay}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                              {new Date(order.createdAt).toLocaleDateString('en-IN')}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap">
+                              <Button size="sm" variant="ghost" onClick={() => setSelectedInvoice(order)}>
+                                View
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={12} className="text-center py-8 text-muted-foreground">
+                          No orders found for the selected date range
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table2>
+              </div>
+              {orderData?.pagination && (
+                <div className="flex items-center justify-between mt-4">
+                  <p className="text-sm text-muted-foreground">
+                    Showing {orderData.pagination.total === 0 ? 0 : ((orderData.pagination.page - 1) * orderData.pagination.limit) + 1} to {Math.min(orderData.pagination.page * orderData.pagination.limit, orderData.pagination.total)} of {orderData.pagination.total} records
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={orderData.pagination.page === 1}
+                      onClick={() => setOrderPage(orderData.pagination.page - 1)}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={orderData.pagination.page * orderData.pagination.limit >= orderData.pagination.total}
+                      onClick={() => setOrderPage(orderData.pagination.page + 1)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Invoice & Payment Breakdown Modal */}
+          <Modal
+            open={!!selectedInvoice}
+            onClose={() => setSelectedInvoice(null)}
+            title={`Invoice / Order Details — ${selectedInvoice?.orderId || ''}`}
+            size="lg"
+          >
+            {selectedInvoice && (() => {
+              const cashAmt = selectedInvoice.cashAmount || 0;
+              const onlineAmt = selectedInvoice.onlineAmount || 0;
+              const walletAmt = selectedInvoice.walletUsed || 0;
+              const totalReceived = selectedInvoice.totalReceived ?? (cashAmt + onlineAmt + walletAmt);
+              const pendingAmt = selectedInvoice.pendingAmount ?? Math.max(0, (selectedInvoice.billAmount || 0) - totalReceived);
+              const methodLabel = selectedInvoice.paymentMethodDisplay || '—';
+              const statusLabel = selectedInvoice.paymentStatusDisplay || (selectedInvoice.paymentStatus === 'paid' ? 'Paid' : selectedInvoice.paymentStatus === 'partial' ? 'Partially Paid' : 'Unpaid');
+              return (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-muted/30 border border-border text-sm">
+                    <div>
+                      <span className="text-xs text-muted-foreground block">Invoice / Order #</span>
+                      <span className="font-mono font-semibold">{selectedInvoice.orderId}</span>
+                    </div>
+                    <div>
+                      <span className="text-xs text-muted-foreground block">Type</span>
+                      <span className="font-medium">{selectedInvoice.recordType || 'Direct Order'}</span>
+                    </div>
+                    <div>
+                      <span className="text-xs text-muted-foreground block">Date & Time</span>
+                      <span className="text-xs">{formatDateTime(selectedInvoice.createdAt)}</span>
+                    </div>
+                    <div>
+                      <span className="text-xs text-muted-foreground block">Customer</span>
+                      <span className="font-medium">{selectedInvoice.customerName || 'Walk-in'}</span>
+                    </div>
+                    <div>
+                      <span className="text-xs text-muted-foreground block">Mobile Number</span>
+                      <span>{selectedInvoice.mobileNumber || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-xs text-muted-foreground block">Branch</span>
+                      <span>{selectedInvoice.branchName || '—'}</span>
+                    </div>
+                    {(selectedInvoice.menuCategory || selectedInvoice.menuItem) && (
+                      <div className="col-span-2 sm:col-span-3">
+                        <span className="text-xs text-muted-foreground block">Category / Item</span>
+                        <span>{[selectedInvoice.menuCategory, selectedInvoice.menuItem].filter(Boolean).join(' — ')}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Complete Payment Breakdown */}
+                  <div className="p-4 rounded-xl bg-card border border-border space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-semibold">Payment Breakdown</h4>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">{methodLabel}</Badge>
+                        <Badge variant={selectedInvoice.paymentStatus === 'paid' ? 'success' : selectedInvoice.paymentStatus === 'partial' ? 'warning' : 'danger'}>
+                          {statusLabel}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                      <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                        <span className="text-xs text-muted-foreground block">Total Bill Amount</span>
+                        <span className="text-base font-bold text-blue-400">{formatCurrency(selectedInvoice.billAmount || 0)}</span>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                        <span className="text-xs text-muted-foreground block">Cash Received</span>
+                        <span className="text-base font-bold text-green-400">{formatCurrency(cashAmt)}</span>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                        <span className="text-xs text-muted-foreground block">Online Payment Received</span>
+                        <span className="text-base font-bold text-purple-400">{formatCurrency(onlineAmt)}</span>
+                      </div>
+                      {walletAmt > 0 && (
+                        <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                          <span className="text-xs text-muted-foreground block">Wallet Used</span>
+                          <span className="text-base font-bold text-indigo-400">{formatCurrency(walletAmt)}</span>
+                        </div>
+                      )}
+                      <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                        <span className="text-xs text-muted-foreground block">Total Amount Received</span>
+                        <span className="text-base font-bold text-emerald-400">{formatCurrency(totalReceived)}</span>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                        <span className="text-xs text-muted-foreground block">Pending Amount</span>
+                        <span className={cn('text-base font-bold', pendingAmt > 0 ? 'text-red-400' : 'text-muted-foreground')}>
+                          {formatCurrency(pendingAmt)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {methodLabel === 'Mixed' && (
+                      <div className="text-xs text-muted-foreground bg-muted/20 px-3 py-2 rounded-lg border border-border/50">
+                        Mixed Payment Split: <strong className="text-green-400">Cash {formatCurrency(cashAmt)}</strong> + <strong className="text-purple-400">Online {formatCurrency(onlineAmt)}</strong>
+                        {walletAmt > 0 && <> + <strong className="text-indigo-400">Wallet {formatCurrency(walletAmt)}</strong></>}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Partial / Payment History */}
+                  {Array.isArray(selectedInvoice.paymentHistory) && selectedInvoice.paymentHistory.length > 0 && (
+                    <div className="p-4 rounded-xl bg-muted/20 border border-border space-y-2.5">
+                      <h4 className="text-sm font-semibold">Payment Transaction History</h4>
+                      <div className="overflow-x-auto border border-border rounded-lg">
+                        <Table2>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="text-xs">#</TableHead>
+                              <TableHead className="text-xs">Date & Time</TableHead>
+                              <TableHead className="text-xs">Method</TableHead>
+                              <TableHead className="text-xs">Cash</TableHead>
+                              <TableHead className="text-xs">Online</TableHead>
+                              <TableHead className="text-xs">Total Paid</TableHead>
+                              <TableHead className="text-xs">Pending</TableHead>
+                              <TableHead className="text-xs">Status</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {selectedInvoice.paymentHistory.map((ph: any, i: number) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-xs font-mono">{ph.paymentNumber}</TableCell>
+                                <TableCell className="text-xs">{formatDateTime(ph.createdAt)}</TableCell>
+                                <TableCell className="text-xs">{ph.paymentMethod}</TableCell>
+                                <TableCell className="text-xs text-green-400">{formatCurrency(ph.cashAmount || 0)}</TableCell>
+                                <TableCell className="text-xs text-purple-400">{formatCurrency(ph.onlineAmount || 0)}</TableCell>
+                                <TableCell className="text-xs font-semibold">{formatCurrency(ph.totalPaid || 0)}</TableCell>
+                                <TableCell className="text-xs text-amber-400">{formatCurrency(ph.pendingAmount || 0)}</TableCell>
+                                <TableCell className="text-xs">{ph.paymentStatus}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table2>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex justify-end pt-2">
+                    <Button onClick={() => setSelectedInvoice(null)}>Close</Button>
+                  </div>
+                </div>
+              );
+            })()}
+          </Modal>
         </div>
       )}
     </div>

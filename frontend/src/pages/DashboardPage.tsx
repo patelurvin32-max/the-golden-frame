@@ -87,7 +87,7 @@ export default function DashboardPage() {
           <StatCard title="Today's Revenue" value={formatCurrency(stats?.revenue?.today || 0)} icon="💰" color="from-blue-500/30 to-blue-600/10" />
           <StatCard title="Running Tables" value={stats?.tables?.running || 0} icon="🎱" color="from-blue-500/30 to-blue-600/10" />
           <StatCard title="Today's Expenses" value={formatCurrency(stats?.expenses?.today || 0)} icon="�" color="from-red-500/30 to-red-600/10" />
-          <StatCard title="Total Pending Payments" value={formatCurrency((billsData || []).reduce((sum: number, bill: any) => sum + (bill.total || 0), 0))} icon="⏳" color="from-amber-500/30 to-amber-600/10" />
+          <StatCard title="Total Pending Payments" value={formatCurrency((stats as any)?.paymentStatus?.outstandingBalance ?? (billsData || []).reduce((sum: number, bill: any) => sum + (bill.total || 0), 0))} icon="⏳" color="from-amber-500/30 to-amber-600/10" />
           {!isBranchManager && (
             <>
               <StatCard title="Monthly Revenue" value={formatCurrency(stats?.revenue?.month || 0)} icon="�" color="from-emerald-500/30 to-emerald-600/10" />

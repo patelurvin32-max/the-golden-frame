@@ -26,8 +26,9 @@ export default function BillingPage() {
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 300);
 
-  // Edit Modal state
+  // Edit & View Modal state
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
+  const [viewBill, setViewBill] = useState<Bill | null>(null);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editItems, setEditItems] = useState<SessionItem[]>([]);
   const [notes, setNotes] = useState('');
@@ -602,6 +603,13 @@ export default function BillingPage() {
                       <Button
                         size="sm"
                         variant="ghost"
+                        onClick={() => setViewBill(bill)}
+                      >
+                        View
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
                         onClick={() => handleDownloadPDF(bill)}
                       >
                         Invoice
@@ -833,6 +841,112 @@ export default function BillingPage() {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* View Invoice Payment Details Modal */}
+      <Modal
+        open={!!viewBill}
+        onClose={() => setViewBill(null)}
+        title={`Invoice Payment Details — ${viewBill?.invoiceNumber || ''}`}
+        size="lg"
+      >
+        {viewBill && (() => {
+          const order = (viewBill.order as any) || {};
+          const rawMethod = order.paymentMethod ?? (viewBill as any).paymentMethod ?? null;
+          let cashAmt = Number(order.cashAmount ?? (viewBill as any).cashAmount ?? 0) || 0;
+          let onlineAmt = Number(order.onlineAmount ?? (viewBill as any).onlineAmount ?? 0) || 0;
+          const walletAmt = Number(order.walletAmount ?? (viewBill as any).walletAmount ?? (viewBill as any).walletUsed ?? 0) || 0;
+          const rawTotalPaid = Number(order.totalPaid ?? order.amountReceived ?? (viewBill as any).amountReceived ?? 0) || 0;
+          if (rawMethod === 'cash' && cashAmt === 0 && rawTotalPaid > 0) cashAmt = rawTotalPaid;
+          if ((rawMethod === 'upi' || rawMethod === 'card') && onlineAmt === 0 && rawTotalPaid > 0) onlineAmt = rawTotalPaid;
+          const totalReceived = Math.max(cashAmt + onlineAmt + walletAmt, rawTotalPaid);
+          const pendingAmt = Math.max(0, (viewBill.total || 0) - totalReceived);
+          const methodLabel = cashAmt > 0 && onlineAmt > 0
+            ? 'Mixed'
+            : rawMethod === 'upi' || rawMethod === 'card'
+              ? 'Online'
+              : rawMethod === 'cash'
+                ? 'Cash'
+                : rawMethod === 'mixed'
+                  ? 'Mixed'
+                  : rawMethod === 'wallet'
+                    ? 'Wallet'
+                    : '—';
+          const statusLabel = viewBill.paymentStatus === 'paid'
+            ? 'Paid'
+            : viewBill.paymentStatus === 'partial'
+              ? 'Partially Paid'
+              : 'Unpaid';
+
+          return (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-muted/30 border border-border text-sm">
+                <div>
+                  <span className="text-xs text-muted-foreground block">Invoice #</span>
+                  <span className="font-mono font-semibold">{viewBill.invoiceNumber}</span>
+                </div>
+                <div>
+                  <span className="text-xs text-muted-foreground block">Customer</span>
+                  <span className="font-medium">{viewBill.customer?.name || (viewBill as any).customerName || 'Walk-in'}</span>
+                </div>
+                <div>
+                  <span className="text-xs text-muted-foreground block">Date & Time</span>
+                  <span className="text-xs">{formatDateTime(viewBill.createdAt)}</span>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-card border border-border space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-semibold">Payment Breakdown</h4>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">{methodLabel}</Badge>
+                    <Badge variant={payStatusColor[viewBill.paymentStatus] as any}>{statusLabel}</Badge>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                  <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                    <span className="text-xs text-muted-foreground block">Total Bill Amount</span>
+                    <span className="text-base font-bold text-blue-400">{formatCurrency(viewBill.total || 0)}</span>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                    <span className="text-xs text-muted-foreground block">Cash Received</span>
+                    <span className="text-base font-bold text-green-400">{formatCurrency(cashAmt)}</span>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                    <span className="text-xs text-muted-foreground block">Online Payment Received</span>
+                    <span className="text-base font-bold text-purple-400">{formatCurrency(onlineAmt)}</span>
+                  </div>
+                  {walletAmt > 0 && (
+                    <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                      <span className="text-xs text-muted-foreground block">Wallet Used</span>
+                      <span className="text-base font-bold text-indigo-400">{formatCurrency(walletAmt)}</span>
+                    </div>
+                  )}
+                  <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                    <span className="text-xs text-muted-foreground block">Total Received</span>
+                    <span className="text-base font-bold text-emerald-400">{formatCurrency(totalReceived)}</span>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-muted/30 border border-border/60">
+                    <span className="text-xs text-muted-foreground block">Pending Amount</span>
+                    <span className={cn('text-base font-bold', pendingAmt > 0 ? 'text-red-400' : 'text-muted-foreground')}>
+                      {formatCurrency(pendingAmt)}
+                    </span>
+                  </div>
+                </div>
+                {methodLabel === 'Mixed' && (
+                  <div className="text-xs text-muted-foreground bg-muted/20 px-3 py-2 rounded-lg border border-border/50">
+                    Mixed Payment Split: <strong className="text-green-400">Cash {formatCurrency(cashAmt)}</strong> + <strong className="text-purple-400">Online {formatCurrency(onlineAmt)}</strong>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="outline" onClick={() => handleDownloadPDF(viewBill)}>Download PDF</Button>
+                <Button onClick={() => setViewBill(null)}>Close</Button>
+              </div>
+            </div>
+          );
+        })()}
       </Modal>
     </div>
   );

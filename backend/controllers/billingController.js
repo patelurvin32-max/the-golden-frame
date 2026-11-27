@@ -300,12 +300,18 @@ exports.createBill = asyncHandler(async (req, res, next) => {
   }
 
   if (bill.paymentStatus === 'unpaid' || bill.paymentStatus === 'partial') {
-    const cashAmount = req.body.cashAmount || 0;
-    const onlineAmount = req.body.onlineAmount || 0;
-    const walletAmount = req.body.walletAmount || 0;
-    const amountReceived = req.body.amountReceived || 0;
-    const pendingPaymentAmount = req.body.pendingPaymentAmount || 0;
-    const mainPending = Math.max(0, bill.total - cashAmount - onlineAmount - walletAmount - pendingPaymentAmount);
+    const cashAmount = Number(req.body.cashAmount) || 0;
+    const onlineAmount = Number(req.body.onlineAmount) || 0;
+    const walletAmount = Number(req.body.walletAmount) || 0;
+    const amountReceived = Number(req.body.amountReceived) || (cashAmount + onlineAmount + walletAmount);
+    const pendingPlayersInput = Array.isArray(req.body.pendingPlayers) ? req.body.pendingPlayers : [];
+    const pendingPlayersTotal = pendingPlayersInput.reduce((sum, p) => sum + (parseCurrencyValue(p.amount || p.pendingAmount) || 0), 0);
+    const mainPending = Math.max(0, bill.total - cashAmount - onlineAmount - walletAmount - pendingPlayersTotal);
+
+    if (bill.pendingPaymentAmount !== mainPending) {
+      bill.pendingPaymentAmount = mainPending;
+      await bill.save();
+    }
 
     let parentOrderId = null;
     let mainOrder = null;
@@ -532,6 +538,27 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
 
   // Compute new total paid from existing payments + new payment (avoid second query)
   const totalPaid = existingPaid + amount;
+  let addCash = 0;
+  let addOnline = 0;
+  let addWallet = 0;
+  if (method === 'cash') addCash = amount;
+  else if (method === 'upi' || method === 'card') addOnline = amount;
+  else if (method === 'wallet') addWallet = amount;
+  else if (method === 'mixed' && Array.isArray(breakdown) && breakdown.length > 0) {
+    breakdown.forEach((b) => {
+      if (b.method === 'cash') addCash += Number(b.amount) || 0;
+      else if (b.method === 'upi' || b.method === 'card') addOnline += Number(b.amount) || 0;
+      else if (b.method === 'wallet') addWallet += Number(b.amount) || 0;
+    });
+  }
+
+  bill.cashAmount = Math.max(bill.cashAmount || 0, existingPayments.reduce((s, p) => s + (p.method === 'cash' ? p.amount : (p.breakdown || []).filter(x => x.method === 'cash').reduce((a, x) => a + (x.amount || 0), 0)), 0) + addCash);
+  bill.onlineAmount = Math.max(bill.onlineAmount || 0, existingPayments.reduce((s, p) => s + ((p.method === 'upi' || p.method === 'card') ? p.amount : (p.breakdown || []).filter(x => x.method === 'upi' || x.method === 'card').reduce((a, x) => a + (x.amount || 0), 0)), 0) + addOnline);
+  bill.walletAmount = Math.max(bill.walletAmount || 0, existingPayments.reduce((s, p) => s + (p.method === 'wallet' ? p.amount : (p.breakdown || []).filter(x => x.method === 'wallet').reduce((a, x) => a + (x.amount || 0), 0)), 0) + addWallet);
+  bill.amountReceived = Math.max(bill.amountReceived || 0, totalPaid);
+  bill.pendingPaymentAmount = Math.max(0, (bill.total || 0) - totalPaid);
+  if (bill.cashAmount > 0 && bill.onlineAmount > 0) bill.paymentMethod = 'mixed';
+  else if (!bill.paymentMethod) bill.paymentMethod = method;
   bill.paymentStatus = totalPaid >= bill.total ? 'paid' : 'partial';
   await bill.save();
 
@@ -735,8 +762,13 @@ exports.updateBill = asyncHandler(async (req, res, next) => {
   if (cashAmount !== undefined) bill.cashAmount = Number(cashAmount) || 0;
   if (onlineAmount !== undefined) bill.onlineAmount = Number(onlineAmount) || 0;
   if (walletAmount !== undefined) bill.walletAmount = Number(walletAmount) || 0;
-  if (amountReceived !== undefined) bill.amountReceived = amountReceived;
-  if (pendingPaymentAmount !== undefined) bill.pendingPaymentAmount = pendingPaymentAmount;
+  const computedReceived = (bill.cashAmount || 0) + (bill.onlineAmount || 0) + (bill.walletAmount || 0);
+  if (amountReceived !== undefined) bill.amountReceived = Number(amountReceived) || 0;
+  else if (cashAmount !== undefined || onlineAmount !== undefined || walletAmount !== undefined) bill.amountReceived = computedReceived;
+  const effectivePaidForBill = Math.max(computedReceived, Number(bill.amountReceived) || 0);
+  const pendingPlayersArr = Array.isArray(pendingPlayers) ? pendingPlayers : (bill.pendingPlayers || []);
+  const pendingPlayersSum = pendingPlayersArr.reduce((s, p) => s + (Number(p.amount || p.pendingAmount) || 0), 0);
+  bill.pendingPaymentAmount = Math.max(0, (bill.total || 0) - effectivePaidForBill - pendingPlayersSum);
   if (pendingPlayers !== undefined) bill.pendingPlayers = pendingPlayers;
   if (notes !== undefined) bill.notes = notes;
   if (frames !== undefined) bill.frames = frames;
@@ -757,8 +789,9 @@ exports.updateBill = asyncHandler(async (req, res, next) => {
       if (cashAmount !== undefined) orderObj.cashAmount = Number(cashAmount) || 0;
       if (onlineAmount !== undefined) orderObj.onlineAmount = Number(onlineAmount) || 0;
       if (walletAmount !== undefined) orderObj.walletAmount = Number(walletAmount) || 0;
-      if (amountReceived !== undefined) orderObj.amountReceived = Number(amountReceived) || 0;
-      if (pendingPaymentAmount !== undefined) orderObj.pendingPaymentAmount = Number(pendingPaymentAmount) || 0;
+      orderObj.amountReceived = bill.amountReceived || 0;
+      orderObj.totalPaid = Math.max((orderObj.cashAmount || 0) + (orderObj.onlineAmount || 0) + (orderObj.walletAmount || 0), orderObj.amountReceived || 0);
+      orderObj.pendingPaymentAmount = bill.pendingPaymentAmount;
       if (paymentStatus) orderObj.paymentStatus = paymentStatus;
       if (notes !== undefined) orderObj.notes = notes;
       if (Array.isArray(pendingPlayers)) orderObj.pendingPlayers = pendingPlayers;

@@ -174,6 +174,16 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ── Root route — for Render health check ─────────────────────────────────────
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    message: 'The Golden Frame API is running 🎱',
+    health: '/api/health',
+    api: '/api',
+  });
+});
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);

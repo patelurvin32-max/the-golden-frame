@@ -315,13 +315,11 @@ exports.getCustomers = asyncHandler(async (req, res) => {
   // Filter by menu category if provided
   if (req.query.menuCategoryId) filter.menuCategoryId = req.query.menuCategoryId;
   
-  // Filter by custom date range if provided
+  // Filter by custom date range if provided (respecting IST +05:30)
   if (req.query.startDate && req.query.endDate) {
-    const startDate = new Date(req.query.startDate);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(req.query.endDate);
-    endDate.setHours(23, 59, 59, 999);
-    filter.createdAt = { $gte: startDate, $lte: endDate };
+    const { parseDateRange } = require('../utils/reportMetricsHelper');
+    const { from, to } = parseDateRange(req.query.startDate, req.query.endDate);
+    filter.createdAt = { $gte: from, $lte: to };
   }
   
   // Filter by payment status if provided
@@ -385,8 +383,39 @@ exports.getCustomers = asyncHandler(async (req, res) => {
           _id: '$customer',
           totalPendingAmount: {
             $sum: {
-              $max: [0, { $subtract: [{ $ifNull: ["$billAmount", 0] }, { $ifNull: ["$totalPaid", 0] }] }]
-            }
+              $max: [
+                0,
+                {
+                  $subtract: [
+                    {
+                      $subtract: [
+                        { $ifNull: ["$billAmount", 0] },
+                        {
+                          $reduce: {
+                            input: { $ifNull: ["$pendingPlayers", []] },
+                            initialValue: 0,
+                            in: { $add: ["$$value", { $ifNull: ["$$this.amount", { $ifNull: ["$$this.pendingAmount", 0] }] }] }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      $max: [
+                        { $ifNull: ["$totalPaid", 0] },
+                        { $ifNull: ["$amountReceived", 0] },
+                        {
+                          $add: [
+                            { $ifNull: ["$cashAmount", 0] },
+                            { $ifNull: ["$onlineAmount", 0] },
+                            { $ifNull: ["$walletAmount", 0] },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
           },
           earliestOrderDate: { $min: '$createdAt' }
         }
@@ -569,8 +598,11 @@ exports.createCustomer = asyncHandler(async (req, res, next) => {
   const roundedBillAmount = Math.round(billAmount * 100) / 100;
   const roundedTotalPaid = Math.round(totalPaid * 100) / 100;
   
-  // Calculate pending amount
-  const pendingAmount = Math.max(0, roundedBillAmount - roundedTotalPaid);
+  // Calculate pending amount (subtracting amounts allocated onto pendingPlayers sub-orders so they aren't double-counted)
+  const incomingPendingPlayersTotal = Array.isArray(req.body.pendingPlayers)
+    ? req.body.pendingPlayers.reduce((sum, p) => sum + (parseCurrencyValue(p.amount || p.pendingAmount) || 0), 0)
+    : 0;
+  const pendingAmount = Math.max(0, roundedBillAmount - roundedTotalPaid - incomingPendingPlayersTotal);
   
   // Validation based on payment status
   if (paymentStatus === 'paid') {
@@ -1589,27 +1621,64 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
   if (req.body.billAmount !== undefined) {
     req.body.billAmount = parseCurrencyValue(req.body.billAmount);
   }
-  let { paymentMethod, cashAmount, onlineAmount, amountReceived } = req.body;
+  let { paymentMethod, cashAmount, onlineAmount, walletAmount, amountReceived } = req.body;
 
   if (cashAmount !== undefined) cashAmount = parseCurrencyValue(cashAmount) || 0;
   if (onlineAmount !== undefined) onlineAmount = parseCurrencyValue(onlineAmount) || 0;
+  if (walletAmount !== undefined) walletAmount = parseCurrencyValue(walletAmount) || 0;
   if (amountReceived !== undefined) amountReceived = parseCurrencyValue(amountReceived) || 0;
 
-  if (paymentMethod === 'cash' && cashAmount === 0 && amountReceived > 0) {
+  if (targetPaymentStatus === 'unpaid') {
+    if (cashAmount === undefined) cashAmount = 0;
+    if (onlineAmount === undefined) onlineAmount = 0;
+    if (walletAmount === undefined) walletAmount = 0;
+    if (amountReceived === undefined) amountReceived = 0;
+    req.body.cashAmount = cashAmount;
+    req.body.onlineAmount = onlineAmount;
+    req.body.walletAmount = walletAmount;
+    req.body.amountReceived = amountReceived;
+  } else if (paymentMethod === 'cash' && (!cashAmount || cashAmount === 0) && amountReceived > 0) {
     cashAmount = amountReceived;
     req.body.cashAmount = cashAmount;
-  } else if (paymentMethod === 'upi' && onlineAmount === 0 && amountReceived > 0) {
+    req.body.onlineAmount = 0;
+  } else if ((paymentMethod === 'upi' || paymentMethod === 'card') && (!onlineAmount || onlineAmount === 0) && amountReceived > 0) {
     onlineAmount = amountReceived;
     req.body.onlineAmount = onlineAmount;
+    req.body.cashAmount = 0;
   }
 
-  if (req.body.cashAmount !== undefined || req.body.onlineAmount !== undefined) {
-    req.body.totalPaid = (req.body.cashAmount || 0) + (req.body.onlineAmount || 0);
+  if (req.body.cashAmount !== undefined || req.body.onlineAmount !== undefined || req.body.walletAmount !== undefined) {
+    const finalCash = req.body.cashAmount !== undefined ? (parseCurrencyValue(req.body.cashAmount) || 0) : (existingOrder.cashAmount || 0);
+    const finalOnline = req.body.onlineAmount !== undefined ? (parseCurrencyValue(req.body.onlineAmount) || 0) : (existingOrder.onlineAmount || 0);
+    const finalWallet = req.body.walletAmount !== undefined ? (parseCurrencyValue(req.body.walletAmount) || 0) : (existingOrder.walletAmount || 0);
+    req.body.cashAmount = finalCash;
+    req.body.onlineAmount = finalOnline;
+    req.body.walletAmount = finalWallet;
+    req.body.totalPaid = Math.round((finalCash + finalOnline + finalWallet) * 100) / 100;
   }
 
   if (req.body.amountReceived !== undefined) {
     req.body.amountReceived = amountReceived;
   }
+
+  // Recalculate pendingPaymentAmount if payment amounts or pendingPlayers are being updated
+  if (
+    req.body.billAmount !== undefined ||
+    req.body.totalPaid !== undefined ||
+    req.body.cashAmount !== undefined ||
+    req.body.onlineAmount !== undefined ||
+    req.body.walletAmount !== undefined ||
+    Array.isArray(req.body.pendingPlayers) ||
+    req.body.paymentStatus !== undefined
+  ) {
+    const finalBillAmount = req.body.billAmount !== undefined ? req.body.billAmount : existingOrder.billAmount;
+    const finalTotalPaid = req.body.totalPaid !== undefined ? req.body.totalPaid : (existingOrder.totalPaid || 0);
+    const pendingPlayersArr = Array.isArray(req.body.pendingPlayers) ? req.body.pendingPlayers : (existingOrder.pendingPlayers || []);
+    const pendingPlayersTotal = pendingPlayersArr.reduce((sum, p) => sum + (parseCurrencyValue(p.amount || p.pendingAmount) || 0), 0);
+    req.body.pendingPaymentAmount = Math.max(0, Math.round((finalBillAmount - finalTotalPaid - pendingPlayersTotal) * 100) / 100);
+  }
+
+  const oldPendingAmount = existingOrder.pendingPaymentAmount || 0;
 
   const order = await Order.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
@@ -1619,6 +1688,15 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
 
   // Get the customer to fetch current wallet balance
   const customer = await Customer.findById(order.customer);
+
+  // Sync customer.outstandingBalance if pendingPaymentAmount changed
+  if (customer) {
+    const newPendingAmount = order.pendingPaymentAmount || 0;
+    const pendingDelta = newPendingAmount - oldPendingAmount;
+    if (Math.abs(pendingDelta) > 0.001) {
+      customer.outstandingBalance = Math.max(0, Math.round(((customer.outstandingBalance || 0) + pendingDelta) * 100) / 100);
+    }
+  }
 
   // Update customer details if provided
   if (customer) {
@@ -1895,10 +1973,17 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
   if (!customer) return next(new AppError('Customer not found.', 404));
   
   // Normalize currency values
-  const cashAmount = parseCurrencyValue(req.body.cashAmount) || 0;
-  const onlineAmount = parseCurrencyValue(req.body.onlineAmount) || 0;
+  let cashAmount = parseCurrencyValue(req.body.cashAmount) || 0;
+  let onlineAmount = parseCurrencyValue(req.body.onlineAmount) || 0;
   const walletAmount = parseCurrencyValue(req.body.walletAmount) || 0;
+  const amountReceivedInput = parseCurrencyValue(req.body.amountReceived) || 0;
   const paymentMethod = req.body.paymentMethod || order.paymentMethod;
+
+  if (paymentMethod === 'cash' && cashAmount === 0 && amountReceivedInput > 0) {
+    cashAmount = amountReceivedInput;
+  } else if ((paymentMethod === 'upi' || paymentMethod === 'card') && onlineAmount === 0 && amountReceivedInput > 0) {
+    onlineAmount = amountReceivedInput;
+  }
   
   // Calculate today's payment
   const todayPayment = cashAmount + onlineAmount + walletAmount;
@@ -1917,6 +2002,17 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
     newPaymentStatus = 'paid';
   } else {
     newPaymentStatus = 'partial';
+  }
+
+  // Determine cumulative order payment method (if both cash and online are non-zero, it's mixed)
+  const cumulativeCash = (order.cashAmount || 0) + cashAmount;
+  const cumulativeOnline = (order.onlineAmount || 0) + onlineAmount;
+  const cumulativeWallet = (order.walletAmount || 0) + walletAmount;
+  let cumulativeMethod = paymentMethod;
+  if (cumulativeCash > 0 && cumulativeOnline > 0) {
+    cumulativeMethod = 'mixed';
+  } else if (cumulativeWallet > 0 && (cumulativeCash > 0 || cumulativeOnline > 0)) {
+    cumulativeMethod = 'mixed';
   }
   
   // Validate wallet balance if using wallet
@@ -1964,13 +2060,14 @@ exports.receivePayment = asyncHandler(async (req, res, next) => {
   const updatedOrder = await Order.findByIdAndUpdate(
     order._id,
     {
-      cashAmount: order.cashAmount + cashAmount,
-      onlineAmount: order.onlineAmount + onlineAmount,
-      walletAmount: order.walletAmount + walletAmount,
+      cashAmount: cumulativeCash,
+      onlineAmount: cumulativeOnline,
+      walletAmount: cumulativeWallet,
+      amountReceived: (order.amountReceived || 0) + todayPayment,
       totalPaid: newTotalPaid,
       pendingPaymentAmount: newPendingAmount,
       paymentStatus: newPaymentStatus,
-      ...(paymentMethod && { paymentMethod }),
+      ...(cumulativeMethod && { paymentMethod: cumulativeMethod }),
     },
     { new: true }
   );
@@ -2124,11 +2221,15 @@ exports.deleteCustomer = asyncHandler(async (req, res, next) => {
     }
   }
 
-  // Update customer total spending
+  // Update customer total spending & outstanding balance
   const customer = await Customer.findById(order.customer);
   if (customer) {
-    customer.totalSpending -= order.billAmount;
-    customer.visits -= 1;
+    customer.totalSpending = Math.max(0, (customer.totalSpending || 0) - (order.billAmount || 0));
+    customer.visits = Math.max(0, (customer.visits || 0) - 1);
+    const orderPending = Math.max(0, (order.billAmount || 0) - (order.totalPaid || 0));
+    if (orderPending > 0) {
+      customer.outstandingBalance = Math.max(0, (customer.outstandingBalance || 0) - orderPending);
+    }
     await customer.save();
   }
 

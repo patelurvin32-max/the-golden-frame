@@ -8,12 +8,26 @@ const WalletTransaction = require('../models/WalletTransaction');
 const TournamentParticipant = require('../models/TournamentParticipant');
 const Tournament = require('../models/Tournament');
 const Branch = require('../models/Branch');
+const PaymentHistory = require('../models/PaymentHistory');
 const asyncHandler = require('../utils/asyncHandler');
 const ExcelJS = require('exceljs');
 const { ROLES } = require('../config/constants');
 
 const mongoose = require('mongoose');
-const { parseDateRange, calculateReportMetrics, TIMEZONE_OFFSET } = require('../utils/reportMetricsHelper');
+const {
+  parseDateRange,
+  calculateReportMetrics,
+  calculateOutstandingPendingSummary,
+  resolveOrderPaymentBreakdown,
+  resolveBillPaymentBreakdown,
+  formatDateKeyIST,
+  formatDisplayDateIST,
+  enumerateDateKeysIST,
+  formatPaymentMethodDisplay,
+  formatPaymentStatusDisplay,
+  round2,
+  TIMEZONE_OFFSET,
+} = require('../utils/reportMetricsHelper');
 
 const branchFilter = (req) => {
   const userBranchIds = (req.user.branches || []).map(b => (b._id || b).toString());
@@ -34,27 +48,43 @@ const getCollectionTotals = async (matchBranch, from, to) => {
 };
 
 /**
- * Calculate daily metrics for date-wise Excel report
+ * Calculate daily metrics for date-wise Excel report using IST (+05:30) boundaries
+ * and single-source-of-truth payment/pending helpers.
  */
 const calculateDailyMetrics = async (matchBranch, from, to) => {
   const dailyData = [];
-  const currentDate = new Date(from);
-  currentDate.setHours(0, 0, 0, 0);
-  const endDate = new Date(to);
-  endDate.setHours(23, 59, 59, 999);
+  const dateKeys = enumerateDateKeysIST(from, to);
+  const dateMap = {};
 
-  // Fetch all data for the entire date range at once
-  const [bills, directOrders, tournamentParticipants, expenses, billPayments] = await Promise.all([
+  dateKeys.forEach((dateKey) => {
+    dateMap[dateKey] = {
+      totalBillAmount: 0,
+      totalRevenue: 0,
+      totalExpenses: 0,
+      netProfit: 0,
+      totalCash: 0,
+      totalOnline: 0,
+      totalPendingAmount: 0,
+      totalCustomers: new Set(),
+      totalItemsSold: 0,
+      itemCounts: {},
+    };
+  });
+
+  // Fetch all data for the date range and pending balances up to `to`
+  const [bills, directOrders, tournamentParticipants, expenses, billPayments, pendingSummary] = await Promise.all([
     Bill.find({
       ...matchBranch,
       createdAt: { $gte: from, $lte: to },
       order: { $in: [null, undefined] },
+      paymentStatus: { $nin: ['refunded', 'cancelled'] },
     }).lean(),
     Order.find({
       ...matchBranch,
       isActive: { $ne: false },
       createdAt: { $gte: from, $lte: to },
       session: { $in: [null, undefined] },
+      paymentStatus: { $nin: ['refunded', 'cancelled'] },
     }).populate('menuItemId', 'name').lean(),
     TournamentParticipant.find({
       ...matchBranch,
@@ -69,68 +99,60 @@ const calculateDailyMetrics = async (matchBranch, from, to) => {
       ...matchBranch,
       createdAt: { $gte: from, $lte: to },
     }).lean(),
+    calculateOutstandingPendingSummary(matchBranch, from, to),
   ]);
 
-  const billIds = bills.map(b => b._id);
-  const billPaymentsFiltered = billPayments.filter(p => billIds.includes(p.bill));
-  const billsWithPaymentDoc = new Set(billPaymentsFiltered.map(p => String(p.bill)));
+  const directOrderIds = directOrders.map((o) => o._id);
+  const directOrderIdSet = new Set(directOrderIds.map((id) => String(id)));
 
-  // Create date-based maps
-  const dateFormat = (date) => date.toISOString().split('T')[0];
+  const [inRangeOrderSubsequentPH, olderOrderSubsequentPHInRange] = await Promise.all([
+    PaymentHistory.find({
+      order: { $in: directOrderIds },
+      paymentNumber: { $gt: 1 },
+    }).lean(),
+    PaymentHistory.find({
+      ...matchBranch,
+      paymentNumber: { $gt: 1 },
+      createdAt: { $gte: from, $lte: to },
+      order: { $type: 'objectId', $nin: directOrderIds },
+    }).lean(),
+  ]);
 
-  const dateMap = {};
+  const phByInRangeOrder = new Map();
+  inRangeOrderSubsequentPH.forEach((ph) => {
+    const key = String(ph.order);
+    if (!phByInRangeOrder.has(key)) phByInRangeOrder.set(key, []);
+    phByInRangeOrder.get(key).push(ph);
+  });
 
-  // Initialize all dates in range
-  while (currentDate <= endDate) {
-    const dateKey = dateFormat(currentDate);
-    dateMap[dateKey] = {
-      totalRevenue: 0,
-      totalExpenses: 0,
-      netProfit: 0,
-      totalCash: 0,
-      totalOnline: 0,
-      totalPendingAmount: 0,
-      totalCustomers: new Set(),
-      totalItemsSold: 0,
-      itemCounts: {},
-    };
-    currentDate.setDate(currentDate.getDate() + 1);
-  }
+  const billIds = new Set(bills.map((b) => String(b._id)));
+  const billPaymentsByBill = new Map();
+  billPayments.forEach((p) => {
+    const bKey = String(p.bill);
+    if (!billIds.has(bKey)) return;
+    if (!billPaymentsByBill.has(bKey)) billPaymentsByBill.set(bKey, []);
+    billPaymentsByBill.get(bKey).push(p);
+  });
 
   // Process bills
-  bills.forEach(b => {
-    const dateKey = dateFormat(new Date(b.createdAt));
+  bills.forEach((b) => {
+    const dateKey = formatDateKeyIST(b.createdAt);
     if (!dateMap[dateKey]) return;
 
-    let revenue = 0;
-    if (b.paymentStatus === 'paid') revenue = b.total || 0;
-    else if (b.paymentStatus === 'partial') revenue = Math.max(0, (b.total || 0) - (b.pendingPaymentAmount || 0));
+    const bd = resolveBillPaymentBreakdown(b, {
+      asOfDate: to,
+      payments: billPaymentsByBill.get(String(b._id)) || [],
+    });
 
-    dateMap[dateKey].totalRevenue += revenue;
+    dateMap[dateKey].totalBillAmount += bd.collectibleBill;
+    dateMap[dateKey].totalRevenue += bd.collectedTowardBill;
+    dateMap[dateKey].totalCash += bd.cashAmount;
+    dateMap[dateKey].totalOnline += bd.onlineAmount;
 
-    // Cash/Online from bills
-    if (!billsWithPaymentDoc.has(String(b._id))) {
-      if (b.paymentMethod === 'cash') {
-        dateMap[dateKey].totalCash += (b.cashAmount || (b.paymentStatus === 'paid' ? b.total : b.amountReceived) || 0);
-      } else if (b.paymentMethod === 'upi' || b.paymentMethod === 'card') {
-        dateMap[dateKey].totalOnline += (b.onlineAmount || (b.paymentStatus === 'paid' ? b.total : b.amountReceived) || 0);
-      } else if (b.paymentMethod === 'mixed') {
-        dateMap[dateKey].totalCash += (b.cashAmount || 0);
-        dateMap[dateKey].totalOnline += (b.onlineAmount || 0);
-      }
-    }
-
-    // Pending amount
-    if (b.paymentStatus !== 'paid') {
-      dateMap[dateKey].totalPendingAmount += (b.pendingPaymentAmount || Math.max(0, (b.total || 0) - (b.amountReceived || 0)));
-    }
-
-    // Customers
     if (b.customer) dateMap[dateKey].totalCustomers.add(String(b.customer));
 
-    // Items from bills
     if (Array.isArray(b.items) && b.items.length > 0) {
-      b.items.forEach(it => {
+      b.items.forEach((it) => {
         if (it.type === 'inventory') {
           const cleanName = (it.description || 'Item').replace(/^[^-]+-\s*/, '').trim();
           dateMap[dateKey].itemCounts[cleanName] = (dateMap[dateKey].itemCounts[cleanName] || 0) + (Number(it.quantity) || 1);
@@ -139,82 +161,84 @@ const calculateDailyMetrics = async (matchBranch, from, to) => {
     }
   });
 
-  // Process bill payments
-  billPaymentsFiltered.forEach(p => {
-    const dateKey = dateFormat(new Date(p.createdAt));
+  // Process direct orders (attribute initial payment on order creation date, subsequent payments on their payment date)
+  directOrders.forEach((o) => {
+    const dateKey = formatDateKeyIST(o.createdAt);
     if (!dateMap[dateKey]) return;
 
-    if (p.method === 'cash') {
-      dateMap[dateKey].totalCash += (p.amount || 0);
-    } else if (p.method === 'upi' || p.method === 'card') {
-      dateMap[dateKey].totalOnline += (p.amount || 0);
-    } else if (p.method === 'mixed') {
-      if (p.breakdown && p.breakdown.length > 0) {
-        p.breakdown.forEach(b => {
-          if (b.method === 'cash') dateMap[dateKey].totalCash += (b.amount || 0);
-          if (b.method === 'upi' || b.method === 'card') dateMap[dateKey].totalOnline += (b.amount || 0);
+    const subsequentPH = phByInRangeOrder.get(String(o._id)) || [];
+    // Compute initial payment as of order creation by subtracting all subsequent paymentNumber > 1
+    const initialBd = resolveOrderPaymentBreakdown(o, {
+      asOfDate: new Date(o.createdAt),
+      laterPayments: subsequentPH,
+    });
+
+    dateMap[dateKey].totalBillAmount += initialBd.collectibleBill;
+    dateMap[dateKey].totalRevenue += initialBd.collectedTowardBill;
+    dateMap[dateKey].totalCash += initialBd.cashAmount;
+    dateMap[dateKey].totalOnline += initialBd.onlineAmount;
+
+    // Attribute subsequent partial/final payments inside [from, to] to the date each payment was received
+    subsequentPH.forEach((ph) => {
+      const phDate = new Date(ph.createdAt);
+      if (phDate < from || phDate > to) return;
+      const phKey = formatDateKeyIST(phDate);
+      if (!dateMap[phKey]) return;
+      const paid = Number(ph.totalPaid) || 0;
+      let cash = Number(ph.cashAmount) || 0;
+      let online = Number(ph.onlineAmount) || 0;
+      if (ph.paymentMethod === 'cash' && cash === 0 && paid > 0) cash = paid;
+      if ((ph.paymentMethod === 'upi' || ph.paymentMethod === 'card') && online === 0 && paid > 0) online = paid;
+      dateMap[phKey].totalRevenue += paid;
+      dateMap[phKey].totalCash += cash;
+      dateMap[phKey].totalOnline += online;
+    });
+
+    if (o.customer) dateMap[dateKey].totalCustomers.add(String(o.customer));
+
+    if (!o.parentOrder) {
+      if (o.menuItemId) {
+        const name = o.menuItemId?.name || o.menuItem || 'Menu Item';
+        dateMap[dateKey].itemCounts[name] = (dateMap[dateKey].itemCounts[name] || 0) + 1;
+      }
+      if (Array.isArray(o.addedItems) && o.addedItems.length > 0) {
+        o.addedItems.forEach((ai) => {
+          const name = ai.itemName || 'Item';
+          dateMap[dateKey].itemCounts[name] = (dateMap[dateKey].itemCounts[name] || 0) + (Number(ai.quantity) || 1);
         });
-      } else {
-        dateMap[dateKey].totalCash += (p.amount || 0);
       }
     }
   });
 
-  // Process direct orders
-  directOrders.forEach(o => {
-    const dateKey = dateFormat(new Date(o.createdAt));
-    if (!dateMap[dateKey]) return;
-
-    let revenue = 0;
-    if (o.paymentStatus === 'paid') revenue = o.billAmount || o.totalPaid || 0;
-    else if (o.paymentStatus === 'partial') revenue = o.totalPaid || o.amountReceived || Math.max(0, (o.billAmount || 0) - (o.pendingPaymentAmount || 0));
-
-    dateMap[dateKey].totalRevenue += revenue;
-
-    // Cash/Online from orders
-    if (o.paymentMethod === 'cash') {
-      const paid = Math.max(o.cashAmount || 0, o.totalPaid || o.amountReceived || (o.paymentStatus === 'paid' ? o.billAmount : 0) || 0);
-      dateMap[dateKey].totalCash += paid;
-    } else if (o.paymentMethod === 'upi' || o.paymentMethod === 'card') {
-      const paid = Math.max(o.onlineAmount || 0, o.totalPaid || o.amountReceived || (o.paymentStatus === 'paid' ? o.billAmount : 0) || 0);
-      dateMap[dateKey].totalOnline += paid;
-    } else if (o.paymentMethod === 'mixed') {
-      dateMap[dateKey].totalCash += (o.cashAmount || 0);
-      dateMap[dateKey].totalOnline += (o.onlineAmount || 0);
-    }
-
-    // Pending amount
-    dateMap[dateKey].totalPendingAmount += (o.pendingPaymentAmount || 0);
-
-    // Customers
-    if (o.customer) dateMap[dateKey].totalCustomers.add(String(o.customer));
-
-    // Items from orders
-    if (o.menuItemId) {
-      const name = o.menuItemId?.name || o.menuItem || 'Menu Item';
-      dateMap[dateKey].itemCounts[name] = (dateMap[dateKey].itemCounts[name] || 0) + 1;
-    }
-    if (Array.isArray(o.addedItems) && o.addedItems.length > 0) {
-      o.addedItems.forEach(ai => {
-        const name = ai.itemName || 'Item';
-        dateMap[dateKey].itemCounts[name] = (dateMap[dateKey].itemCounts[name] || 0) + (Number(ai.quantity) || 1);
-      });
-    }
+  // Payments received in [from, to] for orders created before `from`
+  olderOrderSubsequentPHInRange.forEach((ph) => {
+    if (ph.order && directOrderIdSet.has(String(ph.order))) return;
+    const phKey = formatDateKeyIST(ph.createdAt);
+    if (!dateMap[phKey]) return;
+    const paid = Number(ph.totalPaid) || 0;
+    let cash = Number(ph.cashAmount) || 0;
+    let online = Number(ph.onlineAmount) || 0;
+    if (ph.paymentMethod === 'cash' && cash === 0 && paid > 0) cash = paid;
+    if ((ph.paymentMethod === 'upi' || ph.paymentMethod === 'card') && online === 0 && paid > 0) online = paid;
+    dateMap[phKey].totalRevenue += paid;
+    dateMap[phKey].totalCash += cash;
+    dateMap[phKey].totalOnline += online;
   });
 
   // Process tournament participants
-  tournamentParticipants.forEach(t => {
-    const dateKey = dateFormat(new Date(t.createdAt));
+  tournamentParticipants.forEach((t) => {
+    const dateKey = formatDateKeyIST(t.createdAt);
     if (!dateMap[dateKey]) return;
 
+    dateMap[dateKey].totalBillAmount += (t.paidAmount || 0);
     dateMap[dateKey].totalRevenue += (t.paidAmount || 0);
     dateMap[dateKey].totalCash += (t.cashAmount || 0);
     dateMap[dateKey].totalOnline += (t.onlineAmount || 0);
   });
 
   // Process expenses
-  expenses.forEach(e => {
-    const dateKey = dateFormat(new Date(e.date));
+  expenses.forEach((e) => {
+    const dateKey = formatDateKeyIST(e.date);
     if (!dateMap[dateKey]) return;
 
     dateMap[dateKey].totalExpenses += (e.amount || 0);
@@ -226,34 +250,39 @@ const calculateDailyMetrics = async (matchBranch, from, to) => {
     createdAt: { $gte: from, $lte: to },
   }).select('_id createdAt').lean();
 
-  registeredCustomers.forEach(c => {
-    const dateKey = dateFormat(new Date(c.createdAt));
+  registeredCustomers.forEach((c) => {
+    const dateKey = formatDateKeyIST(c.createdAt);
     if (dateMap[dateKey]) {
       dateMap[dateKey].totalCustomers.add(String(c._id));
     }
   });
 
-  // Build final daily data array
-  const sortedDates = Object.keys(dateMap).sort();
-  sortedDates.forEach(dateKey => {
+  dateKeys.forEach((dateKey) => {
     const day = dateMap[dateKey];
     const totalItemsSold = Object.values(day.itemCounts).reduce((sum, count) => sum + count, 0);
     const netProfit = day.totalRevenue - day.totalExpenses;
+    const totalPendingAmount = pendingSummary.pendingByDateKey[dateKey] || 0;
 
     dailyData.push({
-      date: new Date(dateKey).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-      totalRevenue: Math.round(day.totalRevenue * 100) / 100,
-      totalExpenses: Math.round(day.totalExpenses * 100) / 100,
-      netProfit: Math.round(netProfit * 100) / 100,
-      totalCash: Math.round(day.totalCash * 100) / 100,
-      totalOnline: Math.round(day.totalOnline * 100) / 100,
-      totalPendingAmount: Math.round(day.totalPendingAmount * 100) / 100,
+      date: formatDisplayDateIST(dateKey),
+      totalBillAmount: round2(day.totalBillAmount),
+      totalRevenue: round2(day.totalRevenue),
+      totalExpenses: round2(day.totalExpenses),
+      netProfit: round2(netProfit),
+      totalCash: round2(day.totalCash),
+      totalOnline: round2(day.totalOnline),
+      totalPendingAmount: round2(totalPendingAmount),
       totalCustomers: day.totalCustomers.size,
-      totalItemsSold: totalItemsSold,
+      totalItemsSold,
     });
   });
 
-  return dailyData;
+  return {
+    dailyData,
+    priorPendingAmount: pendingSummary.priorPendingAmount,
+    periodPendingAmount: pendingSummary.periodPendingAmount,
+    totalPendingAmount: pendingSummary.totalPendingAmount,
+  };
 };
 
 // GET /api/reports/dashboard?branch=
@@ -311,7 +340,7 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
   ]);
 
   // ── Remaining simple lookups, all run in parallel ──
-  const [billStats, orderStats, expenseStats, tables, todayCustomers, walletResult, walletTxStats, todayColl, monthColl, tournamentStats] =
+  const [billStats, orderStats, expenseStats, tables, todayCustomers, walletResult, walletTxStats, todayColl, monthColl, tournamentStats, outstandingSummary] =
     await Promise.all([
       billStatsPromise,
       orderStatsPromise,
@@ -349,6 +378,7 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
           },
         },
       ]),
+      calculateOutstandingPendingSummary(matchBranch, null, now),
     ]);
 
   // Helper to extract a facet value safely
@@ -388,7 +418,7 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
         paid:               fv(billStats, 'todayPaid',    'n'),
         partial:            fv(billStats, 'todayPartial', 'n'),
         unpaid:             fv(billStats, 'todayUnpaid',  'n'),
-        outstandingBalance: fv(billStats, 'outstanding') + fv(orderStats, 'outstanding'),
+        outstandingBalance: outstandingSummary.totalPendingAmount,
       },
     },
   });
@@ -407,13 +437,46 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
   const [metrics, revenueBills, revenueOrders, revenueTournaments, expenses] = await Promise.all([
     calculateReportMetrics(matchBranch, from, to),
     Bill.aggregate([
-      { $match: { ...matchBranch, paymentStatus: 'paid', createdAt: { $gte: from, $lte: to }, order: { $in: [null, undefined] } } },
-      { $group: { _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: TIMEZONE_OFFSET } }, total: { $sum: '$total' }, count: { $sum: 1 } } },
+      { $match: { ...matchBranch, paymentStatus: { $in: ['paid', 'partial'] }, createdAt: { $gte: from, $lte: to }, order: { $in: [null, undefined] } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: TIMEZONE_OFFSET } },
+          total: {
+            $sum: {
+              $cond: [
+                { $eq: ['$paymentStatus', 'paid'] },
+                '$total',
+                { $max: [0, { $ifNull: ['$amountReceived', { $subtract: ['$total', { $ifNull: ['$pendingPaymentAmount', 0] }] }] }] },
+              ],
+            },
+          },
+          count: { $sum: 1 },
+        },
+      },
       { $sort: { _id: 1 } },
     ]),
     Order.aggregate([
-      { $match: { ...matchBranch, session: { $in: [null, undefined] }, isActive: { $ne: false }, paymentStatus: 'paid', createdAt: { $gte: from, $lte: to } } },
-      { $group: { _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: TIMEZONE_OFFSET } }, total: { $sum: '$billAmount' }, count: { $sum: 1 } } },
+      { $match: { ...matchBranch, session: { $in: [null, undefined] }, isActive: { $ne: false }, paymentStatus: { $in: ['paid', 'partial'] }, createdAt: { $gte: from, $lte: to } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: TIMEZONE_OFFSET } },
+          total: {
+            $sum: {
+              $min: [
+                '$billAmount',
+                {
+                  $max: [
+                    { $ifNull: ['$totalPaid', 0] },
+                    { $ifNull: ['$amountReceived', 0] },
+                    { $add: [{ $ifNull: ['$cashAmount', 0] }, { $ifNull: ['$onlineAmount', 0] }, { $ifNull: ['$walletAmount', 0] }] },
+                  ],
+                },
+              ],
+            },
+          },
+          count: { $sum: 1 },
+        },
+      },
       { $sort: { _id: 1 } },
     ]),
     TournamentParticipant.aggregate([
@@ -472,6 +535,7 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
       revenue: mergedRevenue,
       expenses,
       summary: {
+        totalBillAmount: metrics.totalBillAmount,
         totalRevenue: metrics.totalRevenue,
         totalExpenses: metrics.totalExpenses,
         netProfit: metrics.netProfit,
@@ -479,6 +543,8 @@ exports.getRevenueReport = asyncHandler(async (req, res) => {
         totalOnline: metrics.totalOnline,
         totalCustomers: metrics.totalCustomers,
         totalPendingAmount: metrics.totalPendingAmount,
+        periodPendingAmount: metrics.periodPendingAmount,
+        priorPendingAmount: metrics.priorPendingAmount,
         totalItemsSold: metrics.totalItemsSold,
         highestSellingItem: metrics.highestSellingItem,
         totalCashCollection: metrics.totalCash,
@@ -618,8 +684,8 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       if (bDoc) branchLabel = bDoc.name;
     }
 
-    const fromDateLabel = from.toLocaleDateString('en-IN');
-    const toDateLabel = to.toLocaleDateString('en-IN');
+    const fromDateLabel = formatDisplayDateIST(from);
+    const toDateLabel = formatDisplayDateIST(to);
 
     // Sheet 1: Summary
     const summarySheet = workbook.addWorksheet('Summary');
@@ -633,6 +699,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
     summarySheet.addRow({ metric: 'To Date', value: toDateLabel });
     summarySheet.addRow({ metric: 'Generated At', value: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) });
     summarySheet.addRow({ metric: '', value: '' });
+    summarySheet.addRow({ metric: 'Total Bill Amount', value: metrics.totalBillAmount });
     summarySheet.addRow({ metric: 'Total Revenue', value: metrics.totalRevenue });
     summarySheet.addRow({ metric: 'Total Expenses', value: metrics.totalExpenses });
     summarySheet.addRow({ metric: 'Net Profit', value: metrics.netProfit });
@@ -651,6 +718,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
     dailySheet.columns = [
       { header: 'Sr. No.', key: 'srNo', width: 10 },
       { header: 'Date', key: 'date', width: 15 },
+      { header: 'Total Bill Amount', key: 'totalBillAmount', width: 18 },
       { header: 'Total Revenue', key: 'totalRevenue', width: 18 },
       { header: 'Total Expenses', key: 'totalExpenses', width: 18 },
       { header: 'Net Profit', key: 'netProfit', width: 15 },
@@ -661,16 +729,19 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       { header: 'Total Items Sold', key: 'totalItemsSold', width: 18 },
     ];
 
-    const dailyMetrics = await calculateDailyMetrics(matchBranch, from, to);
+    const {
+      dailyData: dailyMetrics,
+      periodPendingAmount,
+    } = await calculateDailyMetrics(matchBranch, from, to);
 
-    let grandTotal = {
+    const periodTotal = {
+      totalBillAmount: 0,
       totalRevenue: 0,
       totalExpenses: 0,
       netProfit: 0,
       totalCash: 0,
       totalOnline: 0,
       totalPendingAmount: 0,
-      totalCustomers: 0,
       totalItemsSold: 0,
     };
 
@@ -678,6 +749,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       dailySheet.addRow({
         srNo: index + 1,
         date: day.date,
+        totalBillAmount: day.totalBillAmount,
         totalRevenue: day.totalRevenue,
         totalExpenses: day.totalExpenses,
         netProfit: day.netProfit,
@@ -688,28 +760,29 @@ exports.exportExcel = asyncHandler(async (req, res) => {
         totalItemsSold: day.totalItemsSold,
       });
 
-      grandTotal.totalRevenue += day.totalRevenue;
-      grandTotal.totalExpenses += day.totalExpenses;
-      grandTotal.netProfit += day.netProfit;
-      grandTotal.totalCash += day.totalCash;
-      grandTotal.totalOnline += day.totalOnline;
-      grandTotal.totalPendingAmount += day.totalPendingAmount;
-      grandTotal.totalCustomers += day.totalCustomers;
-      grandTotal.totalItemsSold += day.totalItemsSold;
+      periodTotal.totalBillAmount += day.totalBillAmount;
+      periodTotal.totalRevenue += day.totalRevenue;
+      periodTotal.totalExpenses += day.totalExpenses;
+      periodTotal.netProfit += day.netProfit;
+      periodTotal.totalCash += day.totalCash;
+      periodTotal.totalOnline += day.totalOnline;
+      periodTotal.totalPendingAmount += day.totalPendingAmount;
+      periodTotal.totalItemsSold += day.totalItemsSold;
     });
 
-    // Add Grand Total row
+    // Add Grand Total row matching Summary Report
     const grandTotalRow = dailySheet.addRow({
       srNo: 'Grand Total',
       date: '',
-      totalRevenue: Math.round(grandTotal.totalRevenue * 100) / 100,
-      totalExpenses: Math.round(grandTotal.totalExpenses * 100) / 100,
-      netProfit: Math.round(grandTotal.netProfit * 100) / 100,
-      totalCash: Math.round(grandTotal.totalCash * 100) / 100,
-      totalOnline: Math.round(grandTotal.totalOnline * 100) / 100,
-      totalPendingAmount: Math.round(grandTotal.totalPendingAmount * 100) / 100,
-      totalCustomers: grandTotal.totalCustomers,
-      totalItemsSold: grandTotal.totalItemsSold,
+      totalBillAmount: round2(metrics.totalBillAmount),
+      totalRevenue: round2(metrics.totalRevenue),
+      totalExpenses: round2(metrics.totalExpenses),
+      netProfit: round2(metrics.netProfit),
+      totalCash: round2(metrics.totalCash),
+      totalOnline: round2(metrics.totalOnline),
+      totalPendingAmount: round2(periodPendingAmount),
+      totalCustomers: metrics.totalCustomers,
+      totalItemsSold: periodTotal.totalItemsSold,
     });
 
     // Style the Grand Total row
@@ -746,19 +819,19 @@ exports.exportExcel = asyncHandler(async (req, res) => {
     billsList.forEach(b => revSheet.addRow({
       number: b.invoiceNumber,
       type: 'Table Session',
-      date: new Date(b.createdAt).toLocaleDateString('en-IN'),
+      date: formatDisplayDateIST(b.createdAt),
       customer: b.customer?.name || b.customerName || 'Walk-in',
       phone: b.customer?.phone || b.customerPhone || '',
       branch: b.branch?.name || '',
       total: b.total,
-      method: b.paymentMethod || 'cash',
+      method: b.paymentMethod || '—',
       status: b.paymentStatus,
     }));
 
     ordersList.forEach(o => revSheet.addRow({
       number: o.orderId,
       type: 'Direct Order',
-      date: new Date(o.createdAt).toLocaleDateString('en-IN'),
+      date: formatDisplayDateIST(o.createdAt),
       customer: o.customer?.name || 'Walk-in',
       phone: o.customer?.phone || '',
       branch: o.branch?.name || '',
@@ -780,7 +853,7 @@ exports.exportExcel = asyncHandler(async (req, res) => {
     const expList = await Expense.find({ ...matchBranch, date: { $gte: from, $lte: to } })
       .populate('branch', 'name').sort('-date').lean();
     expList.forEach(e => expSheet.addRow({
-      date: new Date(e.date).toLocaleDateString('en-IN'),
+      date: formatDisplayDateIST(e.date),
       title: e.title,
       category: e.category,
       amount: e.amount,
@@ -801,22 +874,31 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       { header: 'Payment Method', key: 'method', width: 16 },
       { header: 'Date', key: 'date', width: 16 },
     ];
-    const pendingOrdersList = await Order.find({ ...matchBranch, isActive: { $ne: false }, pendingPaymentAmount: { $gt: 0 }, createdAt: { $gte: from, $lte: to } })
+    const pendingCandidateOrders = await Order.find({
+      ...matchBranch,
+      isActive: { $ne: false },
+      createdAt: { $gte: from, $lte: to },
+      $or: [{ paymentStatus: { $in: ['unpaid', 'partial'] } }, { pendingPaymentAmount: { $gt: 0 } }],
+    })
       .populate('customer', 'name phone')
       .populate('branch', 'name')
       .sort('-createdAt')
       .lean();
-    pendingOrdersList.forEach(p => pendSheet.addRow({
-      number: p.orderId,
-      customer: p.customer?.name || 'Walk-in',
-      phone: p.customer?.phone || '',
-      branch: p.branch?.name || '',
-      billAmount: p.billAmount,
-      amountPaid: p.totalPaid || p.amountReceived || 0,
-      pendingAmount: p.pendingPaymentAmount,
-      method: p.paymentMethod || '—',
-      date: new Date(p.createdAt).toLocaleDateString('en-IN'),
-    }));
+    pendingCandidateOrders.forEach(p => {
+      const bd = resolveOrderPaymentBreakdown(p, { asOfDate: to });
+      if (bd.pendingAmount <= 0) return;
+      pendSheet.addRow({
+        number: p.orderId,
+        customer: p.customer?.name || 'Walk-in',
+        phone: p.customer?.phone || '',
+        branch: p.branch?.name || '',
+        billAmount: bd.billAmount,
+        amountPaid: bd.totalReceived,
+        pendingAmount: bd.pendingAmount,
+        method: bd.paymentMethod || '—',
+        date: formatDisplayDateIST(p.createdAt),
+      });
+    });
 
     // Sheet 6: Items Sold
     const itemSheet = workbook.addWorksheet('Items Sold');
@@ -828,7 +910,101 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       .sort((a, b) => b[1] - a[1])
       .forEach(([name, count]) => itemSheet.addRow({ name, quantity: count }));
 
-    [summarySheet, dailySheet, revSheet, expSheet, pendSheet, itemSheet].forEach(s => {
+    // Sheet 7: Order Details (complete order-level breakdown, all records in range)
+    const { rows: allOrderDetailRows, summary: orderPaySummary } = await buildOrderDetailsRows(
+      matchBranch,
+      { createdAt: { $gte: from, $lte: to } },
+      to
+    );
+
+    const orderDetailsSheet = workbook.addWorksheet('Order Details');
+    orderDetailsSheet.columns = [
+      { header: 'Invoice / Order #', key: 'number', width: 22 },
+      { header: 'Type', key: 'type', width: 16 },
+      { header: 'Date', key: 'date', width: 14 },
+      { header: 'Customer', key: 'customer', width: 22 },
+      { header: 'Phone', key: 'phone', width: 15 },
+      { header: 'Branch', key: 'branch', width: 16 },
+      { header: 'Total Bill Amount', key: 'billAmount', width: 18 },
+      { header: 'Cash Received', key: 'cashAmount', width: 16 },
+      { header: 'Online/UPI Received', key: 'onlineAmount', width: 20 },
+      { header: 'Wallet Received', key: 'walletUsed', width: 16 },
+      { header: 'Pending Amount', key: 'pendingAmount', width: 16 },
+      { header: 'Payment Method', key: 'method', width: 16 },
+      { header: 'Status', key: 'status', width: 16 },
+    ];
+
+    const currencyFmt = '₹#,##0.00';
+    allOrderDetailRows.forEach((r) => {
+      const row = orderDetailsSheet.addRow({
+        number: r.orderId,
+        type: r.recordType,
+        date: formatDisplayDateIST(r.createdAt),
+        customer: r.customerName,
+        phone: r.mobileNumber || '',
+        branch: r.branchName || '',
+        billAmount: r.billAmount,
+        cashAmount: r.cashAmount,
+        onlineAmount: r.onlineAmount,
+        walletUsed: r.walletUsed,
+        pendingAmount: r.pendingAmount,
+        method: r.paymentMethodDisplay,
+        status: r.paymentStatusDisplay,
+      });
+      ['billAmount', 'cashAmount', 'onlineAmount', 'walletUsed', 'pendingAmount'].forEach((colKey) => {
+        row.getCell(colKey).numFmt = currencyFmt;
+      });
+    });
+
+    const orderDetailsTotalRow = orderDetailsSheet.addRow({
+      number: 'Grand Total',
+      type: `${orderPaySummary.totalOrders} Orders`,
+      date: '',
+      customer: '',
+      phone: '',
+      branch: '',
+      billAmount: orderPaySummary.totalBilled,
+      cashAmount: orderPaySummary.totalCash,
+      onlineAmount: orderPaySummary.totalOnline,
+      walletUsed: orderPaySummary.totalWallet,
+      pendingAmount: orderPaySummary.totalPending,
+      method: '',
+      status: '',
+    });
+    orderDetailsTotalRow.font = { bold: true };
+    orderDetailsTotalRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } };
+    ['billAmount', 'cashAmount', 'onlineAmount', 'walletUsed', 'pendingAmount'].forEach((colKey) => {
+      orderDetailsTotalRow.getCell(colKey).numFmt = currencyFmt;
+    });
+
+    // Sheet 8: Payment Summary
+    const paymentSummarySheet = workbook.addWorksheet('Payment Summary');
+    paymentSummarySheet.columns = [
+      { header: 'Metric', key: 'metric', width: 32 },
+      { header: 'Value', key: 'value', width: 28 },
+    ];
+    paymentSummarySheet.addRow({ metric: 'Report Type', value: 'Order & Payment Breakdown Summary' });
+    paymentSummarySheet.addRow({ metric: 'Branch', value: branchLabel });
+    paymentSummarySheet.addRow({ metric: 'From Date', value: fromDateLabel });
+    paymentSummarySheet.addRow({ metric: 'To Date', value: toDateLabel });
+    paymentSummarySheet.addRow({ metric: 'Generated At', value: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) });
+    paymentSummarySheet.addRow({ metric: '', value: '' });
+    paymentSummarySheet.addRow({ metric: 'Total Orders', value: orderPaySummary.totalOrders });
+    const payBillRow = paymentSummarySheet.addRow({ metric: 'Total Bill Amount', value: orderPaySummary.totalBilled });
+    const payRevRow = paymentSummarySheet.addRow({ metric: 'Total Revenue', value: orderPaySummary.totalRevenue });
+    const payCashRow = paymentSummarySheet.addRow({ metric: 'Total Cash Received', value: orderPaySummary.totalCash });
+    const payOnlineRow = paymentSummarySheet.addRow({ metric: 'Total Online/UPI Received', value: orderPaySummary.totalOnline });
+    const payWalletRow = paymentSummarySheet.addRow({ metric: 'Total Wallet Payments', value: orderPaySummary.totalWallet });
+    const payPendRow = paymentSummarySheet.addRow({ metric: 'Total Pending Amount', value: orderPaySummary.totalPending });
+    [payBillRow, payRevRow, payCashRow, payOnlineRow, payWalletRow, payPendRow].forEach((r) => {
+      r.getCell('value').numFmt = currencyFmt;
+    });
+    paymentSummarySheet.addRow({ metric: '', value: '' });
+    paymentSummarySheet.addRow({ metric: 'Paid Orders Count', value: orderPaySummary.paidOrdersCount });
+    paymentSummarySheet.addRow({ metric: 'Partially Paid Orders Count', value: orderPaySummary.partialOrdersCount });
+    paymentSummarySheet.addRow({ metric: 'Unpaid Orders Count', value: orderPaySummary.unpaidOrdersCount });
+
+    [summarySheet, dailySheet, revSheet, orderDetailsSheet, paymentSummarySheet, expSheet, pendSheet, itemSheet].forEach(s => {
       s.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
       s.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
     });
@@ -1084,61 +1260,29 @@ exports.exportExcel = asyncHandler(async (req, res) => {
     });
   } else if (type === 'pending_payments') {
     const bf = branchFilter(req);
-    const matchStage = { isActive: { $ne: false }, pendingPaymentAmount: { $gt: 0 } };
+    const matchStage = {
+      isActive: { $ne: false },
+      $or: [{ paymentStatus: { $in: ['unpaid', 'partial'] } }, { pendingPaymentAmount: { $gt: 0 } }],
+    };
     if (bf) {
       matchStage.branch = bf;
     }
+    let toBound = null;
     if (req.query.from || req.query.to) {
+      const parsed = parseDateRange(req.query.from, req.query.to);
       matchStage.createdAt = {};
-      if (req.query.from) {
-        const fromDate = new Date(req.query.from);
-        fromDate.setHours(0, 0, 0, 0);
-        matchStage.createdAt.$gte = fromDate;
-      }
+      if (req.query.from) matchStage.createdAt.$gte = parsed.from;
       if (req.query.to) {
-        const toDate = new Date(req.query.to);
-        toDate.setHours(23, 59, 59, 999);
-        matchStage.createdAt.$lte = toDate;
+        matchStage.createdAt.$lte = parsed.to;
+        toBound = parsed.to;
       }
     }
 
-    const pipeline = [
-      { $match: matchStage },
-      {
-        $lookup: {
-          from: 'customers',
-          localField: 'customer',
-          foreignField: '_id',
-          as: 'customerDoc',
-        },
-      },
-      { $unwind: { path: '$customerDoc', preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: 'branches',
-          localField: 'branch',
-          foreignField: '_id',
-          as: 'branchDoc',
-        },
-      },
-      { $unwind: { path: '$branchDoc', preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          orderId: 1,
-          customerName: { $ifNull: ['$customerDoc.name', 'Walk-in'] },
-          mobileNumber: { $ifNull: ['$customerDoc.phone', ''] },
-          branchName: { $ifNull: ['$branchDoc.name', ''] },
-          billAmount: 1,
-          amountPaid: '$amountReceived',
-          pendingAmount: '$pendingPaymentAmount',
-          paymentMethod: 1,
-          createdAt: 1,
-        },
-      },
-      { $sort: { createdAt: -1 } }
-    ];
-
-    const pending = await Order.aggregate(pipeline).allowDiskUse(true);
+    const pendingOrders = await Order.find(matchStage)
+      .populate('customer', 'name phone')
+      .populate('branch', 'name')
+      .sort({ createdAt: -1 })
+      .lean();
 
     sheet.columns = [
       { header: 'Order ID', key: 'orderId', width: 20 },
@@ -1152,17 +1296,19 @@ exports.exportExcel = asyncHandler(async (req, res) => {
       { header: 'Created At', key: 'createdAt', width: 20 },
     ];
 
-    pending.forEach((p) => {
+    pendingOrders.forEach((o) => {
+      const bd = resolveOrderPaymentBreakdown(o, { asOfDate: toBound });
+      if (bd.pendingAmount <= 0) return;
       sheet.addRow({
-        orderId: p.orderId,
-        customerName: p.customerName,
-        mobileNumber: p.mobileNumber,
-        branchName: p.branchName,
-        billAmount: p.billAmount,
-        amountPaid: p.amountPaid,
-        pendingAmount: p.pendingAmount,
-        paymentMethod: p.paymentMethod || '—',
-        createdAt: p.createdAt ? new Date(p.createdAt).toLocaleString('en-IN') : '—',
+        orderId: o.orderId,
+        customerName: o.customer?.name || 'Walk-in',
+        mobileNumber: o.customer?.phone || '',
+        branchName: o.branch?.name || '',
+        billAmount: bd.billAmount,
+        amountPaid: bd.totalReceived,
+        pendingAmount: bd.pendingAmount,
+        paymentMethod: bd.paymentMethod || '—',
+        createdAt: o.createdAt ? new Date(o.createdAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '—',
       });
     });
   }
@@ -1179,127 +1325,304 @@ exports.exportExcel = asyncHandler(async (req, res) => {
   res.end();
 });
 
+/**
+ * Shared helper to fetch and normalize Direct Orders and unlinked Table Session Bills
+ * with accurate Cash, Online/UPI, Wallet, Pending, and Payment History details.
+ */
+const buildOrderDetailsRows = async (matchBranch, dateFilter, toBound) => {
+  const [orders, sessionBills] = await Promise.all([
+    Order.find({
+      ...matchBranch,
+      ...dateFilter,
+      isActive: { $ne: false },
+      session: { $in: [null, undefined] },
+      paymentStatus: { $nin: ['refunded', 'cancelled'] },
+    })
+      .populate('customer', 'name phone customerId')
+      .populate('branch', 'name')
+      .populate('menuCategoryId', 'name')
+      .populate('menuItemId', 'name')
+      .populate('createdBy', 'name')
+      .sort({ createdAt: -1 })
+      .lean(),
+    Bill.find({
+      ...matchBranch,
+      ...dateFilter,
+      order: { $in: [null, undefined] },
+      paymentStatus: { $nin: ['refunded', 'cancelled'] },
+    })
+      .populate('customer', 'name phone customerId')
+      .populate('branch', 'name')
+      .populate('menuCategoryId', 'name')
+      .populate('menuItemId', 'name')
+      .populate('createdBy', 'name')
+      .sort({ createdAt: -1 })
+      .lean(),
+  ]);
+
+  const orderIds = orders.map((o) => o._id);
+  const billIds = sessionBills.map((b) => b._id);
+
+  const [paymentHistories, billPayments, subOrders] = await Promise.all([
+    orderIds.length
+      ? PaymentHistory.find({ order: { $in: orderIds } })
+        .populate('createdBy', 'name')
+        .sort({ paymentNumber: 1, createdAt: 1 })
+        .lean()
+      : [],
+    billIds.length
+      ? Payment.find({ bill: { $in: billIds } })
+        .populate('receivedBy', 'name')
+        .sort({ createdAt: 1 })
+        .lean()
+      : [],
+    orderIds.length
+      ? Order.find({ parentOrder: { $in: orderIds }, isActive: { $ne: false } })
+        .select('parentOrder billAmount')
+        .lean()
+      : [],
+  ]);
+
+  const phByOrder = new Map();
+  paymentHistories.forEach((ph) => {
+    const key = String(ph.order);
+    if (!phByOrder.has(key)) phByOrder.set(key, []);
+    phByOrder.get(key).push(ph);
+  });
+
+  const paymentsByBill = new Map();
+  billPayments.forEach((p) => {
+    const key = String(p.bill);
+    if (!paymentsByBill.has(key)) paymentsByBill.set(key, []);
+    paymentsByBill.get(key).push(p);
+  });
+
+  const subAllocByParent = new Map();
+  subOrders.forEach((so) => {
+    const key = String(so.parentOrder);
+    subAllocByParent.set(key, (subAllocByParent.get(key) || 0) + (Number(so.billAmount) || 0));
+  });
+
+  const rows = [];
+  const summary = {
+    totalOrders: 0,
+    totalBilled: 0,
+    totalRevenue: 0,
+    totalCash: 0,
+    totalOnline: 0,
+    totalWallet: 0,
+    totalPending: 0,
+    paidOrdersCount: 0,
+    partialOrdersCount: 0,
+    unpaidOrdersCount: 0,
+  };
+
+  orders.forEach((o) => {
+    const phList = phByOrder.get(String(o._id)) || [];
+    const subAlloc = o.parentOrder ? 0 : (subAllocByParent.get(String(o._id)) ?? null);
+    const bd = resolveOrderPaymentBreakdown(o, {
+      asOfDate: toBound,
+      laterPayments: phList,
+      subOrdersAllocated: subAlloc,
+    });
+
+    const historyEntries = phList.map((ph) => ({
+      paymentNumber: ph.paymentNumber,
+      paymentMethod: formatPaymentMethodDisplay(ph.paymentMethod),
+      cashAmount: round2(ph.cashAmount || 0),
+      onlineAmount: round2(ph.onlineAmount || 0),
+      walletAmount: round2(ph.walletAmount || 0),
+      totalPaid: round2(ph.totalPaid || 0),
+      pendingAmount: round2(ph.pendingAmount || 0),
+      paymentStatus: formatPaymentStatusDisplay(ph.paymentStatus),
+      notes: ph.notes || '',
+      createdBy: ph.createdBy?.name || 'Staff',
+      createdAt: ph.createdAt,
+    }));
+
+    summary.totalOrders += 1;
+    summary.totalBilled += bd.collectibleBill;
+    summary.totalRevenue += bd.collectedTowardBill;
+    summary.totalCash += bd.cashAmount;
+    summary.totalOnline += bd.onlineAmount;
+    summary.totalWallet += bd.walletAmount;
+    summary.totalPending += bd.pendingAmount;
+    if (bd.paymentStatus === 'paid') summary.paidOrdersCount += 1;
+    else if (bd.paymentStatus === 'partial') summary.partialOrdersCount += 1;
+    else summary.unpaidOrdersCount += 1;
+
+    rows.push({
+      _id: o._id,
+      recordType: 'Direct Order',
+      orderId: o.orderId,
+      customerId: o.customer?.customerId || '—',
+      customerName: o.customer?.name || 'Walk-in',
+      mobileNumber: o.customer?.phone || '',
+      branchName: o.branch?.name || '',
+      menuCategory: o.menuCategoryId?.name || '',
+      menuItem: o.menuItemId?.name || '',
+      addedItems: o.addedItems || [],
+      quantity: 1 + (Array.isArray(o.addedItems) ? o.addedItems.reduce((s, it) => s + (Number(it.quantity) || 1), 0) : 0),
+      billAmount: bd.billAmount,
+      amountReceived: bd.totalReceived,
+      totalPaid: bd.totalReceived,
+      totalReceived: bd.totalReceived,
+      cashAmount: bd.cashAmount,
+      onlineAmount: bd.onlineAmount,
+      walletUsed: bd.walletAmount,
+      walletAdded: bd.totalReceived > bd.billAmount ? round2(bd.totalReceived - bd.billAmount) : 0,
+      pendingAmount: bd.pendingAmount,
+      paymentMethod: bd.paymentMethod,
+      paymentMethodDisplay: bd.paymentMethodDisplay,
+      paymentStatus: bd.paymentStatus,
+      paymentStatusDisplay: bd.paymentStatusDisplay,
+      paymentHistory: historyEntries,
+      notes: o.notes || '',
+      createdBy: o.createdBy?.name || '—',
+      createdAt: o.createdAt,
+    });
+  });
+
+  sessionBills.forEach((b) => {
+    const pList = paymentsByBill.get(String(b._id)) || [];
+    const bd = resolveBillPaymentBreakdown(b, {
+      asOfDate: toBound,
+      payments: pList,
+    });
+
+    const historyEntries = pList.map((p, idx) => {
+      let cash = 0;
+      let online = 0;
+      let wallet = 0;
+      if (p.method === 'cash') cash = p.amount || 0;
+      else if (p.method === 'upi' || p.method === 'card') online = p.amount || 0;
+      else if (p.method === 'wallet') wallet = p.amount || 0;
+      else if (p.method === 'mixed' && Array.isArray(p.breakdown)) {
+        p.breakdown.forEach((item) => {
+          if (item.method === 'cash') cash += item.amount || 0;
+          else if (item.method === 'upi' || item.method === 'card') online += item.amount || 0;
+          else if (item.method === 'wallet') wallet += item.amount || 0;
+        });
+      }
+      return {
+        paymentNumber: idx + 1,
+        paymentMethod: formatPaymentMethodDisplay(p.method),
+        cashAmount: round2(cash),
+        onlineAmount: round2(online),
+        walletAmount: round2(wallet),
+        totalPaid: round2(p.amount || 0),
+        pendingAmount: bd.pendingAmount,
+        paymentStatus: bd.paymentStatusDisplay,
+        notes: p.transactionRef || '',
+        createdBy: p.receivedBy?.name || 'Staff',
+        createdAt: p.createdAt,
+      };
+    });
+
+    summary.totalOrders += 1;
+    summary.totalBilled += bd.collectibleBill;
+    summary.totalRevenue += bd.collectedTowardBill;
+    summary.totalCash += bd.cashAmount;
+    summary.totalOnline += bd.onlineAmount;
+    summary.totalWallet += bd.walletAmount;
+    summary.totalPending += bd.pendingAmount;
+    if (bd.paymentStatus === 'paid') summary.paidOrdersCount += 1;
+    else if (bd.paymentStatus === 'partial') summary.partialOrdersCount += 1;
+    else summary.unpaidOrdersCount += 1;
+
+    rows.push({
+      _id: b._id,
+      recordType: 'Table Session',
+      orderId: b.invoiceNumber,
+      customerId: b.customer?.customerId || '—',
+      customerName: b.customer?.name || b.customerName || 'Walk-in',
+      mobileNumber: b.customer?.phone || b.customerPhone || '',
+      branchName: b.branch?.name || '',
+      menuCategory: b.menuCategoryId?.name || b.menuCategory || '',
+      menuItem: b.menuItemId?.name || b.menuItem || '',
+      addedItems: b.items || [],
+      quantity: Array.isArray(b.items) ? b.items.reduce((s, it) => s + (Number(it.quantity) || 1), 0) : 1,
+      billAmount: bd.billAmount,
+      amountReceived: bd.totalReceived,
+      totalPaid: bd.totalReceived,
+      totalReceived: bd.totalReceived,
+      cashAmount: bd.cashAmount,
+      onlineAmount: bd.onlineAmount,
+      walletUsed: bd.walletAmount,
+      walletAdded: 0,
+      pendingAmount: bd.pendingAmount,
+      paymentMethod: bd.paymentMethod,
+      paymentMethodDisplay: bd.paymentMethodDisplay,
+      paymentStatus: bd.paymentStatus,
+      paymentStatusDisplay: bd.paymentStatusDisplay,
+      paymentHistory: historyEntries,
+      notes: b.notes || '',
+      createdBy: b.createdBy?.name || '—',
+      createdAt: b.createdAt,
+    });
+  });
+
+  rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  summary.totalBilled = round2(summary.totalBilled);
+  summary.totalRevenue = round2(summary.totalRevenue);
+  summary.totalCash = round2(summary.totalCash);
+  summary.totalOnline = round2(summary.totalOnline);
+  summary.totalWallet = round2(summary.totalWallet);
+  summary.totalPending = round2(summary.totalPending);
+
+  return { rows, summary };
+};
+
 // GET /api/reports/orders?from=&to=&branch=&page=&limit=&search=&sortBy=&sortOrder=
 exports.getOrderDetailsReport = asyncHandler(async (req, res, next) => {
   const bf = branchFilter(req);
-  const matchStage = { isActive: { $ne: false } };
-  if (bf) {
-    matchStage.branch = bf;
-  }
+  const matchBranch = bf ? { branch: bf } : {};
 
+  let dateFilter = {};
+  let toBound = null;
   if (req.query.from || req.query.to) {
     const { from, to } = parseDateRange(req.query.from, req.query.to);
-    matchStage.createdAt = { $gte: from, $lte: to };
+    dateFilter = { createdAt: { $gte: from, $lte: to } };
+    if (req.query.to) toBound = to;
   }
 
-  const pipeline = [
-    { $match: matchStage },
-    {
-      $lookup: {
-        from: 'customers',
-        localField: 'customer',
-        foreignField: '_id',
-        as: 'customerDoc',
-      },
-    },
-    { $unwind: { path: '$customerDoc', preserveNullAndEmptyArrays: true } },
-    {
-      $lookup: {
-        from: 'branches',
-        localField: 'branch',
-        foreignField: '_id',
-        as: 'branchDoc',
-      },
-    },
-    { $unwind: { path: '$branchDoc', preserveNullAndEmptyArrays: true } },
-    {
-      $lookup: {
-        from: 'menucategories',
-        localField: 'menuCategoryId',
-        foreignField: '_id',
-        as: 'menuCategoryDoc',
-      },
-    },
-    { $unwind: { path: '$menuCategoryDoc', preserveNullAndEmptyArrays: true } },
-    {
-      $lookup: {
-        from: 'menuitems',
-        localField: 'menuItemId',
-        foreignField: '_id',
-        as: 'menuItemDoc',
-      },
-    },
-    { $unwind: { path: '$menuItemDoc', preserveNullAndEmptyArrays: true } },
-    {
-      $lookup: {
-        from: 'users',
-        localField: 'createdBy',
-        foreignField: '_id',
-        as: 'createdByDoc',
-      },
-    },
-    { $unwind: { path: '$createdByDoc', preserveNullAndEmptyArrays: true } },
-    {
-      $project: {
-        orderId: 1,
-        customerName: { $ifNull: ['$customerDoc.name', 'Walk-in'] },
-        mobileNumber: { $ifNull: ['$customerDoc.phone', ''] },
-        branchName: { $ifNull: ['$branchDoc.name', ''] },
-        menuCategory: { $ifNull: ['$menuCategoryDoc.name', ''] },
-        menuItem: { $ifNull: ['$menuItemDoc.name', ''] },
-        quantity: { $literal: 1 },
-        billAmount: 1,
-        amountReceived: 1,
-        walletUsed: '$walletAmount',
-        walletAdded: {
-          $cond: [
-            { $gt: ['$amountReceived', '$billAmount'] },
-            { $subtract: ['$amountReceived', '$billAmount'] },
-            0,
-          ],
-        },
-        paymentMethod: 1,
-        paymentStatus: 1,
-        createdBy: { $ifNull: ['$createdByDoc.name', '—'] },
-        createdAt: 1,
-      },
-    },
-  ];
+  let { rows } = await buildOrderDetailsRows(matchBranch, dateFilter, toBound);
 
   if (req.query.search) {
-    const searchRegex = new RegExp(req.query.search, 'i');
-    pipeline.push({
-      $match: {
-        $or: [
-          { orderId: searchRegex },
-          { customerName: searchRegex },
-          { mobileNumber: searchRegex },
-          { branchName: searchRegex },
-          { menuCategory: searchRegex },
-          { menuItem: searchRegex },
-        ],
-      },
-    });
+    const searchRegex = new RegExp(req.query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    rows = rows.filter((r) =>
+      searchRegex.test(r.orderId || '') ||
+      searchRegex.test(r.customerName || '') ||
+      searchRegex.test(r.mobileNumber || '') ||
+      searchRegex.test(r.branchName || '') ||
+      searchRegex.test(r.menuCategory || '') ||
+      searchRegex.test(r.menuItem || '') ||
+      searchRegex.test(r.paymentMethodDisplay || '') ||
+      searchRegex.test(r.paymentStatusDisplay || '')
+    );
   }
 
   const sortBy = req.query.sortBy || 'createdAt';
   const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
-  pipeline.push({ $sort: { [sortBy]: sortOrder, _id: -1 } });
+  rows.sort((a, b) => {
+    const av = a[sortBy];
+    const bv = b[sortBy];
+    if (sortBy === 'createdAt') {
+      const diff = new Date(av).getTime() - new Date(bv).getTime();
+      return diff !== 0 ? diff * sortOrder : String(b._id).localeCompare(String(a._id));
+    }
+    if (typeof av === 'number' && typeof bv === 'number') {
+      return (av - bv) * sortOrder;
+    }
+    return String(av || '').localeCompare(String(bv || '')) * sortOrder;
+  });
 
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 10;
+  const total = rows.length;
   const skip = (page - 1) * limit;
-
-  pipeline.push({
-    $facet: {
-      metadata: [{ $count: 'total' }],
-      data: [{ $skip: skip }, { $limit: limit }],
-    },
-  });
-
-  const results = await Order.aggregate(pipeline).allowDiskUse(true);
-  const total = results[0]?.metadata[0]?.total || 0;
-  const data = results[0]?.data || [];
+  const data = rows.slice(skip, skip + limit);
 
   res.status(200).json({
     success: true,
@@ -1307,81 +1630,29 @@ exports.getOrderDetailsReport = asyncHandler(async (req, res, next) => {
     page,
     pages: Math.ceil(total / limit),
     limit,
-    data: { orders: data },
+    data,
+    pagination: { total, page, pages: Math.ceil(total / limit), limit },
   });
 });
 
 // GET /api/reports/orders-summary?from=&to=&branch=
 exports.getOrderSummaryReport = asyncHandler(async (req, res, next) => {
   const bf = branchFilter(req);
-  const matchStage = { isActive: { $ne: false } };
+  const matchStage = {
+    isActive: { $ne: false },
+    session: { $in: [null, undefined] },
+    paymentStatus: { $nin: ['refunded', 'cancelled'] },
+  };
   if (bf) {
     matchStage.branch = bf;
   }
 
+  let toBound = null;
   if (req.query.from || req.query.to) {
     const { from, to } = parseDateRange(req.query.from, req.query.to);
     matchStage.createdAt = { $gte: from, $lte: to };
+    if (req.query.to) toBound = to;
   }
-
-  // 1. Summary totals
-  const summaryPipeline = [
-    { $match: matchStage },
-    {
-      $group: {
-        _id: null,
-        totalOrders: { $sum: 1 },
-        totalRevenue: { $sum: '$billAmount' },
-        totalCashCollection: {
-          $sum: {
-            $cond: [
-              { $in: ['$paymentMethod', ['cash', 'mixed']] },
-              '$cashAmount',
-              0,
-            ],
-          },
-        },
-        totalUPICollection: {
-          $sum: {
-            $cond: [
-              { $in: ['$paymentMethod', ['upi', 'mixed']] },
-              '$onlineAmount',
-              0,
-            ],
-          },
-        },
-        totalWalletPayments: { $sum: '$walletAmount' },
-        totalPendingAmount: { $sum: '$pendingPaymentAmount' },
-      },
-    },
-  ];
-
-  // 2. Pending Payments Details
-  const pendingPipeline = [
-    { $match: { ...matchStage, pendingPaymentAmount: { $gt: 0 } } },
-    {
-      $lookup: {
-        from: 'customers',
-        localField: 'customer',
-        foreignField: '_id',
-        as: 'customerDoc',
-      },
-    },
-    { $unwind: { path: '$customerDoc', preserveNullAndEmptyArrays: true } },
-    {
-      $project: {
-        orderId: 1,
-        customerName: { $ifNull: ['$customerDoc.name', 'Walk-in'] },
-        mobileNumber: { $ifNull: ['$customerDoc.phone', ''] },
-        billAmount: 1,
-        amountPaid: '$amountReceived',
-        pendingAmount: '$pendingPaymentAmount',
-        paymentMethod: 1,
-        createdAt: 1,
-      },
-    },
-    { $sort: { createdAt: -1 } },
-  ];
 
   // 3. Top Selling Items
   const topSellingPipeline = [
@@ -1427,9 +1698,11 @@ exports.getOrderSummaryReport = asyncHandler(async (req, res, next) => {
     walletMatch.createdAt = { $gte: from, $lte: to };
   }
 
-  const [summaryResult, pendingResult, topSellingResult, walletTransactions] = await Promise.all([
-    Order.aggregate(summaryPipeline),
-    Order.aggregate(pendingPipeline),
+  const [ordersInPeriod, topSellingResult, walletTransactions] = await Promise.all([
+    Order.find(matchStage)
+      .populate('customer', 'name phone')
+      .sort({ createdAt: -1 })
+      .lean(),
     Order.aggregate(topSellingPipeline),
     WalletTransaction.find(walletMatch)
       .select('orderId customerName customerPhone type amount balance createdAt')
@@ -1437,16 +1710,85 @@ exports.getOrderSummaryReport = asyncHandler(async (req, res, next) => {
       .lean(),
   ]);
 
-  const summary = summaryResult[0] || {
-    totalOrders: 0,
+  const orderIds = ordersInPeriod.map((o) => o._id);
+  const [subOrders, laterPaymentHistories] = await Promise.all([
+    orderIds.length
+      ? Order.find({ parentOrder: { $in: orderIds }, isActive: { $ne: false } }).select('parentOrder billAmount').lean()
+      : [],
+    orderIds.length
+      ? PaymentHistory.find({ order: { $in: orderIds }, paymentNumber: { $gt: 1 } }).select('order paymentNumber totalPaid cashAmount onlineAmount walletAmount createdAt').lean()
+      : [],
+  ]);
+
+  const subAllocByParent = new Map();
+  subOrders.forEach((so) => {
+    const key = String(so.parentOrder);
+    subAllocByParent.set(key, (subAllocByParent.get(key) || 0) + (Number(so.billAmount) || 0));
+  });
+
+  const laterPHByOrder = new Map();
+  laterPaymentHistories.forEach((ph) => {
+    const key = String(ph.order);
+    if (!laterPHByOrder.has(key)) laterPHByOrder.set(key, []);
+    laterPHByOrder.get(key).push(ph);
+  });
+
+  const summary = {
+    totalOrders: ordersInPeriod.length,
+    totalBilled: 0,
     totalRevenue: 0,
     totalCashCollection: 0,
     totalUPICollection: 0,
     totalWalletPayments: 0,
     totalPendingAmount: 0,
   };
+  const pendingResult = [];
 
-  const averageOrderValue = summary.totalOrders > 0 ? (summary.totalRevenue / summary.totalOrders) : 0;
+  ordersInPeriod.forEach((o) => {
+    const subAlloc = o.parentOrder ? 0 : (subAllocByParent.get(String(o._id)) ?? null);
+    const bd = resolveOrderPaymentBreakdown(o, {
+      asOfDate: toBound,
+      laterPayments: laterPHByOrder.get(String(o._id)) || [],
+      subOrdersAllocated: subAlloc,
+    });
+    summary.totalBilled += bd.collectibleBill;
+    summary.totalRevenue += bd.collectedTowardBill;
+    summary.totalCashCollection += bd.cashAmount;
+    summary.totalUPICollection += bd.onlineAmount;
+    summary.totalWalletPayments += bd.walletAmount;
+    summary.totalPendingAmount += bd.pendingAmount;
+
+    if (bd.pendingAmount > 0) {
+      pendingResult.push({
+        orderId: o.orderId,
+        customerName: o.customer?.name || 'Walk-in',
+        mobileNumber: o.customer?.phone || '',
+        billAmount: bd.billAmount,
+        amountPaid: bd.totalReceived,
+        pendingAmount: bd.pendingAmount,
+        paymentMethod: bd.paymentMethod,
+        createdAt: o.createdAt,
+      });
+    }
+  });
+
+  summary.totalBilled = round2(summary.totalBilled);
+  summary.totalRevenue = round2(summary.totalRevenue);
+  summary.totalCashCollection = round2(summary.totalCashCollection);
+  summary.totalUPICollection = round2(summary.totalUPICollection);
+  summary.totalWalletPayments = round2(summary.totalWalletPayments);
+  summary.totalPendingAmount = round2(summary.totalPendingAmount);
+
+  const reconciliation = {
+    totalBilled: summary.totalBilled,
+    totalCollected: summary.totalRevenue,
+    totalPending: summary.totalPendingAmount,
+    channelSum: round2(summary.totalCashCollection + summary.totalUPICollection + summary.totalWalletPayments),
+    isBalanced: Math.abs((summary.totalRevenue + summary.totalPendingAmount) - summary.totalBilled) < 0.01 &&
+      Math.abs((summary.totalCashCollection + summary.totalUPICollection + summary.totalWalletPayments) - summary.totalRevenue) < 0.01,
+  };
+
+  const averageOrderValue = summary.totalOrders > 0 ? round2(summary.totalRevenue / summary.totalOrders) : 0;
 
   const topSellingItems = topSellingResult.map((item) => {
     const categoryName = item._id.categoryName || 'Menu';
@@ -1475,6 +1817,7 @@ exports.getOrderSummaryReport = asyncHandler(async (req, res, next) => {
         ...summary,
         averageOrderValue,
       },
+      reconciliation,
       pendingPayments: pendingResult,
       walletTransactions: walletTransactionsData,
       topSellingItems,

@@ -239,10 +239,17 @@ export default function PendingPaymentsPage() {
       newPaymentStatus = 'partial';
     }
 
-    // Get payment method specific amounts
-    const cashAmount = Number(paymentForm.cashAmount) || 0;
-    const onlineAmount = Number(paymentForm.onlineAmount) || 0;
-    const walletAmount = Number(paymentForm.walletAmount) || 0;
+    // Get payment method specific amounts (auto-fill cash/online/wallet if only amountReceived was entered)
+    let cashAmount = Number(paymentForm.cashAmount) || 0;
+    let onlineAmount = Number(paymentForm.onlineAmount) || 0;
+    let walletAmount = Number(paymentForm.walletAmount) || 0;
+    if (paymentForm.paymentMethod === 'cash' && cashAmount === 0 && amountReceived > 0) {
+      cashAmount = amountReceived;
+    } else if (paymentForm.paymentMethod === 'upi' && onlineAmount === 0 && amountReceived > 0) {
+      onlineAmount = amountReceived;
+    } else if (paymentForm.paymentMethod === 'wallet' && walletAmount === 0 && amountReceived > 0) {
+      walletAmount = amountReceived;
+    }
 
     const payload = {
       paymentMethod: paymentForm.paymentMethod,
